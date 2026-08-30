@@ -12,6 +12,9 @@ class DdlStatementsTest {
         List<String> filtered = DdlStatements.executableForPostgres(List.of(
                 "SET character_set_server=utf8mb4, collation_server=utf8mb4_0900_ai_ci",
                 "USE inventory",
+                "DROP DATABASE IF EXISTS `inventory`",
+                "CREATE DATABASE inventory",
+                "CREATE SCHEMA inventory",
                 "CREATE TABLE \"inventory\".\"customers\" (\"id\" int NOT NULL)",
                 "/* engine=innodb */",
                 "SELECT @@version"));

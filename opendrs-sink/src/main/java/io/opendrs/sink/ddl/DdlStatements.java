@@ -5,8 +5,9 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * Filters MySQL session / database-switch statements that Debezium emits during schema snapshot
- * ({@code SET character_set_server=...}, {@code USE db}) and that PostgreSQL cannot execute.
+ * Filters MySQL session / catalog statements that Debezium emits during schema snapshot
+ * ({@code SET character_set_server=...}, {@code USE db}, {@code DROP/CREATE DATABASE}) and that
+ * PostgreSQL cannot execute. Leftover backticks mean the converter did not rewrite the statement.
  */
 public final class DdlStatements {
 
@@ -42,7 +43,13 @@ public final class DdlStatements {
                 || upper.startsWith("USE ")
                 || upper.startsWith("USE\t")
                 || upper.equals("USE")
-                || upper.startsWith("SELECT @@");
+                || upper.startsWith("SELECT @@")
+                || upper.startsWith("DROP DATABASE")
+                || upper.startsWith("CREATE DATABASE")
+                || upper.startsWith("ALTER DATABASE")
+                || upper.startsWith("DROP SCHEMA")
+                || upper.startsWith("CREATE SCHEMA")
+                || trimmed.contains("`");
     }
 
     static String stripLeadingComments(String sql) {
