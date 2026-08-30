@@ -2,9 +2,11 @@ package io.opendrs.migration.api;
 
 import io.opendrs.common.api.Response;
 import io.opendrs.migration.api.request.CreateMigrationTaskRequest;
+import io.opendrs.migration.api.response.MigrationPrecheckResponse;
 import io.opendrs.migration.api.response.MigrationStatusResponse;
 import io.opendrs.migration.api.response.MigrationTaskResponse;
 import io.opendrs.migration.api.response.MigrationTaskSummary;
+import io.opendrs.migration.service.MigrationPrecheckService;
 import io.opendrs.migration.service.MigrationTaskService;
 import jakarta.validation.Valid;
 import java.util.List;
@@ -21,9 +23,11 @@ import org.springframework.web.bind.annotation.RestController;
 public class MigrationTaskController {
 
     private final MigrationTaskService taskService;
+    private final MigrationPrecheckService precheckService;
 
-    public MigrationTaskController(MigrationTaskService taskService) {
+    public MigrationTaskController(MigrationTaskService taskService, MigrationPrecheckService precheckService) {
         this.taskService = taskService;
+        this.precheckService = precheckService;
     }
 
     @PostMapping
@@ -44,6 +48,11 @@ public class MigrationTaskController {
     @GetMapping("/{id}/status")
     public Response<MigrationStatusResponse> status(@PathVariable Long id) {
         return Response.success(taskService.status(id));
+    }
+
+    @PostMapping("/{id}/precheck")
+    public Response<MigrationPrecheckResponse> precheck(@PathVariable Long id) {
+        return Response.success(precheckService.precheck(id));
     }
 
     @PostMapping("/{id}/start")

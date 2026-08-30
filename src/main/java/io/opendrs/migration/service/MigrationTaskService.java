@@ -94,9 +94,7 @@ public class MigrationTaskService {
     public MigrationStatusResponse start(Long id) {
         MigrationTask prepared = transactionTemplate.execute(status -> {
             MigrationTask task = requireTask(id);
-            if (task.getState() != TaskState.CREATED
-                    && task.getState() != TaskState.STOPPED
-                    && task.getState() != TaskState.FAILED) {
+            if (!task.getState().canStart()) {
                 throw AppException.of(
                         ErrorCode.TASK_CONFLICT,
                         "Task " + id + " cannot be started from state " + task.getState());
@@ -125,11 +123,7 @@ public class MigrationTaskService {
     @Transactional
     public void delete(Long id) {
         MigrationTask task = requireTask(id);
-        if (task.getState() == TaskState.STARTING
-                || task.getState() == TaskState.SCHEMA_SNAPSHOTTING
-                || task.getState() == TaskState.FULL
-                || task.getState() == TaskState.INCREMENTAL
-                || task.getState() == TaskState.STOPPING) {
+        if (task.getState().isRunning()) {
             throw AppException.of(
                     ErrorCode.TASK_CONFLICT,
                     "Task " + id + " is " + task.getState() + " and must be stopped before delete");

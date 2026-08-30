@@ -2,11 +2,14 @@ package io.opendrs.migration.service;
 
 import io.opendrs.common.error.AppException;
 import io.opendrs.common.error.ErrorCode;
+import io.opendrs.jdbc.metadata.Table;
+import io.opendrs.jdbc.metadata.TableRef;
 import io.opendrs.migration.api.request.SchemaMapping;
 import io.opendrs.migration.api.request.SchemaObject;
 import io.opendrs.migration.api.request.TableMapping;
 import io.opendrs.migration.api.request.TableMappings;
 import io.opendrs.migration.api.request.TableSelection;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -67,22 +70,46 @@ public class MappingValidator {
     }
 
     public String resolve(TableSelection tables, String sourceSchema, String sourceTable) {
+        TableRef ref = resolveRef(tables, sourceSchema, sourceTable);
+        return ref.schema() + "." + ref.table();
+    }
+
+    public TableRef resolveRef(TableSelection tables, String sourceSchema, String sourceTable) {
         TableMappings mappings = tables == null ? null : tables.mappings();
         if (mappings != null && mappings.tables() != null) {
             for (TableMapping mapping : mappings.tables()) {
                 if (sourceSchema.equals(mapping.sourceSchema()) && sourceTable.equals(mapping.sourceTable())) {
-                    return mapping.targetSchema() + "." + mapping.targetTable();
+                    return new TableRef(mapping.targetSchema(), mapping.targetTable());
                 }
             }
         }
         if (mappings != null && mappings.schema() != null) {
             for (SchemaMapping mapping : mappings.schema()) {
                 if (sourceSchema.equals(mapping.source())) {
-                    return mapping.target() + "." + sourceTable;
+                    return new TableRef(mapping.target(), sourceTable);
                 }
             }
         }
-        return sourceSchema + "." + sourceTable;
+        return new TableRef(sourceSchema, sourceTable);
+    }
+
+    /**
+     * Applies schema/table mappings onto expanded source tables. Duplicate target coordinates
+     * use the same conflict rule as {@link #validate}.
+     */
+    public List<Table> mapTargets(TableSelection selection, List<Table> sourceTables) {
+        List<Table> safe = sourceTables == null ? List.of() : sourceTables;
+        Map<TableRef, Table> targets = new LinkedHashMap<>();
+        for (Table source : safe) {
+            TableRef mapped = resolveRef(selection, source.ref().schema(), source.ref().table());
+            if (targets.containsKey(mapped)) {
+                throw AppException.of(
+                        ErrorCode.PARAM_INVALID,
+                        "Two tables map to the same target: " + mapped.schema() + "." + mapped.table());
+            }
+            targets.put(mapped, new Table(mapped));
+        }
+        return new ArrayList<>(targets.values());
     }
 
     private Map<String, String> validateSchemaMappings(

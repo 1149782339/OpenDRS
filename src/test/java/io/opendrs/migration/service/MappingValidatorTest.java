@@ -5,6 +5,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import io.opendrs.common.error.AppException;
 import io.opendrs.common.error.ErrorCode;
+import io.opendrs.jdbc.metadata.Table;
+import io.opendrs.jdbc.metadata.TableRef;
 import io.opendrs.migration.api.request.SchemaMapping;
 import io.opendrs.migration.api.request.SchemaObject;
 import io.opendrs.migration.api.request.TableMapping;
@@ -193,6 +195,37 @@ class MappingValidatorTest {
 
         validator.validate(tables);
         assertEquals("HR.EMPLOYEES", validator.resolve(tables, "HR", "EMPLOYEES"));
+        assertEquals(new TableRef("HR", "EMPLOYEES"), validator.resolveRef(tables, "HR", "EMPLOYEES"));
+    }
+
+    @Test
+    void mapTargetsAppliesMappingsAndRejectsCollision() {
+        TableSelection tables = selection(
+                List.of(new SchemaObject("HR", List.of("EMPLOYEES", "DEPARTMENTS"), null, null)),
+                new TableMappings(
+                        List.of(new SchemaMapping("HR", "hr")),
+                        List.of(new TableMapping("HR", "EMPLOYEES", "hr", "emp"))));
+
+        List<Table> targets = validator.mapTargets(
+                tables,
+                List.of(new Table(new TableRef("HR", "EMPLOYEES")), new Table(new TableRef("HR", "DEPARTMENTS"))));
+        assertEquals(new TableRef("hr", "emp"), targets.get(0).ref());
+        assertEquals(new TableRef("hr", "DEPARTMENTS"), targets.get(1).ref());
+
+        TableSelection colliding = selection(
+                List.of(new SchemaObject("HR", List.of("A", "B"), null, null)),
+                new TableMappings(
+                        null,
+                        List.of(
+                                new TableMapping("HR", "A", "hr", "x"),
+                                new TableMapping("HR", "B", "hr", "x"))));
+        AppException ex = assertThrows(
+                AppException.class,
+                () -> validator.mapTargets(
+                        colliding,
+                        List.of(new Table(new TableRef("HR", "A")), new Table(new TableRef("HR", "B")))));
+        assertEquals(ErrorCode.PARAM_INVALID, ex.getCode());
+        assertEquals("Two tables map to the same target: hr.x", ex.getMessage());
     }
 
     private static TableSelection selection(List<SchemaObject> objects, TableMappings mappings) {
