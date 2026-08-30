@@ -3,7 +3,7 @@ package io.opendrs.jdbc;
 public interface JdbcConnection extends AutoCloseable {
 
     static JdbcConnection open(io.opendrs.migration.domain.ConnectionInfo info) {
-        return JdbcConnections.open(info);
+        return new JdbcConnectionFactory().open(info);
     }
 
     io.opendrs.migration.domain.DbType type();
@@ -15,6 +15,10 @@ public interface JdbcConnection extends AutoCloseable {
     java.sql.Connection unwrap();
 
     <T> T queryOne(String sql, RowMapper<T> mapper);
+
+    <T> java.util.List<T> queryList(String sql, RowMapper<T> mapper);
+
+    <T> java.util.List<T> queryList(String sql, RowMapper<T> mapper, Object... params);
 
     void execute(String sql);
 

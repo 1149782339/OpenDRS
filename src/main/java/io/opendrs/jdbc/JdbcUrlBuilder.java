@@ -21,6 +21,7 @@ public final class JdbcUrlBuilder {
         return switch (info.getType()) {
             case MYSQL -> mysqlUrl(info);
             case ORACLE -> oracleUrl(info);
+            case POSTGRESQL -> postgresqlUrl(info);
         };
     }
 
@@ -56,6 +57,27 @@ public final class JdbcUrlBuilder {
         return "jdbc:oracle:thin:@//" + info.getHost() + ":" + info.getPort() + "/" + info.getDbName();
     }
 
+    private static String postgresqlUrl(ConnectionInfo info) {
+        String base = "jdbc:postgresql://" + info.getHost() + ":" + info.getPort() + "/" + info.getDbName();
+        List<String> query = new ArrayList<>();
+        Object sslmode = extraValue(info, "sslmode");
+        if (sslmode != null && !String.valueOf(sslmode).isBlank()) {
+            query.add("sslmode=" + encode(String.valueOf(sslmode)));
+        }
+        Object ssl = extraValue(info, "ssl");
+        if (ssl != null) {
+            query.add("ssl=" + asBoolean(ssl));
+        }
+        Object currentSchema = extraValue(info, "currentSchema");
+        if (currentSchema != null && !String.valueOf(currentSchema).isBlank()) {
+            query.add("currentSchema=" + encode(String.valueOf(currentSchema)));
+        }
+        if (query.isEmpty()) {
+            return base;
+        }
+        return base + "?" + String.join("&", query);
+    }
+
     static Object extraValue(ConnectionInfo info, String key) {
         Map<String, Object> extra = info.getExtra();
         if (extra == null) {
@@ -64,7 +86,7 @@ public final class JdbcUrlBuilder {
         return extra.get(key);
     }
 
-    static String extraString(ConnectionInfo info, String key) {
+    public static String extraString(ConnectionInfo info, String key) {
         Object value = extraValue(info, key);
         return value == null ? null : String.valueOf(value);
     }
