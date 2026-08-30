@@ -15,11 +15,12 @@
     <artifactId>opendrs</artifactId>
     <version>0.1.0-SNAPSHOT</version>
     <name>opendrs</name>
-    <description>OpenDRS — open data replication service (v1 API skeleton)</description>
+    <description>OpenDRS — open data replication service (v1 CDC path)</description>
 
     <properties>
         <java.version>21</java.version>
         <mybatis-spring-boot.version>4.1.0</mybatis-spring-boot.version>
+        <debezium.version>3.6.1.Final</debezium.version>
     </properties>
 
     <dependencies>
@@ -66,6 +67,22 @@
         </dependency>
 
         <dependency>
+            <groupId>io.debezium</groupId>
+            <artifactId>debezium-api</artifactId>
+            <version>${debezium.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.debezium</groupId>
+            <artifactId>debezium-embedded</artifactId>
+            <version>${debezium.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.debezium</groupId>
+            <artifactId>debezium-connector-mysql</artifactId>
+            <version>${debezium.version}</version>
+        </dependency>
+
+        <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-webmvc-test</artifactId>
             <scope>test</scope>
@@ -96,6 +113,16 @@
             <artifactId>h2</artifactId>
             <scope>test</scope>
         </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers-mysql</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers-junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>
@@ -108,7 +135,15 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <configuration>
-                    <forkedProcessExitTimeoutInSeconds>5</forkedProcessExitTimeoutInSeconds>
+                    <!-- *IT is included here so `mvn test` runs the MySQL binlog IT when Docker works. -->
+                    <includes>
+                        <include>**/*Test.java</include>
+                        <include>**/*IT.java</include>
+                    </includes>
+                    <forkedProcessExitTimeoutInSeconds>30</forkedProcessExitTimeoutInSeconds>
+                    <environmentVariables>
+                        <TESTCONTAINERS_RYUK_DISABLED>true</TESTCONTAINERS_RYUK_DISABLED>
+                    </environmentVariables>
                 </configuration>
             </plugin>
         </plugins>

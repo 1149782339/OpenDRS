@@ -3,7 +3,7 @@ package io.opendrs.migration.domain;
 import java.time.Instant;
 
 /**
- * 预留给后续 Debezium DatabaseHistory。v1 不写入。
+ * Row in {@code debezium_schema_history} for {@code TaskSchemaHistory}.
  */
 public class DebeziumSchemaHistory {
 

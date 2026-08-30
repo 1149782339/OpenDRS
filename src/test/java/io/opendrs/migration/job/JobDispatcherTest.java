@@ -21,6 +21,7 @@ class JobDispatcherTest {
 
     private MigrationTaskMapper taskMapper;
     private TaskJobRegistry registry;
+    private TaskJobFactory factory;
     private ThreadPoolTaskExecutor executor;
     private JobDispatcher dispatcher;
 
@@ -28,8 +29,13 @@ class JobDispatcherTest {
     void setUp() {
         taskMapper = Mockito.mock(MigrationTaskMapper.class);
         registry = Mockito.mock(TaskJobRegistry.class);
+        factory = Mockito.mock(TaskJobFactory.class);
         executor = Mockito.mock(ThreadPoolTaskExecutor.class);
-        dispatcher = new JobDispatcher(taskMapper, registry, executor);
+        when(factory.create(any(MigrationTask.class))).thenAnswer(invocation -> {
+            MigrationTask task = invocation.getArgument(0);
+            return new TaskJob(task.getId(), task.getMode(), taskMapper, registry);
+        });
+        dispatcher = new JobDispatcher(taskMapper, registry, factory, executor);
     }
 
     @Test

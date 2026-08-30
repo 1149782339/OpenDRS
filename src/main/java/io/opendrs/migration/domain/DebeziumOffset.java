@@ -3,7 +3,7 @@ package io.opendrs.migration.domain;
 import java.time.Instant;
 
 /**
- * 预留给后续 Debezium OffsetBackingStore。v1 不写入。
+ * Row in {@code debezium_offset} for {@code TaskOffsetBackingStore}.
  */
 public class DebeziumOffset {
 

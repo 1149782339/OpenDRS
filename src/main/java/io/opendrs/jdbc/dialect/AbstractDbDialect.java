@@ -14,7 +14,9 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -54,6 +56,17 @@ public abstract class AbstractDbDialect implements DbDialect {
     @Override
     public String testSql() {
         return "SELECT 1";
+    }
+
+    @Override
+    public Map<String, String> debeziumSourceFields(ConnectionInfo info) {
+        Map<String, String> fields = new LinkedHashMap<>();
+        fields.put("database.hostname", info.getHost());
+        fields.put("database.port", String.valueOf(info.getPort()));
+        fields.put("database.user", info.getUsername());
+        fields.put("database.password", info.getPassword() == null ? "" : info.getPassword());
+        fields.put("database.dbname", info.getDbName());
+        return fields;
     }
 
     @Override

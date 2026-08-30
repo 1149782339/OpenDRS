@@ -21,7 +21,7 @@ import org.springframework.stereotype.Component;
  * {@link DbDialect#listTables} only applies exact {@link TableRef} excludes.
  */
 @Component
-class TableSelectionExpander {
+public class TableSelectionExpander {
 
     private final JdbcConnectionFactory factory;
 
