@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="io.opendrs.migration.mapper.MigrationTaskMapper">
+
+    <resultMap id="MigrationTaskMap" type="io.opendrs.migration.domain.MigrationTask">
+        <id property="id" column="id"/>
+        <result property="name" column="name"/>
+        <result property="mode" column="mode"/>
+        <result property="state" column="state"/>
+        <result property="sourceConnectionId" column="source_connection_id"/>
+        <result property="targetConnectionId" column="target_connection_id"/>
+        <result property="tablesJson" column="tables_json"
+                typeHandler="io.opendrs.migration.mapper.type.TableSelectionTypeHandler"/>
+        <result property="optionsJson" column="options_json"
+                typeHandler="io.opendrs.migration.mapper.type.MigrationOptionsTypeHandler"/>
+        <result property="tablesTotal" column="tables_total"/>
+        <result property="tablesDone" column="tables_done"/>
+        <result property="rowsDone" column="rows_done"/>
+        <result property="lagMs" column="lag_ms"/>
+        <result property="errorMessage" column="error_message"/>
+        <result property="createdAt" column="created_at"/>
+        <result property="updatedAt" column="updated_at"/>
+    </resultMap>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO migration_task
+            (name, mode, state, source_connection_id, target_connection_id, tables_json, options_json)
+        VALUES (#{name}, #{mode}, #{state}, #{sourceConnectionId}, #{targetConnectionId},
+                #{tablesJson, typeHandler=io.opendrs.migration.mapper.type.TableSelectionTypeHandler},
+                #{optionsJson, typeHandler=io.opendrs.migration.mapper.type.MigrationOptionsTypeHandler})
+    </insert>
+
+    <select id="findById" resultMap="MigrationTaskMap">
+        SELECT id, name, mode, state, source_connection_id, target_connection_id,
+               tables_json, options_json, tables_total, tables_done, rows_done, lag_ms,
+               error_message, created_at, updated_at
+        FROM migration_task
+        WHERE id = #{id}
+    </select>
+
+    <select id="findByName" resultMap="MigrationTaskMap">
+        SELECT id, name, mode, state, source_connection_id, target_connection_id,
+               tables_json, options_json, tables_total, tables_done, rows_done, lag_ms,
+               error_message, created_at, updated_at
+        FROM migration_task
+        WHERE name = #{name}
+    </select>
+
+    <select id="findAll" resultMap="MigrationTaskMap">
+        SELECT id, name, mode, state, source_connection_id, target_connection_id,
+               tables_json, options_json, tables_total, tables_done, rows_done, lag_ms,
+               error_message, created_at, updated_at
+        FROM migration_task
+        ORDER BY id
+    </select>
+
+    <update id="compareAndSetState">
+        UPDATE migration_task
+        SET state = #{next},
+            error_message = NULL,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = #{id}
+          AND state = #{expected}
+    </update>
+
+    <update id="updateState">
+        UPDATE migration_task
+        SET state = #{state},
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = #{id}
+    </update>
+
+    <update id="markFailed">
+        UPDATE migration_task
+        SET state = 'FAILED',
+            error_message = #{errorMessage},
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = #{id}
+    </update>
+
+    <delete id="deleteById">
+        DELETE FROM migration_task WHERE id = #{id}
+    </delete>
+</mapper>

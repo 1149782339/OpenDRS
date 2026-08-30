@@ -1,0 +1,18 @@
+spring:
+  application:
+    name: opendrs
+  datasource:
+    url: jdbc:mysql://${OPENDRS_DB_HOST:localhost}:${OPENDRS_DB_PORT:3306}/${OPENDRS_DB_NAME:opendrs}?useSSL=false&allowPublicKeyRetrieval=true&characterEncoding=utf8
+    username: ${OPENDRS_DB_USER:opendrs}
+    password: ${OPENDRS_DB_PASSWORD:opendrs}
+  flyway:
+    enabled: true
+
+mybatis:
+  mapper-locations: classpath:mapper/*.xml
+  type-handlers-package: io.opendrs.migration.mapper.type
+  configuration:
+    map-underscore-to-camel-case: true
+
+server:
+  port: ${OPENDRS_PORT:8080}
