@@ -1,6 +1,11 @@
 # OpenDRS
 
-Open data replication service (DRS). This repository ships the **v1 API skeleton** plus the **incremental CDC path**: persist migration tasks with MyBatis, validate table mappings, run a **synchronous precheck**, drive a **start/stop** coordinator via `job_phase` + `job_state`, and run **two Debezium Engine rounds** (schema snapshot, then streaming). Full dump is a **stub** (log the offset JSON only). This batch does **not** write to PostgreSQL.
+Open data replication service (DRS). This repository is a **Maven multi-module** project:
+
+- `opendrs-sink` — JDBC applier, PostgreSQL target dialect, MySQL→PostgreSQL ANTLR DDL converter (no Spring, no Kafka Connect plugin).
+- `opendrs-service` — Spring Boot app (`io.opendrs.OpenDRSApplication`). Incremental CDC applies Debezium events onto PostgreSQL through the sink.
+
+The service persists migration tasks with MyBatis, validates table mappings, runs a **synchronous precheck**, drives a **start/stop** coordinator via `job_phase` + `job_state`, and runs **two Debezium Engine rounds** (schema snapshot that creates target tables, then streaming apply). Full dump is a **stub** (log the offset JSON only).
 
 ## Requirements
 
@@ -31,7 +36,7 @@ Default MySQL credentials match the application defaults (`opendrs` / `opendrs`,
 Then:
 
 ```bash
-mvn spring-boot:run
+mvn -pl opendrs-service -am spring-boot:run
 ```
 
 The service listens on `http://localhost:8080`.
@@ -326,9 +331,9 @@ state:  null    → (null / FAILED) → STARTING → RUNNING → STOPPING → ST
 - **Dispatcher** (`@Scheduled` ~2s, single JVM): `SELECT` rows with `job_state IN (STARTING, RUNNING)` that have no live `TaskJobRegistry` entry → `putIfAbsent` then submit the coordinator. Re-reads after register: if `STOPPED`, does not start. Never spawns for `STOPPING`/`STOPPED`/`FAILED`/`NULL`.
 - **Boot**: any `STOPPING` → `STOPPED` (do not resume those). `RUNNING` with no live thread is respawned by the dispatcher (resume stub).
 - **Thread after attach**: `STARTING`→`RUNNING`. Then:
-  1. **SCHEMA_SNAPSHOT** — first `DebeziumEngine` (MySQL connector, custom Snapshotter: schema yes / data no / stream no; equivalent to `snapshot.mode=no_data`). AsyncEmbeddedEngine still polls after `shouldStream=false`, so this round enables the Debezium **sink notification** channel and `SchemaSnapshotStopConsumer` stops the Engine on Initial Snapshot `COMPLETED`. Offset + schema history go to the metadata tables. CAS `job_phase=FULL`. On failure: `job_state=FAILED`, phase stays `SCHEMA_SNAPSHOT`.
+  1. **SCHEMA_SNAPSHOT** — first `DebeziumEngine` (MySQL connector, custom Snapshotter: schema yes / data no / stream no; equivalent to `snapshot.mode=no_data`). AsyncEmbeddedEngine still polls after `shouldStream=false`, so this round enables the Debezium **sink notification** channel and `SchemaSnapshotStopConsumer` stops the Engine on Initial Snapshot `COMPLETED`. Schema-change events are converted (MySQL→PG) and executed on the target so tables exist before DML (Postgres precheck requires target tables **must not** already exist). If snapshot events are not enough to CREATE a table, `SHOW CREATE TABLE` on the source is converted as a fallback. Offset + schema history go to the metadata tables. CAS `job_phase=FULL`. On failure: `job_state=FAILED`, phase stays `SCHEMA_SNAPSHOT`.
   2. **FULL** (stub) — `log.info` this task's offset JSON (`file` / `pos` / `gtids`). No SELECT/INSERT dump. CAS `job_phase=INCREMENTAL` when the mode includes incremental.
-  3. **INCREMENTAL** — second Engine, **same stores** so the binlog offset is reused (no second schema snapshot). `ChangeConsumer` logs `SourceRecord` (topic, key, sourceOffset, op) only — **no JDBC apply to Postgres**. Blocks until `STOPPING`: `engine.stop()` / `close()`, then `STOPPED` and `registry.remove`.
+  3. **INCREMENTAL** — second Engine, **same stores** so the binlog offset is reused (no second schema snapshot). `SinkApplyChangeConsumer` converts Debezium `SourceRecord`s and applies them through `opendrs-sink` (`JdbcApplier` + PostgreSQL upsert). Blocks until `STOPPING`: `engine.stop()` / `close()`, then `STOPPED` and `registry.remove`.
 - **Start** (`STOPPED`/`FAILED` → `STARTING`, phase unchanged so resume stays on `FULL`/`INCREMENTAL`). Reject `null` (not prechecked), `STARTING`, `RUNNING`, `STOPPING`. Precheck-failed (`PRECHECKING`+`FAILED`) cannot start.
 - **Stop**: `STARTING`→`STOPPED` directly. `RUNNING`→`STOPPING` + `job.requestStop()` which **stops the running Engine** (schema or incremental). Thread then `STOPPED` and `registry.remove`. `STOPPING`/`STOPPED` idempotent. `FAILED`/`null` → `1003`.
 - **Delete**: `1003` if `jobState` is `STARTING`/`RUNNING`/`STOPPING`, or phase `PRECHECKING` with `jobState` null.
@@ -359,14 +364,17 @@ state:  null    → (null / FAILED) → STARTING → RUNNING → STOPPING → ST
 mvn -q test
 ```
 
+From the reactor root this runs `opendrs-sink` then `opendrs-service`.
+
 Uses in-memory H2 (MySQL compatibility mode) with a Flyway schema that still names tables `debezium_offset` / `debezium_schema_history`. Connection test APIs are mocked in CI (`JdbcConnectionFactory`); no live Oracle/MySQL is required. TaskJob CDC phases are covered with a **fake Engine**; offset/history stores run against H2.
 
 `MysqlBinlogCdcIT` is a **Testcontainers** MySQL 8.0 binlog test (not the metadata `docker-compose`). It is included in `mvn test` (`*IT` via Surefire). When Docker is available it starts `mysql:8.0` with ROW/FULL binlog, runs the production SCHEMA_SNAPSHOT Engine until it exits (offset + schema history), then an INCREMENTAL Engine and asserts a CDC `SourceRecord` for a JDBC insert. When Docker is missing, JUnit `@EnabledIfDockerAvailable` / `@Testcontainers(disabledWithoutDocker = true)` skips it.
 
+`MysqlToPostgresCdcIT` starts MySQL 8 + PostgreSQL. SCHEMA_SNAPSHOT must CREATE the mapped target table; INCREMENTAL applies a MySQL INSERT and asserts the row on Postgres. Also skipped without Docker.
+
 ## Out of scope (this batch)
 
 - Parallel SELECT/INSERT dump
-- JDBC apply of CDC events to PostgreSQL
 - Oracle source connector / OffsetCapture SQL
 - Quartz
 - Connection list / update
