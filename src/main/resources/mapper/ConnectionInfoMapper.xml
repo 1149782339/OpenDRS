@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="io.opendrs.migration.mapper.ConnectionInfoMapper">
+
+    <resultMap id="ConnectionInfoMap" type="io.opendrs.migration.domain.ConnectionInfo">
+        <id property="id" column="id"/>
+        <result property="name" column="name"/>
+        <result property="type" column="type"/>
+        <result property="host" column="host"/>
+        <result property="port" column="port"/>
+        <result property="dbName" column="db_name"/>
+        <result property="username" column="username"/>
+        <result property="password" column="password"/>
+        <result property="extraJson" column="extra_json"
+                typeHandler="io.opendrs.migration.mapper.type.JsonMapTypeHandler"/>
+        <result property="createdAt" column="created_at"/>
+        <result property="updatedAt" column="updated_at"/>
+    </resultMap>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO connection_info (name, type, host, port, db_name, username, password, extra_json)
+        VALUES (#{name}, #{type}, #{host}, #{port}, #{dbName}, #{username}, #{password},
+                #{extraJson, typeHandler=io.opendrs.migration.mapper.type.JsonMapTypeHandler})
+    </insert>
+
+    <select id="findById" resultMap="ConnectionInfoMap">
+        SELECT id, name, type, host, port, db_name, username, password, extra_json, created_at, updated_at
+        FROM connection_info
+        WHERE id = #{id}
+    </select>
+
+    <select id="findByName" resultMap="ConnectionInfoMap">
+        SELECT id, name, type, host, port, db_name, username, password, extra_json, created_at, updated_at
+        FROM connection_info
+        WHERE name = #{name}
+    </select>
+</mapper>

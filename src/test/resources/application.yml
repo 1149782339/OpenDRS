@@ -1,0 +1,20 @@
+spring:
+  application:
+    name: opendrs
+  datasource:
+    url: jdbc:h2:mem:opendrs;MODE=MySQL;DB_CLOSE_DELAY=-1;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH
+    username: sa
+    password:
+    driver-class-name: org.h2.Driver
+  flyway:
+    enabled: true
+    locations: classpath:db/h2
+
+mybatis:
+  mapper-locations: classpath:mapper/*.xml
+  type-handlers-package: io.opendrs.migration.mapper.type
+  configuration:
+    map-underscore-to-camel-case: true
+
+server:
+  port: 0

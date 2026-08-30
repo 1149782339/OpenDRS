@@ -1,0 +1,22 @@
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: opendrs-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: opendrs
+      MYSQL_USER: opendrs
+      MYSQL_PASSWORD: opendrs
+    ports:
+      - "3306:3306"
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - opendrs-mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uopendrs", "-popendrs"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  opendrs-mysql-data:
