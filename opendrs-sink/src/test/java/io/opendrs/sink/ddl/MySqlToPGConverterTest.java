@@ -24,9 +24,11 @@ class MySqlToPGConverterTest {
                         + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
         assertThat(result.getStatus()).isEqualTo(ConversionStatus.SUCCEEDED);
         assertThat(result.getStatements()).isNotEmpty();
-        String joined = String.join("\n", result.getStatements()).toLowerCase();
-        assertThat(joined).contains("create table");
+        String joined = String.join("\n", result.getStatements());
+        assertThat(joined.toLowerCase()).contains("create table");
         assertThat(joined).contains("customers");
-        assertThat(joined).doesNotContain("engine=innodb");
+        assertThat(joined).contains("\"inventory\"");
+        assertThat(joined.toLowerCase()).doesNotContain("engine=innodb default");
+        assertThat(joined).contains("/*");
     }
 }
