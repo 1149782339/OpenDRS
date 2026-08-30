@@ -127,6 +127,7 @@ class MigrationTaskApiTest {
     @Test
     void deleteWhileRunningReturns1003() throws Exception {
         long id = createTask("running-delete", "FULL_AND_INCREMENTAL");
+        markPrechecked(id);
         mockMvc.perform(post(BASE + "/" + id + "/start"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(1000));
@@ -138,8 +139,15 @@ class MigrationTaskApiTest {
     }
 
     @Test
-    void startFromCreatedLaunchesJobPastStarting() throws Exception {
+    void startFromCreatedReturns1003ThenPrecheckedLaunchesJob() throws Exception {
         long id = createTask("start-created", "FULL_AND_INCREMENTAL");
+
+        mockMvc.perform(post(BASE + "/" + id + "/start"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(1003))
+                .andExpect(jsonPath("$.message").value("Task " + id + " cannot be started from state CREATED"));
+
+        markPrechecked(id);
 
         mockMvc.perform(post(BASE + "/" + id + "/start"))
                 .andExpect(status().isOk())
@@ -186,6 +194,7 @@ class MigrationTaskApiTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(1003));
 
+        markPrechecked(incrementalId);
         mockMvc.perform(post(BASE + "/" + incrementalId + "/start"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(1000));
@@ -196,6 +205,7 @@ class MigrationTaskApiTest {
                 .andExpect(jsonPath("$.code").value(1003));
 
         long fullOnlyId = createTask("lifecycle-full", "FULL_ONLY");
+        markPrechecked(fullOnlyId);
         mockMvc.perform(post(BASE + "/" + fullOnlyId + "/start"))
                 .andExpect(status().isOk());
         awaitState(fullOnlyId, Set.of(TaskState.STOPPED.name()));
@@ -214,6 +224,7 @@ class MigrationTaskApiTest {
     @Test
     void startWhileAlreadyRunningReturns1003() throws Exception {
         long id = createTask("double-start", "FULL_AND_INCREMENTAL");
+        markPrechecked(id);
         mockMvc.perform(post(BASE + "/" + id + "/start"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(1000));
@@ -222,6 +233,45 @@ class MigrationTaskApiTest {
         mockMvc.perform(post(BASE + "/" + id + "/start"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(1003));
+    }
+
+    @Test
+    void startFromFailedReturns1003() throws Exception {
+        long id = createTask("start-failed", "FULL_AND_INCREMENTAL");
+        taskMapper.markFailed(id, "previous failure");
+
+        mockMvc.perform(post(BASE + "/" + id + "/start"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(1003))
+                .andExpect(jsonPath("$.message").value("Task " + id + " cannot be started from state FAILED"));
+    }
+
+    @Test
+    void deleteWhilePrecheckingReturns1003() throws Exception {
+        long id = createTask("prechecking-delete", "FULL_AND_INCREMENTAL");
+        taskMapper.updateState(id, TaskState.PRECHECKING);
+
+        mockMvc.perform(delete(BASE + "/" + id))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(1003));
+        assertThat(taskMapper.findById(id)).isNotNull();
+    }
+
+    @Test
+    void deleteWhilePrecheckedIsAllowed() throws Exception {
+        long id = createTask("prechecked-delete", "FULL_AND_INCREMENTAL");
+        taskMapper.updateState(id, TaskState.PRECHECKED);
+
+        mockMvc.perform(delete(BASE + "/" + id))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(1000));
+        mockMvc.perform(get(BASE + "/" + id))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(1002));
+    }
+
+    private void markPrechecked(long id) {
+        taskMapper.updateState(id, TaskState.PRECHECKED);
     }
 
     private String awaitState(long id, Set<String> accepted) throws Exception {

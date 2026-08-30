@@ -146,11 +146,12 @@ Test success `data`: `{ "ok": true, "latencyMs": 12 }`.
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| `POST` | `/api/v1/migration/tasks` | Persist config + connections. State = `CREATED`. Does **not** auto-start. |
+| `POST` | `/api/v1/migration/tasks` | Persist config + connections. State = `CREATED`. Does **not** auto-precheck or auto-start. |
 | `GET` | `/api/v1/migration/tasks` | Summaries: id, name, mode, state, source.type, target.type, createdAt |
 | `GET` | `/api/v1/migration/tasks/{id}` | Detail VO |
 | `GET` | `/api/v1/migration/tasks/{id}/status` | State + progress columns + placeholder offset |
-| `POST` | `/api/v1/migration/tasks/{id}/start` | CAS → `STARTING`, launch coordinator job (not on the HTTP thread) |
+| `POST` | `/api/v1/migration/tasks/{id}/precheck` | Sync. CAS → `PRECHECKING`, expand tables, run source/target `DbPreCheck`. Success → `PRECHECKED`. Any failed `CheckResult` → `FAILED` but still HTTP 200 / code `1000` with `data.ok=false`. |
+| `POST` | `/api/v1/migration/tasks/{id}/start` | Allowed from `PRECHECKED` / `STOPPED` only. CAS → `STARTING`, launch coordinator job (not on the HTTP thread) |
 | `POST` | `/api/v1/migration/tasks/{id}/stop` | Stub: `1003` (stop is not implemented) |
 | `DELETE` | `/api/v1/migration/tasks/{id}` | Must not be running; clears `debezium_offset` / `debezium_schema_history` then the task |
 
@@ -235,14 +236,83 @@ Create is rejected with `1001 PARAM_INVALID` when:
 3. Cross-layer: schema map says `HR → hr` but a table in `HR` has `targetSchema != hr`. Same `targetSchema` with a renamed table is allowed.
 4. Every mapped schema/table must be in `objects`. Explicit `tables` lists must include the mapped table; `allTables` only needs the schema. A mapped table listed in `excludeTables` is a conflict.
 
+### Precheck
+
+`POST /api/v1/migration/tasks/{id}/precheck` is synchronous (not a `TaskJob` thread). No request body.
+
+Allowed states: `CREATED`, `FAILED`, `PRECHECKED` (re-run), and `PRECHECKING` (retry after a crash mid-request). Else `1003`. Missing task: `1002`. Missing `DbPreCheck` for the source or target type: `1001`.
+
+Flow:
+
+1. CAS `CREATED` / `FAILED` / `PRECHECKED` / `PRECHECKING` → `PRECHECKING`.
+2. Expand `tables.objects` (`allTables` / `tables` / `excludeTables`, including globs like `TMP_*`) to `List<Table>` **before** dialect precheck. `listTables` only applies exact `TableRef` excludes.
+3. Source: `MysqlPreCheck.precheckSource` (via `DbPreChecks`). Target: `PostgresPreCheck.precheckTarget` on mapped target `TableRef`s (`MappingValidator` rules; unmapped names stay).
+4. All `CheckResult.ok` → state `PRECHECKED`, `error_message` cleared.
+5. Any fail → state `FAILED`, `error_message` is a short summary. **Still** envelope `code=1000`. CDC/binlog/connect failures are `CheckResult`s, not `1001` / `1005`.
+
+Example success:
+
+```json
+{
+  "code": 1000,
+  "message": "success",
+  "data": {
+    "ok": true,
+    "state": "PRECHECKED",
+    "results": [
+      {
+        "ok": true,
+        "name": "schema_exists",
+        "message": "Schema exists: hr",
+        "table": { "schema": "hr", "table": "emp" }
+      },
+      {
+        "ok": true,
+        "name": "log_bin",
+        "message": "log_bin is ON",
+        "table": null
+      },
+      {
+        "ok": true,
+        "name": "table_absent",
+        "message": "Target table does not exist: hr.emp",
+        "table": { "schema": "hr", "table": "emp" }
+      }
+    ]
+  }
+}
+```
+
+Failed checks (still `code` 1000):
+
+```json
+{
+  "code": 1000,
+  "message": "success",
+  "data": {
+    "ok": false,
+    "state": "FAILED",
+    "results": [
+      {
+        "ok": false,
+        "name": "log_bin",
+        "message": "log_bin is not ON",
+        "table": null
+      }
+    ]
+  }
+}
+```
+
 ### State machine and start-only job
 
 ```
-CREATED → STARTING → SCHEMA_SNAPSHOTTING → FULL → INCREMENTAL → STOPPING → STOPPED
-                                      ↘ FAILED (any phase)
+CREATED → PRECHECKING → PRECHECKED → STARTING → SCHEMA_SNAPSHOTTING → FULL → INCREMENTAL → STOPPING → STOPPED
+                         ↘ FAILED (precheck or any later phase; retry precheck from FAILED)
 ```
 
-- **Start** allowed from `CREATED` / `STOPPED` / `FAILED` (else `1003`). CAS to `STARTING`, then `TaskJobRegistry` runs one `TaskJob` per task on a `ThreadPoolTaskExecutor` (not Tomcat).
+- **Precheck** is required before the first start. `PRECHECKING` is only in-flight during the HTTP request (a crash may leave it; the next precheck may retry).
+- **Start** allowed from `PRECHECKED` / `STOPPED` (else `1003`). `CREATED` and `FAILED` must precheck first. CAS to `STARTING`, then `TaskJobRegistry` runs one `TaskJob` per task on a `ThreadPoolTaskExecutor` (not Tomcat).
 - Job stubs (no real Debezium / dump):
   1. `SCHEMA_SNAPSHOTTING` — TODO first-round Engine (offset + schema history)
   2. `FULL` if `FULL_AND_INCREMENTAL` or `FULL_ONLY` — TODO parallel dump
@@ -250,7 +320,7 @@ CREATED → STARTING → SCHEMA_SNAPSHOTTING → FULL → INCREMENTAL → STOPPI
   4. `FULL_ONLY` after the FULL stub → `STOPPED` and the thread exits
 - Job exceptions set `FAILED` + `error_message`.
 - **Stop** is a stub (`1003`). `STOPPING` is not wired.
-- **Delete** allowed in `STOPPED` / `CREATED` / `FAILED`. `STARTING` / `SCHEMA_SNAPSHOTTING` / `FULL` / `INCREMENTAL` (and `STOPPING`) return `1003`.
+- **Delete** allowed in `STOPPED` / `CREATED` / `PRECHECKED` / `FAILED`. `PRECHECKING` / `STARTING` / `SCHEMA_SNAPSHOTTING` / `FULL` / `INCREMENTAL` (and `STOPPING`) return `1003`.
 
 In-memory registry is runtime only; MySQL is the source of truth for state.
 
