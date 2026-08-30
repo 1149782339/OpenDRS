@@ -1,0 +1,37 @@
+-- Split mixed task state into job_phase (pipeline) and job_state (thread lifecycle).
+
+ALTER TABLE migration_task
+  ADD COLUMN job_phase VARCHAR(32) NULL AFTER mode,
+  ADD COLUMN job_state VARCHAR(32) NULL AFTER job_phase;
+
+UPDATE migration_task SET
+  job_phase = CASE state
+    WHEN 'CREATED' THEN 'CREATED'
+    WHEN 'PRECHECKING' THEN 'PRECHECKING'
+    WHEN 'PRECHECKED' THEN 'PRECHECKED'
+    WHEN 'STARTING' THEN 'PRECHECKED'
+    WHEN 'SCHEMA_SNAPSHOTTING' THEN 'SCHEMA_SNAPSHOT'
+    WHEN 'FULL' THEN 'FULL'
+    WHEN 'INCREMENTAL' THEN 'INCREMENTAL'
+    WHEN 'STOPPING' THEN 'INCREMENTAL'
+    WHEN 'STOPPED' THEN 'INCREMENTAL'
+    WHEN 'FAILED' THEN 'PRECHECKED'
+    ELSE 'CREATED'
+  END,
+  job_state = CASE state
+    WHEN 'STARTING' THEN 'STARTING'
+    WHEN 'SCHEMA_SNAPSHOTTING' THEN 'RUNNING'
+    WHEN 'FULL' THEN 'RUNNING'
+    WHEN 'INCREMENTAL' THEN 'RUNNING'
+    WHEN 'STOPPING' THEN 'STOPPING'
+    WHEN 'STOPPED' THEN 'STOPPED'
+    WHEN 'FAILED' THEN 'FAILED'
+    ELSE NULL
+  END;
+
+ALTER TABLE migration_task
+  MODIFY COLUMN job_phase VARCHAR(32) NOT NULL;
+
+ALTER TABLE migration_task DROP INDEX idx_task_state;
+ALTER TABLE migration_task DROP COLUMN state;
+ALTER TABLE migration_task ADD KEY idx_task_job_state (job_state);

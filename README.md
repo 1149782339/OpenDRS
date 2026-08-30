@@ -1,6 +1,6 @@
 # OpenDRS
 
-Open data replication service (DRS). This repository currently ships the **v1 API skeleton**: persist migration tasks with MyBatis, validate table mappings, and run a **start-only** coordinator job that stubs dump/CDC phases. Full dump, Debezium Engine, and job stop are **not** implemented yet.
+Open data replication service (DRS). This repository ships the **v1 API skeleton**: persist migration tasks with MyBatis, validate table mappings, run a **synchronous precheck**, and drive a **start/stop** coordinator stub via `job_phase` + `job_state`. Full dump and Debezium Engine are **not** implemented yet.
 
 ## Requirements
 
@@ -146,14 +146,14 @@ Test success `data`: `{ "ok": true, "latencyMs": 12 }`.
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| `POST` | `/api/v1/migration/tasks` | Persist config + connections. State = `CREATED`. Does **not** auto-precheck or auto-start. |
-| `GET` | `/api/v1/migration/tasks` | Summaries: id, name, mode, state, source.type, target.type, createdAt |
-| `GET` | `/api/v1/migration/tasks/{id}` | Detail VO |
-| `GET` | `/api/v1/migration/tasks/{id}/status` | State + progress columns + placeholder offset |
-| `POST` | `/api/v1/migration/tasks/{id}/precheck` | Sync. CAS → `PRECHECKING`, expand tables, run source/target `DbPreCheck`. Success → `PRECHECKED`. Any failed `CheckResult` → `FAILED` but still HTTP 200 / code `1000` with `data.ok=false`. |
-| `POST` | `/api/v1/migration/tasks/{id}/start` | Allowed from `PRECHECKED` / `STOPPED` only. CAS → `STARTING`, launch coordinator job (not on the HTTP thread) |
-| `POST` | `/api/v1/migration/tasks/{id}/stop` | Stub: `1003` (stop is not implemented) |
-| `DELETE` | `/api/v1/migration/tasks/{id}` | Must not be running; clears `debezium_offset` / `debezium_schema_history` then the task |
+| `POST` | `/api/v1/migration/tasks` | Persist config + connections. `jobPhase=CREATED`, `jobState=null`. Does **not** auto-precheck. |
+| `GET` | `/api/v1/migration/tasks` | Summaries: id, name, mode, jobPhase, jobState, source.type, target.type, createdAt |
+| `GET` | `/api/v1/migration/tasks/{id}` | Detail VO (`jobPhase` + `jobState`) |
+| `GET` | `/api/v1/migration/tasks/{id}/status` | jobPhase + jobState + progress + placeholder offset |
+| `POST` | `/api/v1/migration/tasks/{id}/precheck` | Sync. Phase `CREATED`→`PRECHECKING`→`PRECHECKED`. Success also sets `jobState=STARTING` (auto-start). Fail: phase stays `PRECHECKING`, `jobState=FAILED`. HTTP 200 / `code` 1000 even when `data.ok=false`. |
+| `POST` | `/api/v1/migration/tasks/{id}/start` | CAS `jobState` `STOPPED`/`FAILED` → `STARTING` (phase unchanged). Reject `null` / `STARTING` / `RUNNING` / `STOPPING` (`1003`). Dispatcher attaches the thread. |
+| `POST` | `/api/v1/migration/tasks/{id}/stop` | `STARTING`→`STOPPED` (no `STOPPING`). `RUNNING`→`STOPPING` then the thread goes `STOPPED`. `STOPPING`/`STOPPED` idempotent. `FAILED`/`null` → `1003`. |
+| `DELETE` | `/api/v1/migration/tasks/{id}` | `1003` if `jobState` is `STARTING`/`RUNNING`/`STOPPING` (or in-flight `PRECHECKING`). |
 
 ### Create example
 
@@ -238,17 +238,17 @@ Create is rejected with `1001 PARAM_INVALID` when:
 
 ### Precheck
 
-`POST /api/v1/migration/tasks/{id}/precheck` is synchronous (not a `TaskJob` thread). No request body.
+`POST /api/v1/migration/tasks/{id}/precheck` is synchronous (`MigrationPrecheckService`, not a `TaskJob` thread). No request body.
 
-Allowed states: `CREATED`, `FAILED`, `PRECHECKED` (re-run), and `PRECHECKING` (retry after a crash mid-request). Else `1003`. Missing task: `1002`. Missing `DbPreCheck` for the source or target type: `1001`.
+Allowed when `jobState` is not in-flight (`STARTING`/`RUNNING`/`STOPPING`) and `jobPhase` is `CREATED` / `PRECHECKING` / `PRECHECKED`. Else `1003`. Missing task: `1002`. Missing `DbPreCheck` for the source or target type: `1001`.
 
 Flow:
 
-1. CAS `CREATED` / `FAILED` / `PRECHECKED` / `PRECHECKING` → `PRECHECKING`.
+1. CAS phase → `PRECHECKING`, `jobState` → `null`.
 2. Expand `tables.objects` (`allTables` / `tables` / `excludeTables`, including globs like `TMP_*`) to `List<Table>` **before** dialect precheck. `listTables` only applies exact `TableRef` excludes.
 3. Source: `MysqlPreCheck.precheckSource` (via `DbPreChecks`). Target: `PostgresPreCheck.precheckTarget` on mapped target `TableRef`s (`MappingValidator` rules; unmapped names stay).
-4. All `CheckResult.ok` → state `PRECHECKED`, `error_message` cleared.
-5. Any fail → state `FAILED`, `error_message` is a short summary. **Still** envelope `code=1000`. CDC/binlog/connect failures are `CheckResult`s, not `1001` / `1005`.
+4. All `CheckResult.ok` → `jobPhase=PRECHECKED`, `jobState=STARTING` (auto-start; dispatcher picks it up). `error_message` cleared.
+5. Any fail → phase stays `PRECHECKING`, `jobState=FAILED`. **Still** envelope `code=1000`. Do **not** set `STARTING` on failure. CDC/binlog/connect failures are `CheckResult`s, not `1001` / `1005`.
 
 Example success:
 
@@ -258,7 +258,8 @@ Example success:
   "message": "success",
   "data": {
     "ok": true,
-    "state": "PRECHECKED",
+    "jobPhase": "PRECHECKED",
+    "jobState": "STARTING",
     "results": [
       {
         "ok": true,
@@ -291,7 +292,8 @@ Failed checks (still `code` 1000):
   "message": "success",
   "data": {
     "ok": false,
-    "state": "FAILED",
+    "jobPhase": "PRECHECKING",
+    "jobState": "FAILED",
     "results": [
       {
         "ok": false,
@@ -304,32 +306,35 @@ Failed checks (still `code` 1000):
 }
 ```
 
-### State machine and start-only job
+### Job phase and job state
+
+Two columns on `migration_task` (Flyway V2):
+
+| Column | Values |
+| --- | --- |
+| `job_phase` | `CREATED` \| `PRECHECKING` \| `PRECHECKED` \| `SCHEMA_SNAPSHOT` \| `FULL` \| `INCREMENTAL` |
+| `job_state` | `NULL` \| `STARTING` \| `RUNNING` \| `STOPPING` \| `STOPPED` \| `FAILED` |
 
 ```
-CREATED → PRECHECKING → PRECHECKED → STARTING → SCHEMA_SNAPSHOTTING → FULL → INCREMENTAL → STOPPING → STOPPED
-                         ↘ FAILED (precheck or any later phase; retry precheck from FAILED)
+phase:  CREATED → PRECHECKING → PRECHECKED → SCHEMA_SNAPSHOT → FULL → INCREMENTAL
+state:  null    → (null / FAILED) → STARTING → RUNNING → STOPPING → STOPPED
+                                    ↘ FAILED
 ```
 
-- **Precheck** is required before the first start. `PRECHECKING` is only in-flight during the HTTP request (a crash may leave it; the next precheck may retry).
-- **Start** allowed from `PRECHECKED` / `STOPPED` (else `1003`). `CREATED` and `FAILED` must precheck first. CAS to `STARTING`, then `TaskJobRegistry` runs one `TaskJob` per task on a `ThreadPoolTaskExecutor` (not Tomcat).
-- Job stubs (no real Debezium / dump):
-  1. `SCHEMA_SNAPSHOTTING` — TODO first-round Engine (offset + schema history)
-  2. `FULL` if `FULL_AND_INCREMENTAL` or `FULL_ONLY` — TODO parallel dump
-  3. `INCREMENTAL` if `FULL_AND_INCREMENTAL` or `INCREMENTAL_ONLY` — **blocks** on a latch (stop ignored)
-  4. `FULL_ONLY` after the FULL stub → `STOPPED` and the thread exits
-- Job exceptions set `FAILED` + `error_message`.
-- **Stop** is a stub (`1003`). `STOPPING` is not wired.
-- **Delete** allowed in `STOPPED` / `CREATED` / `PRECHECKED` / `FAILED`. `PRECHECKING` / `STARTING` / `SCHEMA_SNAPSHOTTING` / `FULL` / `INCREMENTAL` (and `STOPPING`) return `1003`.
-
-In-memory registry is runtime only; MySQL is the source of truth for state.
+- **Dispatcher** (`@Scheduled` ~2s, single JVM): `SELECT` rows with `job_state IN (STARTING, RUNNING)` that have no live `TaskJobRegistry` entry → `putIfAbsent` then submit the coordinator. Re-reads after register: if `STOPPED`, does not start. Never spawns for `STOPPING`/`STOPPED`/`FAILED`/`NULL`.
+- **Boot**: any `STOPPING` → `STOPPED` (do not resume those). `RUNNING` with no live thread is respawned by the dispatcher (resume stub).
+- **Thread after attach**: `STARTING`→`RUNNING`, `PRECHECKED`→`SCHEMA_SNAPSHOT`, then stub `FULL` then `INCREMENTAL`. Blocks on incremental until stop. No real dump/Debezium.
+- **Start** (`STOPPED`/`FAILED` → `STARTING`, phase unchanged so resume stays on `FULL`/`INCREMENTAL`). Reject `null` (not prechecked), `STARTING`, `RUNNING`, `STOPPING`. Precheck-failed (`PRECHECKING`+`FAILED`) cannot start.
+- **Stop**: `STARTING`→`STOPPED` directly. `RUNNING`→`STOPPING` + `job.requestStop()`; thread then `STOPPED` and `registry.remove`. `STOPPING`/`STOPPED` idempotent. `FAILED`/`null` → `1003`.
+- **Delete**: `1003` if `jobState` is `STARTING`/`RUNNING`/`STOPPING`, or phase `PRECHECKING` with `jobState` null.
 
 ### Status shape
 
 ```json
 {
   "id": 1,
-  "state": "FULL",
+  "jobPhase": "FULL",
+  "jobState": "RUNNING",
   "progress": {
     "tablesTotal": 0,
     "tablesDone": 0,
@@ -353,7 +358,6 @@ Uses in-memory H2 (MySQL compatibility mode) with a Flyway schema that still nam
 
 - Embedded Debezium Engine / OffsetBackingStore / schema history writer
 - Parallel SELECT/INSERT dump
-- Job stop / cancel / STOPPING / graceful shutdown
 - Connection list / update
 - Embedded Oracle/MySQL source connectors (DriverManager helper only)
 - Column mapping

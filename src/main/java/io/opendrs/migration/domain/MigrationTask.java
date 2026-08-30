@@ -9,7 +9,8 @@ public class MigrationTask {
     private Long id;
     private String name;
     private MigrationMode mode;
-    private TaskState state;
+    private JobPhase jobPhase;
+    private JobState jobState;
     private Long sourceConnectionId;
     private Long targetConnectionId;
     private TableSelection tablesJson;
@@ -46,12 +47,20 @@ public class MigrationTask {
         this.mode = mode;
     }
 
-    public TaskState getState() {
-        return state;
+    public JobPhase getJobPhase() {
+        return jobPhase;
     }
 
-    public void setState(TaskState state) {
-        this.state = state;
+    public void setJobPhase(JobPhase jobPhase) {
+        this.jobPhase = jobPhase;
+    }
+
+    public JobState getJobState() {
+        return jobState;
+    }
+
+    public void setJobState(JobState jobState) {
+        this.jobState = jobState;
     }
 
     public Long getSourceConnectionId() {
@@ -140,5 +149,11 @@ public class MigrationTask {
 
     public void setUpdatedAt(Instant updatedAt) {
         this.updatedAt = updatedAt;
+    }
+
+    public boolean isJobInFlight() {
+        return jobState == JobState.STARTING
+                || jobState == JobState.RUNNING
+                || jobState == JobState.STOPPING;
     }
 }

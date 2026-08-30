@@ -7,7 +7,8 @@
         <id property="id" column="id"/>
         <result property="name" column="name"/>
         <result property="mode" column="mode"/>
-        <result property="state" column="state"/>
+        <result property="jobPhase" column="job_phase"/>
+        <result property="jobState" column="job_state"/>
         <result property="sourceConnectionId" column="source_connection_id"/>
         <result property="targetConnectionId" column="target_connection_id"/>
         <result property="tablesJson" column="tables_json"
@@ -23,60 +24,128 @@
         <result property="updatedAt" column="updated_at"/>
     </resultMap>
 
+    <sql id="taskColumns">
+        id, name, mode, job_phase, job_state, source_connection_id, target_connection_id,
+        tables_json, options_json, tables_total, tables_done, rows_done, lag_ms,
+        error_message, created_at, updated_at
+    </sql>
+
     <insert id="insert" useGeneratedKeys="true" keyProperty="id">
         INSERT INTO migration_task
-            (name, mode, state, source_connection_id, target_connection_id, tables_json, options_json)
-        VALUES (#{name}, #{mode}, #{state}, #{sourceConnectionId}, #{targetConnectionId},
+            (name, mode, job_phase, job_state, source_connection_id, target_connection_id,
+             tables_json, options_json)
+        VALUES (#{name}, #{mode}, #{jobPhase}, #{jobState}, #{sourceConnectionId}, #{targetConnectionId},
                 #{tablesJson, typeHandler=io.opendrs.migration.mapper.type.TableSelectionTypeHandler},
                 #{optionsJson, typeHandler=io.opendrs.migration.mapper.type.MigrationOptionsTypeHandler})
     </insert>
 
     <select id="findById" resultMap="MigrationTaskMap">
-        SELECT id, name, mode, state, source_connection_id, target_connection_id,
-               tables_json, options_json, tables_total, tables_done, rows_done, lag_ms,
-               error_message, created_at, updated_at
+        SELECT <include refid="taskColumns"/>
         FROM migration_task
         WHERE id = #{id}
     </select>
 
     <select id="findByName" resultMap="MigrationTaskMap">
-        SELECT id, name, mode, state, source_connection_id, target_connection_id,
-               tables_json, options_json, tables_total, tables_done, rows_done, lag_ms,
-               error_message, created_at, updated_at
+        SELECT <include refid="taskColumns"/>
         FROM migration_task
         WHERE name = #{name}
     </select>
 
     <select id="findAll" resultMap="MigrationTaskMap">
-        SELECT id, name, mode, state, source_connection_id, target_connection_id,
-               tables_json, options_json, tables_total, tables_done, rows_done, lag_ms,
-               error_message, created_at, updated_at
+        SELECT <include refid="taskColumns"/>
         FROM migration_task
         ORDER BY id
     </select>
 
-    <update id="compareAndSetState">
+    <select id="findDispatchable" resultMap="MigrationTaskMap">
+        SELECT <include refid="taskColumns"/>
+        FROM migration_task
+        WHERE job_state IN ('STARTING', 'RUNNING')
+        ORDER BY id
+    </select>
+
+    <update id="compareAndSetJobState">
         UPDATE migration_task
-        SET state = #{next},
+        SET job_state = #{next},
             error_message = NULL,
             updated_at = CURRENT_TIMESTAMP
         WHERE id = #{id}
-          AND state = #{expected}
+        <choose>
+            <when test="expected == null">AND job_state IS NULL</when>
+            <otherwise>AND job_state = #{expected}</otherwise>
+        </choose>
     </update>
 
-    <update id="updateState">
+    <update id="compareAndSetPhase">
         UPDATE migration_task
-        SET state = #{state},
+        SET job_phase = #{next},
             updated_at = CURRENT_TIMESTAMP
         WHERE id = #{id}
+          AND job_phase = #{expected}
     </update>
 
-    <update id="markFailed">
+    <update id="beginPrecheck">
         UPDATE migration_task
-        SET state = 'FAILED',
+        SET job_phase = 'PRECHECKING',
+            job_state = NULL,
+            error_message = NULL,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = #{id}
+          AND job_phase = #{expectedPhase}
+        <choose>
+            <when test="expectedJobState == null">AND job_state IS NULL</when>
+            <otherwise>AND job_state = #{expectedJobState}</otherwise>
+        </choose>
+    </update>
+
+    <update id="completePrecheckSuccess">
+        UPDATE migration_task
+        SET job_phase = 'PRECHECKED',
+            job_state = 'STARTING',
+            error_message = NULL,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = #{id}
+          AND job_phase = 'PRECHECKING'
+          AND job_state IS NULL
+    </update>
+
+    <update id="markPrecheckFailed">
+        UPDATE migration_task
+        SET job_state = 'FAILED',
             error_message = #{errorMessage},
             updated_at = CURRENT_TIMESTAMP
         WHERE id = #{id}
+          AND job_phase = 'PRECHECKING'
+    </update>
+
+    <update id="updatePhase">
+        UPDATE migration_task
+        SET job_phase = #{phase},
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = #{id}
+    </update>
+
+    <update id="updateJobControl">
+        UPDATE migration_task
+        SET job_phase = #{phase},
+            job_state = #{jobState},
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = #{id}
+    </update>
+
+    <update id="markJobFailed">
+        UPDATE migration_task
+        SET job_state = 'FAILED',
+            error_message = #{errorMessage},
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = #{id}
+    </update>
+
+    <update id="markStoppingAsStopped">
+        UPDATE migration_task
+        SET job_state = 'STOPPED',
+            updated_at = CURRENT_TIMESTAMP
+        WHERE job_state = 'STOPPING'
     </update>
 
     <delete id="deleteById">

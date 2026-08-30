@@ -16,3 +16,8 @@ mybatis:
 
 server:
   port: ${OPENDRS_PORT:8080}
+
+opendrs:
+  job:
+    dispatch-enabled: true
+    dispatch-ms: 2000

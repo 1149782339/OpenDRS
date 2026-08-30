@@ -2,13 +2,17 @@ spring:
   application:
     name: opendrs
   datasource:
-    url: jdbc:h2:mem:opendrs;MODE=MySQL;DB_CLOSE_DELAY=-1;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH
+    url: jdbc:h2:mem:opendrs-${random.uuid};MODE=MySQL;DB_CLOSE_DELAY=-1;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH
     username: sa
     password:
     driver-class-name: org.h2.Driver
   flyway:
     enabled: true
     locations: classpath:db/h2
+
+opendrs:
+  job:
+    dispatch-enabled: false
 
 mybatis:
   mapper-locations: classpath:mapper/*.xml

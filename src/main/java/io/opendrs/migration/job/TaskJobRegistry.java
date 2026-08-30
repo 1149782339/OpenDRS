@@ -1,51 +1,45 @@
 package io.opendrs.migration.job;
 
-import io.opendrs.common.error.AppException;
-import io.opendrs.common.error.ErrorCode;
-import io.opendrs.migration.domain.MigrationTask;
-import io.opendrs.migration.mapper.MigrationTaskMapper;
-import jakarta.annotation.PreDestroy;
 import java.util.concurrent.ConcurrentHashMap;
-import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.stereotype.Component;
 
 /**
- * 运行时内存注册表：每个 taskId 至多一个 coordinator。MySQL 才是状态权威来源。
+ * Runtime in-memory registry: at most one coordinator per taskId. MySQL is the source of truth.
  */
 @Component
 public class TaskJobRegistry {
 
     private final ConcurrentHashMap<Long, TaskJob> jobs = new ConcurrentHashMap<>();
-    private final ThreadPoolTaskExecutor taskJobExecutor;
-    private final MigrationTaskMapper taskMapper;
 
-    public TaskJobRegistry(ThreadPoolTaskExecutor taskJobExecutor, MigrationTaskMapper taskMapper) {
-        this.taskJobExecutor = taskJobExecutor;
-        this.taskMapper = taskMapper;
+    public boolean hasLive(Long taskId) {
+        TaskJob job = jobs.get(taskId);
+        return job != null && job.occupiesSlot();
     }
 
-    public void start(MigrationTask task) {
-        TaskJob job = new TaskJob(task.getId(), task.getMode(), taskMapper, this);
-        TaskJob previous = jobs.putIfAbsent(task.getId(), job);
-        if (previous != null && previous.isRunning()) {
-            throw AppException.of(
-                    ErrorCode.TASK_CONFLICT,
-                    "Task " + task.getId() + " already has a running job");
+    public boolean tryRegister(TaskJob job) {
+        TaskJob previous = jobs.putIfAbsent(job.getTaskId(), job);
+        if (previous == null) {
+            return true;
         }
-        if (previous != null) {
-            jobs.put(task.getId(), job);
+        if (!previous.occupiesSlot()) {
+            return jobs.replace(job.getTaskId(), previous, job);
         }
-        taskJobExecutor.execute(job);
+        return false;
     }
 
-    void remove(Long taskId, TaskJob job) {
+    public void requestStop(Long taskId) {
+        TaskJob job = jobs.get(taskId);
+        if (job != null) {
+            job.requestStop();
+        }
+    }
+
+    public void remove(Long taskId, TaskJob job) {
         jobs.remove(taskId, job);
     }
 
-    @PreDestroy
+    @jakarta.annotation.PreDestroy
     public void shutdown() {
-        jobs.values().forEach(TaskJob::releaseHold);
-        taskJobExecutor.shutdown();
-        taskJobExecutor.getThreadPoolExecutor().shutdownNow();
+        jobs.values().forEach(TaskJob::requestStop);
     }
 }

@@ -7,8 +7,9 @@ import io.opendrs.migration.api.request.TableSelection;
 import io.opendrs.migration.api.response.MigrationPrecheckResponse;
 import io.opendrs.migration.domain.ConnectionInfo;
 import io.opendrs.migration.domain.DbType;
+import io.opendrs.migration.domain.JobPhase;
+import io.opendrs.migration.domain.JobState;
 import io.opendrs.migration.domain.MigrationTask;
-import io.opendrs.migration.domain.TaskState;
 import io.opendrs.migration.mapper.ConnectionInfoMapper;
 import io.opendrs.migration.mapper.MigrationTaskMapper;
 import io.opendrs.precheck.CheckResult;
@@ -53,41 +54,60 @@ public class MigrationPrecheckService {
         try {
             results = runChecks(requireTask(id));
         } catch (RuntimeException ex) {
-            taskMapper.markFailed(id, truncate(ex.getMessage()));
+            taskMapper.markPrecheckFailed(id, truncate(ex.getMessage()));
             throw ex;
         }
         boolean ok = results.stream().allMatch(CheckResult::ok);
         if (ok) {
-            int updated = taskMapper.compareAndSetState(id, TaskState.PRECHECKING, TaskState.PRECHECKED);
+            int updated = taskMapper.completePrecheckSuccess(id);
             if (updated == 0) {
                 MigrationTask current = requireTask(id);
                 throw AppException.of(
                         ErrorCode.TASK_CONFLICT,
-                        "Task " + id + " cannot complete precheck from state " + current.getState());
+                        "Task " + id + " cannot complete precheck from phase " + current.getJobPhase()
+                                + " jobState " + current.getJobState());
             }
-            return new MigrationPrecheckResponse(true, TaskState.PRECHECKED, results);
+            return new MigrationPrecheckResponse(true, JobPhase.PRECHECKED, JobState.STARTING, results);
         }
-        taskMapper.markFailed(id, truncate(summarizeFailures(results)));
-        return new MigrationPrecheckResponse(false, TaskState.FAILED, results);
+        taskMapper.markPrecheckFailed(id, truncate(summarizeFailures(results)));
+        return new MigrationPrecheckResponse(false, JobPhase.PRECHECKING, JobState.FAILED, results);
     }
 
     private void beginPrecheck(Long id) {
         MigrationTask task = requireTask(id);
-        if (!task.getState().canPrecheck()) {
+        if (!canPrecheck(task)) {
             throw AppException.of(
                     ErrorCode.TASK_CONFLICT,
-                    "Task " + id + " cannot be prechecked from state " + task.getState());
+                    "Task " + id + " cannot be prechecked from phase " + task.getJobPhase()
+                            + " jobState " + task.getJobState());
         }
         ConnectionInfo source = requireConnection(task.getSourceConnectionId());
         ConnectionInfo target = requireConnection(task.getTargetConnectionId());
         requirePreCheck(source.getType(), "source");
         requirePreCheck(target.getType(), "target");
-        int updated = taskMapper.compareAndSetState(id, task.getState(), TaskState.PRECHECKING);
+        int updated = taskMapper.beginPrecheck(id, task.getJobPhase(), task.getJobState());
         if (updated == 0) {
             throw AppException.of(
                     ErrorCode.TASK_CONFLICT,
-                    "Task " + id + " cannot be prechecked from state " + task.getState());
+                    "Task " + id + " cannot be prechecked from phase " + task.getJobPhase()
+                            + " jobState " + task.getJobState());
         }
+    }
+
+    static boolean canPrecheck(MigrationTask task) {
+        if (task.getJobState() == JobState.STARTING
+                || task.getJobState() == JobState.RUNNING
+                || task.getJobState() == JobState.STOPPING) {
+            return false;
+        }
+        JobPhase phase = task.getJobPhase();
+        if (phase != JobPhase.CREATED && phase != JobPhase.PRECHECKING && phase != JobPhase.PRECHECKED) {
+            return false;
+        }
+        if (phase == JobPhase.CREATED && task.getJobState() != null) {
+            return false;
+        }
+        return true;
     }
 
     private List<CheckResult> runChecks(MigrationTask task) {
