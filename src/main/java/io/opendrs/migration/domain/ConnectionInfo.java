@@ -13,7 +13,7 @@ public class ConnectionInfo {
     private String dbName;
     private String username;
     private String password;
-    private Map<String, Object> extraJson;
+    private Map<String, Object> extra;
     private Instant createdAt;
     private Instant updatedAt;
 
@@ -81,12 +81,12 @@ public class ConnectionInfo {
         this.password = password;
     }
 
-    public Map<String, Object> getExtraJson() {
-        return extraJson;
+    public Map<String, Object> getExtra() {
+        return extra;
     }
 
-    public void setExtraJson(Map<String, Object> extraJson) {
-        this.extraJson = extraJson;
+    public void setExtra(Map<String, Object> extra) {
+        this.extra = extra;
     }
 
     public Instant getCreatedAt() {

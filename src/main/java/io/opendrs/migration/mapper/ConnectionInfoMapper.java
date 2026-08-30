@@ -12,4 +12,6 @@ public interface ConnectionInfoMapper {
     ConnectionInfo findById(@Param("id") Long id);
 
     ConnectionInfo findByName(@Param("name") String name);
+
+    int deleteById(@Param("id") Long id);
 }

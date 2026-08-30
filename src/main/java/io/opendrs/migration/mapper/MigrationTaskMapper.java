@@ -27,4 +27,6 @@ public interface MigrationTaskMapper {
     int markFailed(@Param("id") Long id, @Param("errorMessage") String errorMessage);
 
     int deleteById(@Param("id") Long id);
+
+    int countByConnectionId(@Param("connectionId") Long connectionId);
 }
