@@ -3,6 +3,13 @@
         "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
 <mapper namespace="io.opendrs.migration.mapper.DebeziumOffsetMapper">
 
+    <select id="findByTaskId" resultType="io.opendrs.migration.domain.DebeziumOffset">
+        SELECT id, task_id AS taskId, offset_key AS offsetKey, offset_val AS offsetVal, updated_at AS updatedAt
+        FROM debezium_offset
+        WHERE task_id = #{taskId}
+        ORDER BY id
+    </select>
+
     <delete id="deleteByTaskId">
         DELETE FROM debezium_offset WHERE task_id = #{taskId}
     </delete>

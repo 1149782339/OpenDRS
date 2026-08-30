@@ -1,10 +1,14 @@
 package io.opendrs.jdbc.dialect;
 
 import io.opendrs.jdbc.JdbcConnection;
+import io.opendrs.jdbc.JdbcUrlBuilder;
+import io.opendrs.migration.domain.ConnectionInfo;
 import io.opendrs.migration.domain.DbType;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Properties;
 import org.springframework.stereotype.Component;
 
@@ -40,6 +44,28 @@ public class MysqlDialect extends AbstractDbDialect {
     @Override
     public void applyConnectProperties(Properties props) {
         props.setProperty("connectTimeout", "5000");
+    }
+
+    @Override
+    public Map<String, String> debeziumSourceFields(ConnectionInfo info) {
+        Map<String, String> fields = super.debeziumSourceFields(info);
+        String useSsl = JdbcUrlBuilder.extraString(info, "useSsl");
+        if (useSsl != null && !useSsl.isBlank()) {
+            fields.put("database.ssl.mode", asBoolean(useSsl) ? "required" : "disabled");
+        }
+        String serverTimezone = JdbcUrlBuilder.extraString(info, "serverTimezone");
+        if (serverTimezone != null && !serverTimezone.isBlank()) {
+            fields.put("database.connectionTimeZone", serverTimezone);
+        }
+        return fields;
+    }
+
+    private static boolean asBoolean(Object value) {
+        if (value instanceof Boolean bool) {
+            return bool;
+        }
+        String text = String.valueOf(value).trim().toLowerCase(Locale.ROOT);
+        return "true".equals(text) || "1".equals(text);
     }
 
     @Override

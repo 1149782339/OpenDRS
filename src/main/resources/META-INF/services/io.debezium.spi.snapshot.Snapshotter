@@ -1,0 +1,2 @@
+io.opendrs.debezium.SchemaOnlySnapshotter
+io.opendrs.debezium.IncrementalSnapshotter

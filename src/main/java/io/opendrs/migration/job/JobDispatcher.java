@@ -22,14 +22,17 @@ public class JobDispatcher implements ApplicationRunner {
 
     private final MigrationTaskMapper taskMapper;
     private final TaskJobRegistry registry;
+    private final TaskJobFactory taskJobFactory;
     private final ThreadPoolTaskExecutor taskJobExecutor;
 
     public JobDispatcher(
             MigrationTaskMapper taskMapper,
             TaskJobRegistry registry,
+            TaskJobFactory taskJobFactory,
             ThreadPoolTaskExecutor taskJobExecutor) {
         this.taskMapper = taskMapper;
         this.registry = registry;
+        this.taskJobFactory = taskJobFactory;
         this.taskJobExecutor = taskJobExecutor;
     }
 
@@ -47,7 +50,7 @@ public class JobDispatcher implements ApplicationRunner {
             if (registry.hasLive(task.getId())) {
                 continue;
             }
-            TaskJob job = new TaskJob(task.getId(), task.getMode(), taskMapper, registry);
+            TaskJob job = taskJobFactory.create(task);
             if (!registry.tryRegister(job)) {
                 continue;
             }

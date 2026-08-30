@@ -6,6 +6,7 @@ import io.opendrs.jdbc.metadata.TableRef;
 import io.opendrs.migration.domain.ConnectionInfo;
 import io.opendrs.migration.domain.DbType;
 import java.util.List;
+import java.util.Map;
 import java.util.Properties;
 
 public interface DbDialect {
@@ -28,4 +29,10 @@ public interface DbDialect {
     List<Table> listTables(JdbcConnection conn, String schema, List<TableRef> excludes);
 
     boolean hasSchemaPrivilege(JdbcConnection conn, String schema);
+
+    /**
+     * Debezium connector fields from {@link ConnectionInfo} ({@code database.hostname}, port, user,
+     * password, db). Built from stored columns / {@code JdbcUrlBuilder}, not Debezium JDBC internals.
+     */
+    Map<String, String> debeziumSourceFields(ConnectionInfo info);
 }

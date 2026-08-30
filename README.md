@@ -1,6 +1,6 @@
 # OpenDRS
 
-Open data replication service (DRS). This repository ships the **v1 API skeleton**: persist migration tasks with MyBatis, validate table mappings, run a **synchronous precheck**, and drive a **start/stop** coordinator stub via `job_phase` + `job_state`. Full dump and Debezium Engine are **not** implemented yet.
+Open data replication service (DRS). This repository ships the **v1 API skeleton** plus the **incremental CDC path**: persist migration tasks with MyBatis, validate table mappings, run a **synchronous precheck**, drive a **start/stop** coordinator via `job_phase` + `job_state`, and run **two Debezium Engine rounds** (schema snapshot, then streaming). Full dump is a **stub** (log the offset JSON only). This batch does **not** write to PostgreSQL.
 
 ## Requirements
 
@@ -14,6 +14,7 @@ Open data replication service (DRS). This repository ships the **v1 API skeleton
 - **MyBatis** (`mybatis-spring-boot-starter` 4.1.0) — not JPA/Hibernate
 - Flyway for DDL
 - Jackson camelCase JSON
+- Embedded Debezium **3.6.1.Final** (`AsyncEmbeddedEngine` via `DebeziumEngine.create`; MySQL connector 3.6.1 — not 3.7 beta)
 
 Package / Maven groupId: `io.opendrs`.
 
@@ -50,8 +51,8 @@ Flyway creates:
 
 - `connection_info` — source/target credentials (passwords live only here)
 - `migration_task` — task config + progress + FKs to connections
-- `debezium_offset` — reserved for later Debezium `OffsetBackingStore` (v1 does not write)
-- `debezium_schema_history` — reserved for later Debezium `DatabaseHistory` (v1 does not write)
+- `debezium_offset` — Debezium `OffsetBackingStore` (`TaskOffsetBackingStore`, upsert by `task_id` + `offset_key`)
+- `debezium_schema_history` — Debezium 3.x `SchemaHistory` (`TaskSchemaHistory`, append by `task_id` + `record_seq`)
 
 Create still accepts nested `source` / `target` objects. The service inserts `connection_info` rows named `{taskName}-source` / `{taskName}-target` (including optional `extra`) and stores their ids on the task.
 
@@ -211,7 +212,8 @@ Content-Type: application/json
   },
   "options": {
     "fullDumpParallelism": 8,
-    "batchSize": 1000
+    "batchSize": 1000,
+    "databaseServerId": 85744
   }
 }
 ```
@@ -323,10 +325,15 @@ state:  null    → (null / FAILED) → STARTING → RUNNING → STOPPING → ST
 
 - **Dispatcher** (`@Scheduled` ~2s, single JVM): `SELECT` rows with `job_state IN (STARTING, RUNNING)` that have no live `TaskJobRegistry` entry → `putIfAbsent` then submit the coordinator. Re-reads after register: if `STOPPED`, does not start. Never spawns for `STOPPING`/`STOPPED`/`FAILED`/`NULL`.
 - **Boot**: any `STOPPING` → `STOPPED` (do not resume those). `RUNNING` with no live thread is respawned by the dispatcher (resume stub).
-- **Thread after attach**: `STARTING`→`RUNNING`, `PRECHECKED`→`SCHEMA_SNAPSHOT`, then stub `FULL` then `INCREMENTAL`. Blocks on incremental until stop. No real dump/Debezium.
+- **Thread after attach**: `STARTING`→`RUNNING`. Then:
+  1. **SCHEMA_SNAPSHOT** — first `DebeziumEngine` (MySQL connector, custom Snapshotter: schema yes / data no / stream no; equivalent to `snapshot.mode=no_data`). AsyncEmbeddedEngine still polls after `shouldStream=false`, so this round enables the Debezium **sink notification** channel and `SchemaSnapshotStopConsumer` stops the Engine on Initial Snapshot `COMPLETED`. Offset + schema history go to the metadata tables. CAS `job_phase=FULL`. On failure: `job_state=FAILED`, phase stays `SCHEMA_SNAPSHOT`.
+  2. **FULL** (stub) — `log.info` this task's offset JSON (`file` / `pos` / `gtids`). No SELECT/INSERT dump. CAS `job_phase=INCREMENTAL` when the mode includes incremental.
+  3. **INCREMENTAL** — second Engine, **same stores** so the binlog offset is reused (no second schema snapshot). `ChangeConsumer` logs `SourceRecord` (topic, key, sourceOffset, op) only — **no JDBC apply to Postgres**. Blocks until `STOPPING`: `engine.stop()` / `close()`, then `STOPPED` and `registry.remove`.
 - **Start** (`STOPPED`/`FAILED` → `STARTING`, phase unchanged so resume stays on `FULL`/`INCREMENTAL`). Reject `null` (not prechecked), `STARTING`, `RUNNING`, `STOPPING`. Precheck-failed (`PRECHECKING`+`FAILED`) cannot start.
-- **Stop**: `STARTING`→`STOPPED` directly. `RUNNING`→`STOPPING` + `job.requestStop()`; thread then `STOPPED` and `registry.remove`. `STOPPING`/`STOPPED` idempotent. `FAILED`/`null` → `1003`.
+- **Stop**: `STARTING`→`STOPPED` directly. `RUNNING`→`STOPPING` + `job.requestStop()` which **stops the running Engine** (schema or incremental). Thread then `STOPPED` and `registry.remove`. `STOPPING`/`STOPPED` idempotent. `FAILED`/`null` → `1003`.
 - **Delete**: `1003` if `jobState` is `STARTING`/`RUNNING`/`STOPPING`, or phase `PRECHECKING` with `jobState` null.
+
+`database.server.id` comes from task `options.databaseServerId` (`options_json`), not connection `extra`. Connection fields map through `DbDialect.debeziumSourceFields` (`database.hostname`, port, user, password, db) plus `JdbcUrlBuilder` extra (`useSsl` → `database.ssl.mode`). Official `JdbcOffsetBackingStore` is not used (it `DELETE FROM` the whole offset table).
 
 ### Status shape
 
@@ -352,15 +359,18 @@ state:  null    → (null / FAILED) → STARTING → RUNNING → STOPPING → ST
 mvn -q test
 ```
 
-Uses in-memory H2 (MySQL compatibility mode) with a Flyway schema that still names tables `debezium_offset` / `debezium_schema_history`. Connection test APIs are mocked in CI (`JdbcConnectionFactory`); no live Oracle/MySQL is required.
+Uses in-memory H2 (MySQL compatibility mode) with a Flyway schema that still names tables `debezium_offset` / `debezium_schema_history`. Connection test APIs are mocked in CI (`JdbcConnectionFactory`); no live Oracle/MySQL is required. TaskJob CDC phases are covered with a **fake Engine**; offset/history stores run against H2.
 
-## Out of scope (v1)
+`MysqlBinlogCdcIT` is a **Testcontainers** MySQL 8.0 binlog test (not the metadata `docker-compose`). It is included in `mvn test` (`*IT` via Surefire). When Docker is available it starts `mysql:8.0` with ROW/FULL binlog, runs the production SCHEMA_SNAPSHOT Engine until it exits (offset + schema history), then an INCREMENTAL Engine and asserts a CDC `SourceRecord` for a JDBC insert. When Docker is missing, JUnit `@EnabledIfDockerAvailable` / `@Testcontainers(disabledWithoutDocker = true)` skips it.
 
-- Embedded Debezium Engine / OffsetBackingStore / schema history writer
+## Out of scope (this batch)
+
 - Parallel SELECT/INSERT dump
+- JDBC apply of CDC events to PostgreSQL
+- Oracle source connector / OffsetCapture SQL
+- Quartz
 - Connection list / update
-- Embedded Oracle/MySQL source connectors (DriverManager helper only)
 - Column mapping
-- Kafka Connect
+- Kafka Connect cluster (embedded Engine only)
 - Auth / Spring Security
 - naming LOWER/UPPER
