@@ -86,6 +86,21 @@ class ConnectionApiTest {
     }
 
     @Test
+    void createAcceptsPostgresqlType() throws Exception {
+        mockMvc.perform(post(BASE)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(createBody("pg-app", postgresqlConnectionJson("secret-pg"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(1000))
+                .andExpect(jsonPath("$.data.name").value("pg-app"))
+                .andExpect(jsonPath("$.data.type").value("POSTGRESQL"))
+                .andExpect(jsonPath("$.data.host").value("10.0.0.3"))
+                .andExpect(jsonPath("$.data.port").value(5432))
+                .andExpect(jsonPath("$.data.database").value("appdb"))
+                .andExpect(jsonPath("$.data.extra.sslmode").value("require"));
+    }
+
+    @Test
     void duplicateNameReturns1001() throws Exception {
         createConnection("dup-conn", mysqlConnectionJson("pw"));
 
@@ -234,6 +249,22 @@ class ConnectionApiTest {
                     "pdb": "ORCLPDB1",
                     "connectionType": "SERVICE",
                     "customFlag": 1
+                  }
+                }
+                """.formatted(password);
+    }
+
+    private static String postgresqlConnectionJson(String password) {
+        return """
+                {
+                  "type": "POSTGRESQL",
+                  "host": "10.0.0.3",
+                  "port": 5432,
+                  "database": "appdb",
+                  "username": "drs",
+                  "password": "%s",
+                  "extra": {
+                    "sslmode": "require"
                   }
                 }
                 """.formatted(password);
