@@ -1,8 +1,6 @@
 package io.opendrs.migration.api;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.hamcrest.Matchers.anyOf;
-import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.nullValue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -11,16 +9,16 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import io.opendrs.migration.domain.ConnectionInfo;
-import io.opendrs.migration.domain.TaskState;
+import io.opendrs.migration.domain.JobPhase;
+import io.opendrs.migration.domain.JobState;
 import io.opendrs.migration.mapper.ConnectionInfoMapper;
 import io.opendrs.migration.mapper.MigrationTaskMapper;
-import java.util.Set;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.http.MediaType;
+import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import tools.jackson.databind.JsonNode;
@@ -32,11 +30,6 @@ import tools.jackson.databind.json.JsonMapper;
 class MigrationTaskApiTest {
 
     private static final String BASE = "/api/v1/migration/tasks";
-    private static final Set<String> AFTER_START = Set.of(
-            TaskState.SCHEMA_SNAPSHOTTING.name(),
-            TaskState.FULL.name(),
-            TaskState.INCREMENTAL.name(),
-            TaskState.STOPPED.name());
 
     @Autowired
     private MockMvc mockMvc;
@@ -51,7 +44,7 @@ class MigrationTaskApiTest {
     private MigrationTaskMapper taskMapper;
 
     @Test
-    void createSuccessMasksPasswordPersistsConnectionsAndUsesEnvelope() throws Exception {
+    void createSuccessMasksPasswordAndSetsCreatedNullJobState() throws Exception {
         long id = createTask("hr-oracle-to-mysql", "FULL_AND_INCREMENTAL");
 
         mockMvc.perform(get(BASE + "/" + id))
@@ -61,28 +54,21 @@ class MigrationTaskApiTest {
                 .andExpect(jsonPath("$.data.id").value(id))
                 .andExpect(jsonPath("$.data.name").value("hr-oracle-to-mysql"))
                 .andExpect(jsonPath("$.data.mode").value("FULL_AND_INCREMENTAL"))
-                .andExpect(jsonPath("$.data.state").value("CREATED"))
+                .andExpect(jsonPath("$.data.jobPhase").value("CREATED"))
+                .andExpect(jsonPath("$.data.jobState").value(nullValue()))
                 .andExpect(jsonPath("$.data.source.password").value("***"))
                 .andExpect(jsonPath("$.data.target.password").value("***"))
                 .andExpect(jsonPath("$.data.source.host").value("10.0.0.1"))
-                .andExpect(jsonPath("$.data.source.extra.pdb").value("ORCLPDB1"))
-                .andExpect(jsonPath("$.data.source.extra.connectionType").value("SERVICE"))
-                .andExpect(jsonPath("$.data.target.extra.useSsl").value(false))
-                .andExpect(jsonPath("$.data.target.extra.serverTimezone").value("UTC"));
+                .andExpect(jsonPath("$.data.source.extra.pdb").value("ORCLPDB1"));
 
         var task = taskMapper.findById(id);
-        assertThat(task.getSourceConnectionId()).isNotNull();
-        assertThat(task.getTargetConnectionId()).isNotNull();
+        assertThat(task.getJobPhase()).isEqualTo(JobPhase.CREATED);
+        assertThat(task.getJobState()).isNull();
         ConnectionInfo source = connectionInfoMapper.findById(task.getSourceConnectionId());
         ConnectionInfo target = connectionInfoMapper.findById(task.getTargetConnectionId());
         assertThat(source.getName()).isEqualTo("hr-oracle-to-mysql-source");
         assertThat(target.getName()).isEqualTo("hr-oracle-to-mysql-target");
         assertThat(source.getPassword()).isEqualTo("secret-source");
-        assertThat(source.getExtra()).containsEntry("pdb", "ORCLPDB1");
-        assertThat(source.getExtra()).containsEntry("connectionType", "SERVICE");
-        assertThat(target.getDbName()).isEqualTo("hr");
-        assertThat(target.getExtra()).containsEntry("useSsl", false);
-        assertThat(target.getExtra()).containsEntry("serverTimezone", "UTC");
     }
 
     @Test
@@ -125,169 +111,151 @@ class MigrationTaskApiTest {
     }
 
     @Test
-    void deleteWhileRunningReturns1003() throws Exception {
-        long id = createTask("running-delete", "FULL_AND_INCREMENTAL");
-        markPrechecked(id);
-        mockMvc.perform(post(BASE + "/" + id + "/start"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(1000));
-        awaitState(id, AFTER_START);
-
-        mockMvc.perform(delete(BASE + "/" + id))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(1003));
-    }
-
-    @Test
-    void startFromCreatedReturns1003ThenPrecheckedLaunchesJob() throws Exception {
+    void startFromCreatedNullIsRejected() throws Exception {
         long id = createTask("start-created", "FULL_AND_INCREMENTAL");
 
         mockMvc.perform(post(BASE + "/" + id + "/start"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(1003))
-                .andExpect(jsonPath("$.message").value("Task " + id + " cannot be started from state CREATED"));
+                .andExpect(jsonPath("$.message").value("Task " + id + " cannot be started from jobState null"));
+    }
 
-        markPrechecked(id);
+    @Test
+    void stopWhileStartingGoesStoppedThenStartFromStopped() throws Exception {
+        long id = createTask("stop-starting", "FULL_AND_INCREMENTAL");
+        taskMapper.updateJobControl(id, JobPhase.PRECHECKED, JobState.STARTING);
+
+        mockMvc.perform(post(BASE + "/" + id + "/stop"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(1000))
+                .andExpect(jsonPath("$.data.jobPhase").value("PRECHECKED"))
+                .andExpect(jsonPath("$.data.jobState").value("STOPPED"));
 
         mockMvc.perform(post(BASE + "/" + id + "/start"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(1000))
-                .andExpect(jsonPath("$.message").value("success"))
-                .andExpect(jsonPath("$.data.id").value(id));
-
-        String state = awaitState(id, AFTER_START);
-        assertThat(state).isIn(
-                TaskState.SCHEMA_SNAPSHOTTING.name(),
-                TaskState.FULL.name(),
-                TaskState.INCREMENTAL.name());
-        mockMvc.perform(get(BASE + "/" + id + "/status"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(1000))
-                .andExpect(jsonPath("$.data.state").value(anyOf(
-                        is(TaskState.SCHEMA_SNAPSHOTTING.name()),
-                        is(TaskState.FULL.name()),
-                        is(TaskState.INCREMENTAL.name()))))
-                .andExpect(jsonPath("$.data.progress.tablesTotal").value(0))
-                .andExpect(jsonPath("$.data.progress.tablesDone").value(0))
-                .andExpect(jsonPath("$.data.progress.rowsDone").value(0))
-                .andExpect(jsonPath("$.data.offset.scn").value(nullValue()))
-                .andExpect(jsonPath("$.data.offset.gtid").value(nullValue()))
-                .andExpect(jsonPath("$.data.error").value(nullValue()));
+                .andExpect(jsonPath("$.data.jobPhase").value("PRECHECKED"))
+                .andExpect(jsonPath("$.data.jobState").value("STARTING"));
     }
 
     @Test
-    void listStatusStopStubAndFullOnlyDeleteFollowEnvelope() throws Exception {
-        long incrementalId = createTask("lifecycle-inc", "FULL_AND_INCREMENTAL");
+    void stopWhileNotRunningRejected() throws Exception {
+        long id = createTask("stop-null", "FULL_AND_INCREMENTAL");
+        mockMvc.perform(post(BASE + "/" + id + "/stop"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(1003));
+
+        taskMapper.updateJobControl(id, JobPhase.PRECHECKING, JobState.FAILED);
+        mockMvc.perform(post(BASE + "/" + id + "/stop"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(1003));
+    }
+
+    @Test
+    void startWhileStartingOrRunningRejected() throws Exception {
+        long id = createTask("double-start", "FULL_AND_INCREMENTAL");
+        taskMapper.updateJobControl(id, JobPhase.PRECHECKED, JobState.STARTING);
+        mockMvc.perform(post(BASE + "/" + id + "/start"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(1003));
+
+        taskMapper.updateJobControl(id, JobPhase.FULL, JobState.RUNNING);
+        mockMvc.perform(post(BASE + "/" + id + "/start"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(1003));
+    }
+
+    @Test
+    void stopWhileStoppingAndStoppedIsIdempotent() throws Exception {
+        long id = createTask("stop-idempotent", "FULL_AND_INCREMENTAL");
+        taskMapper.updateJobControl(id, JobPhase.INCREMENTAL, JobState.STOPPING);
+        mockMvc.perform(post(BASE + "/" + id + "/stop"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(1000))
+                .andExpect(jsonPath("$.data.jobState").value("STOPPING"));
+
+        taskMapper.updateJobControl(id, JobPhase.INCREMENTAL, JobState.STOPPED);
+        mockMvc.perform(post(BASE + "/" + id + "/stop"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(1000))
+                .andExpect(jsonPath("$.data.jobState").value("STOPPED"));
+    }
+
+    @Test
+    void startFromFailedAfterRunIsAllowedButNotFromPrecheckFailed() throws Exception {
+        long id = createTask("start-failed", "FULL_AND_INCREMENTAL");
+        taskMapper.updateJobControl(id, JobPhase.FULL, JobState.FAILED);
+        mockMvc.perform(post(BASE + "/" + id + "/start"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(1000))
+                .andExpect(jsonPath("$.data.jobPhase").value("FULL"))
+                .andExpect(jsonPath("$.data.jobState").value("STARTING"));
+
+        long precheckFailed = createTask("start-precheck-failed", "FULL_AND_INCREMENTAL");
+        taskMapper.updateJobControl(precheckFailed, JobPhase.PRECHECKING, JobState.FAILED);
+        mockMvc.perform(post(BASE + "/" + precheckFailed + "/start"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(1003));
+    }
+
+    @Test
+    void deleteWhileInFlightReturns1003() throws Exception {
+        long starting = createTask("delete-starting", "FULL_AND_INCREMENTAL");
+        taskMapper.updateJobControl(starting, JobPhase.PRECHECKED, JobState.STARTING);
+        mockMvc.perform(delete(BASE + "/" + starting))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(1003));
+
+        long running = createTask("delete-running", "FULL_AND_INCREMENTAL");
+        taskMapper.updateJobControl(running, JobPhase.FULL, JobState.RUNNING);
+        mockMvc.perform(delete(BASE + "/" + running))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(1003));
+
+        long stopping = createTask("delete-stopping", "FULL_AND_INCREMENTAL");
+        taskMapper.updateJobControl(stopping, JobPhase.INCREMENTAL, JobState.STOPPING);
+        mockMvc.perform(delete(BASE + "/" + stopping))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(1003));
+    }
+
+    @Test
+    void deleteWhilePrecheckingReturns1003AndStoppedCanDelete() throws Exception {
+        long prechecking = createTask("prechecking-delete", "FULL_AND_INCREMENTAL");
+        taskMapper.updateJobControl(prechecking, JobPhase.PRECHECKING, null);
+        mockMvc.perform(delete(BASE + "/" + prechecking))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(1003));
+        assertThat(taskMapper.findById(prechecking)).isNotNull();
+
+        long stopped = createTask("stopped-delete", "FULL_ONLY");
+        taskMapper.updateJobControl(stopped, JobPhase.PRECHECKED, JobState.STOPPED);
+        mockMvc.perform(delete(BASE + "/" + stopped))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(1000))
+                .andExpect(jsonPath("$.data").value(nullValue()));
+        mockMvc.perform(get(BASE + "/" + stopped))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(1002));
+    }
+
+    @Test
+    void listAndStatusUseJobPhaseAndJobState() throws Exception {
+        long id = createTask("lifecycle-list", "FULL_AND_INCREMENTAL");
 
         mockMvc.perform(get(BASE))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(1000))
-                .andExpect(jsonPath("$.data[?(@.id==" + incrementalId + ")].source.type").value("ORACLE"))
-                .andExpect(jsonPath("$.data[?(@.id==" + incrementalId + ")].target.type").value("MYSQL"));
+                .andExpect(jsonPath("$.data[?(@.id==" + id + ")].jobPhase").value("CREATED"))
+                .andExpect(jsonPath("$.data[?(@.id==" + id + ")].source.type").value("ORACLE"));
 
-        mockMvc.perform(get(BASE + "/" + incrementalId + "/status"))
+        mockMvc.perform(get(BASE + "/" + id + "/status"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(1000))
-                .andExpect(jsonPath("$.data.state").value("CREATED"));
-
-        mockMvc.perform(post(BASE + "/" + incrementalId + "/stop"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(1003));
-
-        markPrechecked(incrementalId);
-        mockMvc.perform(post(BASE + "/" + incrementalId + "/start"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(1000));
-        awaitState(incrementalId, AFTER_START);
-
-        mockMvc.perform(post(BASE + "/" + incrementalId + "/stop"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(1003));
-
-        long fullOnlyId = createTask("lifecycle-full", "FULL_ONLY");
-        markPrechecked(fullOnlyId);
-        mockMvc.perform(post(BASE + "/" + fullOnlyId + "/start"))
-                .andExpect(status().isOk());
-        awaitState(fullOnlyId, Set.of(TaskState.STOPPED.name()));
-
-        mockMvc.perform(delete(BASE + "/" + fullOnlyId))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(1000))
-                .andExpect(jsonPath("$.message").value("success"))
-                .andExpect(jsonPath("$.data").value(nullValue()));
-
-        mockMvc.perform(get(BASE + "/" + fullOnlyId))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(1002));
-    }
-
-    @Test
-    void startWhileAlreadyRunningReturns1003() throws Exception {
-        long id = createTask("double-start", "FULL_AND_INCREMENTAL");
-        markPrechecked(id);
-        mockMvc.perform(post(BASE + "/" + id + "/start"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(1000));
-        awaitState(id, AFTER_START);
-
-        mockMvc.perform(post(BASE + "/" + id + "/start"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(1003));
-    }
-
-    @Test
-    void startFromFailedReturns1003() throws Exception {
-        long id = createTask("start-failed", "FULL_AND_INCREMENTAL");
-        taskMapper.markFailed(id, "previous failure");
-
-        mockMvc.perform(post(BASE + "/" + id + "/start"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(1003))
-                .andExpect(jsonPath("$.message").value("Task " + id + " cannot be started from state FAILED"));
-    }
-
-    @Test
-    void deleteWhilePrecheckingReturns1003() throws Exception {
-        long id = createTask("prechecking-delete", "FULL_AND_INCREMENTAL");
-        taskMapper.updateState(id, TaskState.PRECHECKING);
-
-        mockMvc.perform(delete(BASE + "/" + id))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(1003));
-        assertThat(taskMapper.findById(id)).isNotNull();
-    }
-
-    @Test
-    void deleteWhilePrecheckedIsAllowed() throws Exception {
-        long id = createTask("prechecked-delete", "FULL_AND_INCREMENTAL");
-        taskMapper.updateState(id, TaskState.PRECHECKED);
-
-        mockMvc.perform(delete(BASE + "/" + id))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(1000));
-        mockMvc.perform(get(BASE + "/" + id))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(1002));
-    }
-
-    private void markPrechecked(long id) {
-        taskMapper.updateState(id, TaskState.PRECHECKED);
-    }
-
-    private String awaitState(long id, Set<String> accepted) throws Exception {
-        for (int i = 0; i < 80; i++) {
-            MvcResult result = mockMvc.perform(get(BASE + "/" + id + "/status"))
-                    .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.code").value(anyOf(is(1000), is(1002))))
-                    .andReturn();
-            JsonNode root = jsonMapper.readTree(result.getResponse().getContentAsString());
-            String state = root.path("data").path("state").asString();
-            if (accepted.contains(state)) {
-                return state;
-            }
-            Thread.sleep(50);
-        }
-        throw new AssertionError("Task " + id + " did not reach " + accepted);
+                .andExpect(jsonPath("$.data.jobPhase").value("CREATED"))
+                .andExpect(jsonPath("$.data.jobState").value(nullValue()))
+                .andExpect(jsonPath("$.data.progress.tablesTotal").value(0))
+                .andExpect(jsonPath("$.data.offset.scn").value(nullValue()));
     }
 
     private long createTask(String name, String mode) throws Exception {

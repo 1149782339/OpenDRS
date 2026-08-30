@@ -8,8 +8,9 @@ import io.opendrs.migration.api.response.MigrationStatusResponse;
 import io.opendrs.migration.api.response.MigrationTaskResponse;
 import io.opendrs.migration.api.response.MigrationTaskSummary;
 import io.opendrs.migration.domain.ConnectionInfo;
+import io.opendrs.migration.domain.JobPhase;
+import io.opendrs.migration.domain.JobState;
 import io.opendrs.migration.domain.MigrationTask;
-import io.opendrs.migration.domain.TaskState;
 import io.opendrs.migration.job.TaskJobRegistry;
 import io.opendrs.migration.mapper.ConnectionInfoMapper;
 import io.opendrs.migration.mapper.DebeziumOffsetMapper;
@@ -65,7 +66,8 @@ public class MigrationTaskService {
         MigrationTask task = new MigrationTask();
         task.setName(request.name());
         task.setMode(request.mode());
-        task.setState(TaskState.CREATED);
+        task.setJobPhase(JobPhase.CREATED);
+        task.setJobState(null);
         task.setSourceConnectionId(source.getId());
         task.setTargetConnectionId(target.getId());
         task.setTablesJson(request.tables());
@@ -92,45 +94,88 @@ public class MigrationTaskService {
     }
 
     public MigrationStatusResponse start(Long id) {
-        MigrationTask prepared = transactionTemplate.execute(status -> {
+        transactionTemplate.executeWithoutResult(status -> {
             MigrationTask task = requireTask(id);
-            if (!task.getState().canStart()) {
+            if (!canStart(task)) {
                 throw AppException.of(
                         ErrorCode.TASK_CONFLICT,
-                        "Task " + id + " cannot be started from state " + task.getState());
+                        "Task " + id + " cannot be started from jobState " + task.getJobState());
             }
-            int updated = taskMapper.compareAndSetState(id, task.getState(), TaskState.STARTING);
+            int updated = taskMapper.compareAndSetJobState(id, task.getJobState(), JobState.STARTING);
             if (updated == 0) {
                 throw AppException.of(
                         ErrorCode.TASK_CONFLICT,
-                        "Task " + id + " cannot be started from state " + task.getState());
+                        "Task " + id + " cannot be started from jobState " + task.getJobState());
             }
-            task.setState(TaskState.STARTING);
-            task.setErrorMessage(null);
-            return task;
         });
-        jobRegistry.start(prepared);
         return toStatus(requireTask(id));
     }
 
     public MigrationStatusResponse stop(Long id) {
-        requireTask(id);
+        MigrationTask task = requireTask(id);
+        JobState jobState = task.getJobState();
+        if (jobState == JobState.STOPPED || jobState == JobState.STOPPING) {
+            return toStatus(task);
+        }
+        if (jobState == JobState.STARTING) {
+            int updated = taskMapper.compareAndSetJobState(id, JobState.STARTING, JobState.STOPPED);
+            if (updated == 0) {
+                MigrationTask latest = requireTask(id);
+                if (latest.getJobState() == JobState.STOPPED || latest.getJobState() == JobState.STOPPING) {
+                    return toStatus(latest);
+                }
+                throw AppException.of(
+                        ErrorCode.TASK_CONFLICT,
+                        "Task " + id + " cannot be stopped from jobState " + latest.getJobState());
+            }
+            return toStatus(requireTask(id));
+        }
+        if (jobState == JobState.RUNNING) {
+            int updated = taskMapper.compareAndSetJobState(id, JobState.RUNNING, JobState.STOPPING);
+            if (updated == 0) {
+                MigrationTask latest = requireTask(id);
+                if (latest.getJobState() == JobState.STOPPED || latest.getJobState() == JobState.STOPPING) {
+                    return toStatus(latest);
+                }
+                throw AppException.of(
+                        ErrorCode.TASK_CONFLICT,
+                        "Task " + id + " cannot be stopped from jobState " + latest.getJobState());
+            }
+            jobRegistry.requestStop(id);
+            return toStatus(requireTask(id));
+        }
         throw AppException.of(
                 ErrorCode.TASK_CONFLICT,
-                "Stop is not implemented; task " + id + " cannot be stopped in v1");
+                "Task " + id + " cannot be stopped from jobState " + jobState);
     }
 
     @Transactional
     public void delete(Long id) {
         MigrationTask task = requireTask(id);
-        if (task.getState().isRunning()) {
+        if (task.isJobInFlight()
+                || (task.getJobPhase() == JobPhase.PRECHECKING && task.getJobState() == null)) {
             throw AppException.of(
                     ErrorCode.TASK_CONFLICT,
-                    "Task " + id + " is " + task.getState() + " and must be stopped before delete");
+                    "Task " + id + " is " + describe(task) + " and must be stopped before delete");
         }
         offsetMapper.deleteByTaskId(id);
         schemaHistoryMapper.deleteByTaskId(id);
         taskMapper.deleteById(id);
+    }
+
+    static boolean canStart(MigrationTask task) {
+        if (task.getJobState() != JobState.STOPPED && task.getJobState() != JobState.FAILED) {
+            return false;
+        }
+        JobPhase phase = task.getJobPhase();
+        return phase != JobPhase.CREATED && phase != JobPhase.PRECHECKING;
+    }
+
+    private static String describe(MigrationTask task) {
+        if (task.getJobState() != null) {
+            return task.getJobState().name();
+        }
+        return task.getJobPhase().name();
     }
 
     private ConnectionInfo insertConnection(String name, io.opendrs.migration.api.request.ConnectionInfo config) {
@@ -172,7 +217,8 @@ public class MigrationTaskService {
                 toDto(target).masked(),
                 task.getTablesJson(),
                 task.getOptionsJson(),
-                task.getState(),
+                task.getJobPhase(),
+                task.getJobState(),
                 task.getCreatedAt(),
                 task.getUpdatedAt());
     }
@@ -184,7 +230,8 @@ public class MigrationTaskService {
                 task.getId(),
                 task.getName(),
                 task.getMode(),
-                task.getState(),
+                task.getJobPhase(),
+                task.getJobState(),
                 new MigrationTaskSummary.SourceTargetType(source.getType()),
                 new MigrationTaskSummary.SourceTargetType(target.getType()),
                 task.getCreatedAt());
@@ -193,7 +240,8 @@ public class MigrationTaskService {
     private MigrationStatusResponse toStatus(MigrationTask task) {
         return new MigrationStatusResponse(
                 task.getId(),
-                task.getState(),
+                task.getJobPhase(),
+                task.getJobState(),
                 new MigrationStatusResponse.Progress(
                         task.getTablesTotal(),
                         task.getTablesDone(),

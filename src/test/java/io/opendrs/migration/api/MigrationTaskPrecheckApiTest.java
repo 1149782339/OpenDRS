@@ -14,7 +14,8 @@ import io.opendrs.jdbc.JdbcConnectionFactory;
 import io.opendrs.jdbc.dialect.MysqlDialect;
 import io.opendrs.jdbc.dialect.PostgresDialect;
 import io.opendrs.migration.domain.ConnectionInfo;
-import io.opendrs.migration.domain.TaskState;
+import io.opendrs.migration.domain.JobPhase;
+import io.opendrs.migration.domain.JobState;
 import io.opendrs.migration.mapper.MigrationTaskMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -78,7 +79,7 @@ class MigrationTaskPrecheckApiTest {
     }
 
     @Test
-    void precheckFromCreatedSucceedsAndAllowsStart() throws Exception {
+    void precheckFromCreatedSucceedsAutoStarts() throws Exception {
         stubSourceOk();
         stubTargetAbsent();
         long id = createMysqlToPostgres("precheck-ok");
@@ -88,22 +89,24 @@ class MigrationTaskPrecheckApiTest {
                 .andExpect(jsonPath("$.code").value(1000))
                 .andExpect(jsonPath("$.message").value("success"))
                 .andExpect(jsonPath("$.data.ok").value(true))
-                .andExpect(jsonPath("$.data.state").value("PRECHECKED"))
+                .andExpect(jsonPath("$.data.jobPhase").value("PRECHECKED"))
+                .andExpect(jsonPath("$.data.jobState").value("STARTING"))
                 .andExpect(jsonPath("$.data.results").isArray())
                 .andExpect(jsonPath("$.data.results[?(@.name=='log_bin' && @.ok==true)]").isNotEmpty())
                 .andExpect(jsonPath("$.data.results[?(@.name=='table_absent')]").isNotEmpty());
 
         var stored = taskMapper.findById(id);
-        assertThat(stored.getState()).isEqualTo(TaskState.PRECHECKED);
+        assertThat(stored.getJobPhase()).isEqualTo(JobPhase.PRECHECKED);
+        assertThat(stored.getJobState()).isEqualTo(JobState.STARTING);
         assertThat(stored.getErrorMessage()).isNull();
 
         mockMvc.perform(post(BASE + "/" + id + "/start"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(1000));
+                .andExpect(jsonPath("$.code").value(1003));
     }
 
     @Test
-    void precheckFailedCheckResultLeavesFailedAndHttp1000() throws Exception {
+    void precheckFailedCheckResultLeavesPrecheckingFailed() throws Exception {
         when(mysqlDialect.schemaExists(any(), any())).thenReturn(false);
         stubTargetAbsent();
         long id = createMysqlToPostgres("precheck-fail");
@@ -112,16 +115,19 @@ class MigrationTaskPrecheckApiTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(1000))
                 .andExpect(jsonPath("$.data.ok").value(false))
-                .andExpect(jsonPath("$.data.state").value("FAILED"))
+                .andExpect(jsonPath("$.data.jobPhase").value("PRECHECKING"))
+                .andExpect(jsonPath("$.data.jobState").value("FAILED"))
                 .andExpect(jsonPath("$.data.results[?(@.ok==false)].name").isNotEmpty());
 
         var stored = taskMapper.findById(id);
-        assertThat(stored.getState()).isEqualTo(TaskState.FAILED);
+        assertThat(stored.getJobPhase()).isEqualTo(JobPhase.PRECHECKING);
+        assertThat(stored.getJobState()).isEqualTo(JobState.FAILED);
         assertThat(stored.getErrorMessage()).contains("schema_exists");
 
         mockMvc.perform(get(BASE + "/" + id + "/status"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.state").value("FAILED"))
+                .andExpect(jsonPath("$.data.jobPhase").value("PRECHECKING"))
+                .andExpect(jsonPath("$.data.jobState").value("FAILED"))
                 .andExpect(jsonPath("$.data.error").isNotEmpty());
     }
 
@@ -140,10 +146,8 @@ class MigrationTaskPrecheckApiTest {
         long id = createMysqlToPostgres("precheck-starting");
         mockMvc.perform(post(BASE + "/" + id + "/precheck"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(1000));
-        mockMvc.perform(post(BASE + "/" + id + "/start"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(1000));
+                .andExpect(jsonPath("$.code").value(1000))
+                .andExpect(jsonPath("$.data.jobState").value("STARTING"));
 
         mockMvc.perform(post(BASE + "/" + id + "/precheck"))
                 .andExpect(status().isOk())
@@ -151,28 +155,33 @@ class MigrationTaskPrecheckApiTest {
     }
 
     @Test
-    void precheckRerunFromPrecheckedAndFailed() throws Exception {
+    void precheckRerunFromFailedThenFromStopped() throws Exception {
         stubSourceOk();
         stubTargetAbsent();
         long id = createMysqlToPostgres("precheck-rerun");
 
+        when(mysqlDialect.schemaExists(any(), any())).thenReturn(false);
         mockMvc.perform(post(BASE + "/" + id + "/precheck"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.state").value("PRECHECKED"));
+                .andExpect(jsonPath("$.data.ok").value(false))
+                .andExpect(jsonPath("$.data.jobState").value("FAILED"));
 
+        stubSourceOk();
         mockMvc.perform(post(BASE + "/" + id + "/precheck"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(1000))
                 .andExpect(jsonPath("$.data.ok").value(true))
-                .andExpect(jsonPath("$.data.state").value("PRECHECKED"));
-
-        taskMapper.markFailed(id, "stale");
-        mockMvc.perform(post(BASE + "/" + id + "/precheck"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(1000))
-                .andExpect(jsonPath("$.data.ok").value(true))
-                .andExpect(jsonPath("$.data.state").value("PRECHECKED"));
+                .andExpect(jsonPath("$.data.jobPhase").value("PRECHECKED"))
+                .andExpect(jsonPath("$.data.jobState").value("STARTING"));
         assertThat(taskMapper.findById(id).getErrorMessage()).isNull();
+
+        mockMvc.perform(post(BASE + "/" + id + "/stop"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.jobState").value("STOPPED"));
+        mockMvc.perform(post(BASE + "/" + id + "/precheck"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.ok").value(true))
+                .andExpect(jsonPath("$.data.jobState").value("STARTING"));
     }
 
     @Test
@@ -180,13 +189,14 @@ class MigrationTaskPrecheckApiTest {
         stubSourceOk();
         stubTargetAbsent();
         long id = createMysqlToPostgres("precheck-stuck");
-        taskMapper.updateState(id, TaskState.PRECHECKING);
+        taskMapper.updateJobControl(id, JobPhase.PRECHECKING, null);
 
         mockMvc.perform(post(BASE + "/" + id + "/precheck"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(1000))
                 .andExpect(jsonPath("$.data.ok").value(true))
-                .andExpect(jsonPath("$.data.state").value("PRECHECKED"));
+                .andExpect(jsonPath("$.data.jobPhase").value("PRECHECKED"))
+                .andExpect(jsonPath("$.data.jobState").value("STARTING"));
     }
 
     @Test
@@ -203,7 +213,8 @@ class MigrationTaskPrecheckApiTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(1001))
                 .andExpect(jsonPath("$.message").value("No precheck registered for source type: ORACLE"));
-        assertThat(taskMapper.findById(id).getState()).isEqualTo(TaskState.CREATED);
+        assertThat(taskMapper.findById(id).getJobPhase()).isEqualTo(JobPhase.CREATED);
+        assertThat(taskMapper.findById(id).getJobState()).isNull();
     }
 
     @Test
@@ -219,7 +230,8 @@ class MigrationTaskPrecheckApiTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(1000))
                 .andExpect(jsonPath("$.data.ok").value(false))
-                .andExpect(jsonPath("$.data.state").value("FAILED"))
+                .andExpect(jsonPath("$.data.jobPhase").value("PRECHECKING"))
+                .andExpect(jsonPath("$.data.jobState").value("FAILED"))
                 .andExpect(jsonPath("$.data.results[0].name").value("connect"))
                 .andExpect(jsonPath("$.data.results[0].ok").value(false));
     }

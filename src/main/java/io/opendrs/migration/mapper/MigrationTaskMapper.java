@@ -1,7 +1,8 @@
 package io.opendrs.migration.mapper;
 
+import io.opendrs.migration.domain.JobPhase;
+import io.opendrs.migration.domain.JobState;
 import io.opendrs.migration.domain.MigrationTask;
-import io.opendrs.migration.domain.TaskState;
 import java.util.List;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
@@ -17,14 +18,37 @@ public interface MigrationTaskMapper {
 
     List<MigrationTask> findAll();
 
-    int compareAndSetState(
+    List<MigrationTask> findDispatchable();
+
+    int compareAndSetJobState(
             @Param("id") Long id,
-            @Param("expected") TaskState expected,
-            @Param("next") TaskState next);
+            @Param("expected") JobState expected,
+            @Param("next") JobState next);
 
-    int updateState(@Param("id") Long id, @Param("state") TaskState state);
+    int compareAndSetPhase(
+            @Param("id") Long id,
+            @Param("expected") JobPhase expected,
+            @Param("next") JobPhase next);
 
-    int markFailed(@Param("id") Long id, @Param("errorMessage") String errorMessage);
+    int beginPrecheck(
+            @Param("id") Long id,
+            @Param("expectedPhase") JobPhase expectedPhase,
+            @Param("expectedJobState") JobState expectedJobState);
+
+    int completePrecheckSuccess(@Param("id") Long id);
+
+    int markPrecheckFailed(@Param("id") Long id, @Param("errorMessage") String errorMessage);
+
+    int updatePhase(@Param("id") Long id, @Param("phase") JobPhase phase);
+
+    int updateJobControl(
+            @Param("id") Long id,
+            @Param("phase") JobPhase phase,
+            @Param("jobState") JobState jobState);
+
+    int markJobFailed(@Param("id") Long id, @Param("errorMessage") String errorMessage);
+
+    int markStoppingAsStopped();
 
     int deleteById(@Param("id") Long id);
 
