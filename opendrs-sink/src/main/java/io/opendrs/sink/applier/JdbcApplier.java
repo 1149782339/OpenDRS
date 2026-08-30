@@ -18,6 +18,7 @@ import io.opendrs.sink.annotation.ThreadSafe;
 import io.opendrs.sink.connection.JdbcConnection;
 import io.opendrs.sink.context.ConnectorContext;
 import io.opendrs.sink.context.TaskContext;
+import io.opendrs.sink.ddl.DdlStatements;
 import io.opendrs.sink.ddl.converters.ConversionConfiguration;
 import io.opendrs.sink.ddl.converters.ConversionResult;
 import io.opendrs.sink.ddl.converters.ConversionStatus;
@@ -148,11 +149,13 @@ public class JdbcApplier implements Applier<Collection<ChangeEvent>> {
         if (result.getStatus() == ConversionStatus.FAILED) {
             throw new ApplierException("Failed to convert ddl, detail: " + result.getErrors() + "\"");
         }
+        List<String> statements = DdlStatements.executableForPostgres(result.getStatements());
+        if (statements.isEmpty()) {
+            LOGGER.info("skip mysql session/non-ddl schema event: {}", event.getDDL());
+            return;
+        }
         try {
-            for (String statement : result.getStatements()) {
-                if (statement == null || statement.isBlank()) {
-                    continue;
-                }
+            for (String statement : statements) {
                 databaseDialect.executeDDL(resolvedTableId, statement, connection);
             }
             connection.commit();
@@ -335,10 +338,7 @@ public class JdbcApplier implements Applier<Collection<ChangeEvent>> {
             connection.setAutoCommit(false);
             TableId resolved = databaseDialect.resolveTableId(tableId);
             ensureSchema(connection, resolved);
-            for (String statement : statements) {
-                if (statement == null || statement.isBlank()) {
-                    continue;
-                }
+            for (String statement : DdlStatements.executableForPostgres(statements)) {
                 databaseDialect.executeDDL(resolved, statement, connection);
             }
             connection.commit();
