@@ -12,7 +12,7 @@
         <result property="dbName" column="db_name"/>
         <result property="username" column="username"/>
         <result property="password" column="password"/>
-        <result property="extraJson" column="extra_json"
+        <result property="extra" column="extra_json"
                 typeHandler="io.opendrs.migration.mapper.type.JsonMapTypeHandler"/>
         <result property="createdAt" column="created_at"/>
         <result property="updatedAt" column="updated_at"/>
@@ -21,7 +21,7 @@
     <insert id="insert" useGeneratedKeys="true" keyProperty="id">
         INSERT INTO connection_info (name, type, host, port, db_name, username, password, extra_json)
         VALUES (#{name}, #{type}, #{host}, #{port}, #{dbName}, #{username}, #{password},
-                #{extraJson, typeHandler=io.opendrs.migration.mapper.type.JsonMapTypeHandler})
+                #{extra, typeHandler=io.opendrs.migration.mapper.type.JsonMapTypeHandler})
     </insert>
 
     <select id="findById" resultMap="ConnectionInfoMap">
@@ -35,4 +35,8 @@
         FROM connection_info
         WHERE name = #{name}
     </select>
+
+    <delete id="deleteById">
+        DELETE FROM connection_info WHERE id = #{id}
+    </delete>
 </mapper>

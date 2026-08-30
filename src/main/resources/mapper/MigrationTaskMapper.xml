@@ -82,4 +82,11 @@
     <delete id="deleteById">
         DELETE FROM migration_task WHERE id = #{id}
     </delete>
+
+    <select id="countByConnectionId" resultType="int">
+        SELECT COUNT(*)
+        FROM migration_task
+        WHERE source_connection_id = #{connectionId}
+           OR target_connection_id = #{connectionId}
+    </select>
 </mapper>

@@ -64,7 +64,11 @@ class MigrationTaskApiTest {
                 .andExpect(jsonPath("$.data.state").value("CREATED"))
                 .andExpect(jsonPath("$.data.source.password").value("***"))
                 .andExpect(jsonPath("$.data.target.password").value("***"))
-                .andExpect(jsonPath("$.data.source.host").value("10.0.0.1"));
+                .andExpect(jsonPath("$.data.source.host").value("10.0.0.1"))
+                .andExpect(jsonPath("$.data.source.extra.pdb").value("ORCLPDB1"))
+                .andExpect(jsonPath("$.data.source.extra.connectionType").value("SERVICE"))
+                .andExpect(jsonPath("$.data.target.extra.useSsl").value(false))
+                .andExpect(jsonPath("$.data.target.extra.serverTimezone").value("UTC"));
 
         var task = taskMapper.findById(id);
         assertThat(task.getSourceConnectionId()).isNotNull();
@@ -74,7 +78,11 @@ class MigrationTaskApiTest {
         assertThat(source.getName()).isEqualTo("hr-oracle-to-mysql-source");
         assertThat(target.getName()).isEqualTo("hr-oracle-to-mysql-target");
         assertThat(source.getPassword()).isEqualTo("secret-source");
+        assertThat(source.getExtra()).containsEntry("pdb", "ORCLPDB1");
+        assertThat(source.getExtra()).containsEntry("connectionType", "SERVICE");
         assertThat(target.getDbName()).isEqualTo("hr");
+        assertThat(target.getExtra()).containsEntry("useSsl", false);
+        assertThat(target.getExtra()).containsEntry("serverTimezone", "UTC");
     }
 
     @Test
@@ -285,7 +293,11 @@ class MigrationTaskApiTest {
                   "port": 1521,
                   "database": "ORCL",
                   "username": "cdc",
-                  "password": "secret-source"
+                  "password": "secret-source",
+                  "extra": {
+                    "pdb": "ORCLPDB1",
+                    "connectionType": "SERVICE"
+                  }
                 }
                 """;
     }
@@ -298,7 +310,11 @@ class MigrationTaskApiTest {
                   "port": 3306,
                   "database": "hr",
                   "username": "drs",
-                  "password": "secret-target"
+                  "password": "secret-target",
+                  "extra": {
+                    "useSsl": false,
+                    "serverTimezone": "UTC"
+                  }
                 }
                 """;
     }

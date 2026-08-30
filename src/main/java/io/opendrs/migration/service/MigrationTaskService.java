@@ -148,6 +148,7 @@ public class MigrationTaskService {
         connection.setDbName(config.database());
         connection.setUsername(config.username());
         connection.setPassword(config.password());
+        connection.setExtra(config.extra());
         connectionMapper.insert(connection);
         return connection;
     }
@@ -215,6 +216,7 @@ public class MigrationTaskService {
                 connection.getPort(),
                 connection.getDbName(),
                 connection.getUsername(),
-                connection.getPassword());
+                connection.getPassword(),
+                connection.getExtra());
     }
 }

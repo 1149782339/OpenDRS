@@ -53,7 +53,9 @@ Flyway creates:
 - `debezium_offset` — reserved for later Debezium `OffsetBackingStore` (v1 does not write)
 - `debezium_schema_history` — reserved for later Debezium `DatabaseHistory` (v1 does not write)
 
-Create still accepts nested `source` / `target` objects. The service inserts `connection_info` rows named `{taskName}-source` / `{taskName}-target` and stores their ids on the task. There is no connections REST resource yet.
+Create still accepts nested `source` / `target` objects. The service inserts `connection_info` rows named `{taskName}-source` / `{taskName}-target` (including optional `extra`) and stores their ids on the task.
+
+Independent connections can also be created, tested, and deleted under `/api/v1/migration/connections`. Create does **not** auto-test JDBC.
 
 ## API contract
 
@@ -68,7 +70,7 @@ Every HTTP body is:
 ```
 
 - Success: `code` is `1000`, `message` is `"success"`.
-- Business failures (`1001`–`1003`): **HTTP 200**, `code` is the business code, `message` is the error text.
+- Business failures (`1001`–`1006`): **HTTP 200**, `code` is the business code, `message` is the error text.
 - System failures (`1500` DB, `1501` internal): **HTTP 500**, same envelope. SQL and stack traces are never returned.
 
 | Code | Meaning | HTTP |
@@ -77,12 +79,70 @@ Every HTTP body is:
 | 1001 | PARAM_INVALID | 200 |
 | 1002 | TASK_NOT_FOUND | 200 |
 | 1003 | TASK_CONFLICT | 200 |
+| 1004 | CONNECTION_NOT_FOUND | 200 |
+| 1005 | CONNECTION_TEST_FAILED | 200 |
+| 1006 | CONNECTION_IN_USE | 200 |
 | 1500 | DB_ERROR | 500 |
 | 1501 | INTERNAL_ERROR | 500 |
 
-All endpoints are under `/api/v1/migration/tasks`. JSON is camelCase. Passwords are persisted on `connection_info` but always returned as `***`. Public task id is a **BIGINT** (auto-increment). Task `name` is unique.
+JSON is camelCase. Passwords are persisted on `connection_info` but always returned as `***`. Public ids are **BIGINT** (auto-increment). Task `name` and connection `name` are unique.
 
-### Endpoints
+### Connection `extra`
+
+Optional JSON object on request `ConnectionInfo`, persisted as `connection_info.extra_json`. Unknown keys are stored as-is. Do not put `database.server.id` here (that belongs in task options).
+
+| Engine | Key | Notes |
+| --- | --- | --- |
+| Oracle | `pdb` | After connect: `ALTER SESSION SET CONTAINER`. Not part of the JDBC URL. |
+| Oracle | `connectionType` | `SERVICE` (default) or `SID`. `database` is that value. |
+| MySQL | `useSsl` | Mapped to JDBC `useSSL`. |
+| MySQL | `serverTimezone` | JDBC `serverTimezone`. |
+
+`JdbcUrlBuilder` URLs:
+
+- MySQL: `jdbc:mysql://host:port/db` plus `useSSL` / `serverTimezone` query params from extra
+- Oracle SERVICE: `jdbc:oracle:thin:@//host:port/service`
+- Oracle SID: `jdbc:oracle:thin:@host:port:sid`
+
+### Connection endpoints
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `POST` | `/api/v1/migration/connections` | Persist only. Duplicate `name` → `1001`. No JDBC ping. |
+| `DELETE` | `/api/v1/migration/connections/{id}` | Missing → `1004`. Referenced by a task → `1006`. |
+| `POST` | `/api/v1/migration/connections/test` | Body is request `ConnectionInfo`. Ping only, no persist. Fail → `1005`. |
+| `POST` | `/api/v1/migration/connections/{id}/test` | Ping the stored row (real password). Fail → `1005`. |
+
+Create request wraps `@NotBlank name` + `@Valid ConnectionInfo`:
+
+```http
+POST /api/v1/migration/connections
+Content-Type: application/json
+```
+
+```json
+{
+  "name": "oracle-hr",
+  "connection": {
+    "type": "ORACLE",
+    "host": "10.0.0.1",
+    "port": 1521,
+    "database": "ORCL",
+    "username": "cdc",
+    "password": "secret",
+    "extra": {
+      "pdb": "ORCLPDB1",
+      "connectionType": "SERVICE"
+    }
+  }
+}
+```
+
+Create response `data` includes `id`, `name`, `type`, `host`, `port`, `database`, `username`, `password` (`***`), `extra`, `createdAt`, `updatedAt`.
+
+Test success `data`: `{ "ok": true, "latencyMs": 12 }`.
+
+### Task endpoints
 
 | Method | Path | Notes |
 | --- | --- | --- |
@@ -111,7 +171,11 @@ Content-Type: application/json
     "port": 1521,
     "database": "ORCL",
     "username": "cdc",
-    "password": "***"
+    "password": "***",
+    "extra": {
+      "pdb": "ORCLPDB1",
+      "connectionType": "SERVICE"
+    }
   },
   "target": {
     "type": "MYSQL",
@@ -119,7 +183,11 @@ Content-Type: application/json
     "port": 3306,
     "database": "hr",
     "username": "drs",
-    "password": "***"
+    "password": "***",
+    "extra": {
+      "useSsl": false,
+      "serverTimezone": "UTC"
+    }
   },
   "tables": {
     "objects": [
@@ -209,15 +277,15 @@ In-memory registry is runtime only; MySQL is the source of truth for state.
 mvn -q test
 ```
 
-Uses in-memory H2 (MySQL compatibility mode) with a Flyway schema that still names tables `debezium_offset` / `debezium_schema_history`. No live Oracle is required.
+Uses in-memory H2 (MySQL compatibility mode) with a Flyway schema that still names tables `debezium_offset` / `debezium_schema_history`. Connection test APIs are mocked in CI (`JdbcConnectionFactory`); no live Oracle/MySQL is required.
 
 ## Out of scope (v1)
 
 - Embedded Debezium Engine / OffsetBackingStore / schema history writer
 - Parallel SELECT/INSERT dump
 - Job stop / cancel / STOPPING / graceful shutdown
-- Connection REST CRUD
-- Oracle JDBC / source connectors
+- Connection list / update
+- Embedded Oracle/MySQL source connectors (DriverManager helper only)
 - Column mapping
 - Kafka Connect
 - Auth / Spring Security

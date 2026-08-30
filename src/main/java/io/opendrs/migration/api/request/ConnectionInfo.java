@@ -5,6 +5,7 @@ import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
+import java.util.Map;
 
 public record ConnectionInfo(
         @NotNull DbType type,
@@ -12,9 +13,10 @@ public record ConnectionInfo(
         @NotNull @Min(1) @Max(65535) Integer port,
         @NotBlank String database,
         @NotBlank String username,
-        @NotBlank String password
+        @NotBlank String password,
+        Map<String, Object> extra
 ) {
     public ConnectionInfo masked() {
-        return new ConnectionInfo(type, host, port, database, username, "***");
+        return new ConnectionInfo(type, host, port, database, username, "***", extra);
     }
 }
