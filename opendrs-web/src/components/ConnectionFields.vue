@@ -5,10 +5,12 @@ import { DEFAULT_PORTS, type ConnectionInfo, type DbType } from '@/types/api'
 const props = withDefaults(
   defineProps<{
     modelValue: ConnectionInfo
-    extraText: string
+    extraText?: string
     passwordPlaceholder?: string
+    lockType?: boolean
+    showExtra?: boolean
   }>(),
-  { passwordPlaceholder: '请输入密码' },
+  { extraText: '', passwordPlaceholder: '请输入密码', lockType: false, showExtra: true },
 )
 
 const emit = defineEmits<{
@@ -38,7 +40,12 @@ function onTypeChange(type: DbType) {
 
 <template>
   <el-form-item label="类型" required>
-    <el-select :model-value="connection.type" style="width: 100%" @change="onTypeChange">
+    <el-select
+      :model-value="connection.type"
+      :disabled="lockType"
+      style="width: 100%"
+      @change="onTypeChange"
+    >
       <el-option v-for="item in types" :key="item" :label="item" :value="item" />
     </el-select>
   </el-form-item>
@@ -71,7 +78,7 @@ function onTypeChange(type: DbType) {
       @update:model-value="patch({ password: $event })"
     />
   </el-form-item>
-  <el-form-item label="额外参数 JSON">
+  <el-form-item v-if="showExtra" label="额外参数 JSON">
     <el-input
       :model-value="extraText"
       type="textarea"

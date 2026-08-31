@@ -6,7 +6,7 @@ Open data replication service (DRS). This repository is a **Maven multi-module**
 - `opendrs-service` — Spring Boot app (`io.opendrs.OpenDRSApplication`). Incremental CDC applies Debezium events onto PostgreSQL through the sink.
 - `opendrs-web` — Vue 3 admin UI (Vite; **not** a Maven module).
 
-The service persists migration tasks with MyBatis, validates table mappings, runs a **synchronous precheck**, drives a **start/stop** coordinator via `job_phase` + `job_state`, and runs **one Debezium Engine** per job (schema + data snapshot, then streaming apply through the sink). There is no separate FULL dump round.
+The service persists migration tasks with MyBatis, validates table mappings, runs an **asynchronous precheck** (HTTP returns immediately; results accumulate on the task), drives a **start/stop** coordinator via `job_phase` + `job_state`, and runs **one Debezium Engine** per job (schema + data snapshot, then streaming apply through the sink). There is no separate FULL dump round.
 
 ## Requirements
 
@@ -48,6 +48,8 @@ Admin UI (dev server proxies `/api` to port `8080`):
 cd opendrs-web && npm i && npm run dev
 ```
 
+Routes: `/connections`, `/tasks` (「新建」 opens the 4-step wizard at `/tasks/create`: 基本信息 → 源库及目标库 → 设置同步 → 预检查), `/tasks/:id`. There is no 任务确认 page. Precheck polls `GET .../precheck` every 1s.
+
 ### Environment variables
 
 | Variable | Default | Purpose |
@@ -62,7 +64,7 @@ cd opendrs-web && npm i && npm run dev
 Flyway creates:
 
 - `connection_info` — source/target credentials (passwords live only here)
-- `migration_task` — task config + progress + FKs to connections
+- `migration_task` — task config + progress + FKs to connections + `precheck_results_json` (async precheck)
 - `debezium_offset` — Debezium `OffsetBackingStore` (`TaskOffsetBackingStore`, upsert by `task_id` + `offset_key`)
 - `debezium_schema_history` — Debezium 3.x `SchemaHistory` (`TaskSchemaHistory`, append by `task_id` + `record_seq`)
 
@@ -164,7 +166,8 @@ Test success `data`: `{ "ok": true, "latencyMs": 12 }`.
 | `GET` | `/api/v1/migration/tasks` | Summaries: id, name, mode, jobPhase, jobState, source.type, target.type, createdAt |
 | `GET` | `/api/v1/migration/tasks/{id}` | Detail VO (`jobPhase` + `jobState`) |
 | `GET` | `/api/v1/migration/tasks/{id}/status` | jobPhase + jobState + progress + placeholder offset |
-| `POST` | `/api/v1/migration/tasks/{id}/precheck` | Sync. Phase `CREATED`→`PRECHECKING`→`PRECHECKED`. Success also sets `jobState=STARTING` (auto-start). Fail: phase stays `PRECHECKING`, `jobState=FAILED`. HTTP 200 / `code` 1000 even when `data.ok=false`. |
+| `POST` | `/api/v1/migration/tasks/{id}/precheck` | Async. CAS `CREATED` / `PRECHECKING+FAILED` / `PRECHECKED` (not in-flight) → `PRECHECKING`, then run checks on `taskJobExecutor`. HTTP 200 returns immediately (`ok` false until done). If already `PRECHECKING` with `jobState=null`, returns current results (no second run). Success later: `PRECHECKED` + `STARTING`. Fail: `PRECHECKING` + `FAILED`. Envelope `code` 1000 even when `data.ok=false`. |
+| `GET` | `/api/v1/migration/tasks/{id}/precheck` | Poll `MigrationPrecheckResponse` (`ok`, jobPhase, jobState, `results`, `sourceResults`, `targetResults`). |
 | `POST` | `/api/v1/migration/tasks/{id}/start` | CAS `jobState` `STOPPED`/`FAILED` → `STARTING` (phase unchanged). Reject `null` / `STARTING` / `RUNNING` / `STOPPING` (`1003`). Dispatcher attaches the thread. |
 | `POST` | `/api/v1/migration/tasks/{id}/stop` | `STARTING`→`STOPPED` (no `STOPPING`). `RUNNING`→`STOPPING` then the thread goes `STOPPED`. `STOPPING`/`STOPPED` idempotent. `FAILED`/`null` → `1003`. |
 | `DELETE` | `/api/v1/migration/tasks/{id}` | `1003` if `jobState` is `STARTING`/`RUNNING`/`STOPPING` (or in-flight `PRECHECKING`). |
@@ -253,19 +256,27 @@ Create is rejected with `1001 PARAM_INVALID` when:
 
 ### Precheck
 
-`POST /api/v1/migration/tasks/{id}/precheck` is synchronous (`MigrationPrecheckService`, not a `TaskJob` thread). No request body.
+`POST /api/v1/migration/tasks/{id}/precheck` is **asynchronous**: it CAS-starts the run, submits work to the existing `taskJobExecutor`, and returns the current `MigrationPrecheckResponse` without waiting on JDBC. Poll `GET /api/v1/migration/tasks/{id}/precheck` until `jobPhase` is `PRECHECKED` or `jobState` is `FAILED`. Accumulating `CheckResult` lists are stored on `migration_task.precheck_results_json` (Flyway V3) and exposed as `sourceResults` / `targetResults` plus a flat `results` array. No request body.
 
-Allowed when `jobState` is not in-flight (`STARTING`/`RUNNING`/`STOPPING`) and `jobPhase` is `CREATED` / `PRECHECKING` / `PRECHECKED`. Else `1003`. Missing task: `1002`. Missing `DbPreCheck` for the source or target type: `1001`.
+Allowed when `jobState` is not in-flight (`STARTING`/`RUNNING`/`STOPPING`) and:
+
+- `CREATED` + `jobState=null`, or
+- `PRECHECKING` + `FAILED` (重新校验), or
+- `PRECHECKED` + `STOPPED` / `FAILED` / `null`
+
+If the row is already `PRECHECKING` with `jobState=null` (a run is in progress, or a stuck row), POST is HTTP 200 / `code` 1000 with the current snapshot — it does **not** start a second executor job. Else `1003`. Missing task: `1002`. Missing `DbPreCheck` for the source or target type: `1001` (still on the request thread, before submit).
+
+`ok` is false until the job finishes successfully (`jobPhase=PRECHECKED` and every `CheckResult.ok`).
 
 Flow:
 
-1. CAS phase → `PRECHECKING`, `jobState` → `null`.
-2. Expand `tables.objects` (`allTables` / `tables` / `excludeTables`, including globs like `TMP_*`) to `List<Table>` **before** dialect precheck. `listTables` only applies exact `TableRef` excludes.
-3. Source: `MysqlPreCheck.precheckSource` (via `DbPreChecks`). Target: `PostgresPreCheck.precheckTarget` on mapped target `TableRef`s (`MappingValidator` rules; unmapped names stay).
+1. CAS phase → `PRECHECKING`, `jobState` → `null`, clear stored results. Return immediately.
+2. Background: expand `tables.objects` (`allTables` / `tables` / `excludeTables`, including globs like `TMP_*`) to `List<Table>` **before** dialect precheck. `listTables` only applies exact `TableRef` excludes. Persist source results, then target results, so the UI can poll incremental groups.
+3. Source: `MysqlPreCheck.precheckSource` (via `DbPreChecks`). Target: `PostgresPreCheck.precheckTarget` on mapped target `TableRef`s (`MappingValidator` rules; unmapped names stay). Existing check items only (no extra Huawei items such as disk space / charset / FKs).
 4. All `CheckResult.ok` → `jobPhase=PRECHECKED`, `jobState=STARTING` (auto-start; dispatcher picks it up). `error_message` cleared.
 5. Any fail → phase stays `PRECHECKING`, `jobState=FAILED`. **Still** envelope `code=1000`. Do **not** set `STARTING` on failure. CDC/binlog/connect failures are `CheckResult`s, not `1001` / `1005`.
 
-Example success:
+Example success (GET after completion):
 
 ```json
 {
@@ -288,6 +299,22 @@ Example success:
         "message": "log_bin is ON",
         "table": null
       },
+      {
+        "ok": true,
+        "name": "table_absent",
+        "message": "Target table does not exist: hr.emp",
+        "table": { "schema": "hr", "table": "emp" }
+      }
+    ],
+    "sourceResults": [
+      {
+        "ok": true,
+        "name": "log_bin",
+        "message": "log_bin is ON",
+        "table": null
+      }
+    ],
+    "targetResults": [
       {
         "ok": true,
         "name": "table_absent",
@@ -323,7 +350,7 @@ Failed checks (still `code` 1000):
 
 ### Job phase and job state
 
-Two columns on `migration_task` (Flyway V2):
+Two columns on `migration_task` (Flyway V2); precheck result JSON is Flyway V3 (`precheck_results_json`):
 
 | Column | Values |
 | --- | --- |

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { apiErrorMessage } from '@/api/http'
-import { precheckTask, startTask, stopTask } from '@/api/task'
+import { startAndWaitPrecheck, startTask, stopTask } from '@/api/task'
 import { useTaskStatusStore } from '@/stores/taskStatus'
 import { isActiveJobState, type MigrationPrecheckResponse } from '@/types/api'
 import { ElMessage } from 'element-plus'
@@ -35,7 +35,7 @@ async function load() {
 
 async function onPrecheck() {
   try {
-    const result = await precheckTask(taskId.value)
+    const result = await startAndWaitPrecheck(taskId.value)
     notifyPrecheck(result)
     await store.load(taskId.value)
   } catch (error) {
