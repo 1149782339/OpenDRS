@@ -4,6 +4,7 @@ Open data replication service (DRS). This repository is a **Maven multi-module**
 
 - `opendrs-sink` — JDBC applier, PostgreSQL target dialect, MySQL→PostgreSQL ANTLR DDL converter (no Spring, no Kafka Connect plugin).
 - `opendrs-service` — Spring Boot app (`io.opendrs.OpenDRSApplication`). Incremental CDC applies Debezium events onto PostgreSQL through the sink.
+- `opendrs-web` — Vue 3 admin UI (Vite; **not** a Maven module).
 
 The service persists migration tasks with MyBatis, validates table mappings, runs a **synchronous precheck**, drives a **start/stop** coordinator via `job_phase` + `job_state`, and runs **one Debezium Engine** per job (schema + data snapshot, then streaming apply through the sink). There is no separate FULL dump round.
 
@@ -40,6 +41,12 @@ mvn -pl opendrs-service -am spring-boot:run
 ```
 
 The service listens on `http://localhost:8080`.
+
+Admin UI (dev server proxies `/api` to port `8080`):
+
+```bash
+cd opendrs-web && npm i && npm run dev
+```
 
 ### Environment variables
 
@@ -115,6 +122,7 @@ Optional JSON object on request `ConnectionInfo`, persisted as `connection_info.
 | Method | Path | Notes |
 | --- | --- | --- |
 | `POST` | `/api/v1/migration/connections` | Persist only. Duplicate `name` → `1001`. No JDBC ping. |
+| `GET` | `/api/v1/migration/connections` | List saved connections. Password is always `***`. |
 | `DELETE` | `/api/v1/migration/connections/{id}` | Missing → `1004`. Referenced by a task → `1006`. |
 | `POST` | `/api/v1/migration/connections/test` | Body is request `ConnectionInfo`. Ping only, no persist. Fail → `1005`. |
 | `POST` | `/api/v1/migration/connections/{id}/test` | Ping the stored row (real password). Fail → `1005`. |
@@ -378,7 +386,7 @@ Uses in-memory H2 (MySQL compatibility mode) with a Flyway schema that still nam
 - Incremental-snapshot signaling (blocking initial snapshot vs binlog TTL is deferred)
 - Oracle source connector / OffsetCapture SQL
 - Quartz
-- Connection list / update
+- Connection update
 - Column mapping
 - Kafka Connect cluster (embedded Engine only)
 - Auth / Spring Security
