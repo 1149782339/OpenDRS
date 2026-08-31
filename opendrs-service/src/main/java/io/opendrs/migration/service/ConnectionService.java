@@ -10,6 +10,7 @@ import io.opendrs.migration.api.response.ConnectionTestResponse;
 import io.opendrs.migration.domain.ConnectionInfo;
 import io.opendrs.migration.mapper.ConnectionInfoMapper;
 import io.opendrs.migration.mapper.MigrationTaskMapper;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -39,6 +40,11 @@ public class ConnectionService {
         row.setName(request.name());
         connectionMapper.insert(row);
         return toResponse(requireConnection(row.getId()));
+    }
+
+    @Transactional(readOnly = true)
+    public List<ConnectionResponse> list() {
+        return connectionMapper.findAll().stream().map(ConnectionService::toResponse).toList();
     }
 
     @Transactional

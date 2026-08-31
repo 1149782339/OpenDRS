@@ -7,6 +7,7 @@ import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -98,6 +99,27 @@ class ConnectionApiTest {
                 .andExpect(jsonPath("$.data.port").value(5432))
                 .andExpect(jsonPath("$.data.database").value("appdb"))
                 .andExpect(jsonPath("$.data.extra.sslmode").value("require"));
+    }
+
+    @Test
+    void listReturnsCreatedConnectionsAndMasksPasswords() throws Exception {
+        long mysqlId = createConnection("list-mysql", mysqlConnectionJson("secret-mysql"));
+        long pgId = createConnection("list-pg", postgresqlConnectionJson("secret-pg"));
+
+        mockMvc.perform(get(BASE))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(1000))
+                .andExpect(jsonPath("$.message").value("success"))
+                .andExpect(jsonPath("$.data[?(@.id==" + mysqlId + ")].name").value("list-mysql"))
+                .andExpect(jsonPath("$.data[?(@.id==" + mysqlId + ")].type").value("MYSQL"))
+                .andExpect(jsonPath("$.data[?(@.id==" + mysqlId + ")].host").value("10.0.0.2"))
+                .andExpect(jsonPath("$.data[?(@.id==" + mysqlId + ")].port").value(3306))
+                .andExpect(jsonPath("$.data[?(@.id==" + mysqlId + ")].database").value("hr"))
+                .andExpect(jsonPath("$.data[?(@.id==" + mysqlId + ")].username").value("drs"))
+                .andExpect(jsonPath("$.data[?(@.id==" + mysqlId + ")].password").value("***"))
+                .andExpect(jsonPath("$.data[?(@.id==" + pgId + ")].name").value("list-pg"))
+                .andExpect(jsonPath("$.data[?(@.id==" + pgId + ")].type").value("POSTGRESQL"))
+                .andExpect(jsonPath("$.data[?(@.id==" + pgId + ")].password").value("***"));
     }
 
     @Test

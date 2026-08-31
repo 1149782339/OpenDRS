@@ -7,7 +7,9 @@ import io.opendrs.migration.api.response.ConnectionResponse;
 import io.opendrs.migration.api.response.ConnectionTestResponse;
 import io.opendrs.migration.service.ConnectionService;
 import jakarta.validation.Valid;
+import java.util.List;
 import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -27,6 +29,11 @@ public class ConnectionController {
     @PostMapping
     public Response<ConnectionResponse> create(@Valid @RequestBody CreateConnectionRequest request) {
         return Response.success(connectionService.create(request));
+    }
+
+    @GetMapping
+    public Response<List<ConnectionResponse>> list() {
+        return Response.success(connectionService.list());
     }
 
     @DeleteMapping("/{id}")

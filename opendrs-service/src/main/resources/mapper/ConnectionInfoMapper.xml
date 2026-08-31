@@ -24,6 +24,12 @@
                 #{extra, typeHandler=io.opendrs.migration.mapper.type.JsonMapTypeHandler})
     </insert>
 
+    <select id="findAll" resultMap="ConnectionInfoMap">
+        SELECT id, name, type, host, port, db_name, username, password, extra_json, created_at, updated_at
+        FROM connection_info
+        ORDER BY id
+    </select>
+
     <select id="findById" resultMap="ConnectionInfoMap">
         SELECT id, name, type, host, port, db_name, username, password, extra_json, created_at, updated_at
         FROM connection_info
