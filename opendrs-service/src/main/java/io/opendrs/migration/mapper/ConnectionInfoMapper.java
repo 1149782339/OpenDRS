@@ -1,6 +1,7 @@
 package io.opendrs.migration.mapper;
 
 import io.opendrs.migration.domain.ConnectionInfo;
+import java.util.List;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 
@@ -8,6 +9,8 @@ import org.apache.ibatis.annotations.Param;
 public interface ConnectionInfoMapper {
 
     int insert(ConnectionInfo connection);
+
+    List<ConnectionInfo> findAll();
 
     ConnectionInfo findById(@Param("id") Long id);
 
