@@ -159,6 +159,8 @@ export interface MigrationPrecheckResponse {
   jobPhase: JobPhase
   jobState: JobState | null
   results: CheckResult[]
+  sourceResults?: CheckResult[]
+  targetResults?: CheckResult[]
 }
 
 export const DEFAULT_PORTS: Record<DbType, number> = {
@@ -171,6 +173,17 @@ export const ACTIVE_JOB_STATES: JobState[] = ['STARTING', 'RUNNING', 'STOPPING']
 
 export function isActiveJobState(state: JobState | null | undefined): boolean {
   return state != null && ACTIVE_JOB_STATES.includes(state)
+}
+
+export function isPrecheckFinished(result: MigrationPrecheckResponse): boolean {
+  if (result.jobState === 'FAILED') {
+    return true
+  }
+  return result.jobPhase !== 'CREATED' && result.jobPhase !== 'PRECHECKING'
+}
+
+export function isPrecheckRunning(result: MigrationPrecheckResponse | null | undefined): boolean {
+  return result != null && result.jobPhase === 'PRECHECKING' && result.jobState == null
 }
 
 export function emptyConnection(type: DbType = 'MYSQL'): ConnectionInfo {

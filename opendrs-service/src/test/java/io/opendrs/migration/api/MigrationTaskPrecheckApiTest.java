@@ -17,6 +17,8 @@ import io.opendrs.migration.domain.ConnectionInfo;
 import io.opendrs.migration.domain.JobPhase;
 import io.opendrs.migration.domain.JobState;
 import io.opendrs.migration.mapper.MigrationTaskMapper;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
@@ -28,6 +30,7 @@ import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
+import org.springframework.test.web.servlet.ResultActions;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -87,22 +90,82 @@ class MigrationTaskPrecheckApiTest {
         mockMvc.perform(post(BASE + "/" + id + "/precheck"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(1000))
-                .andExpect(jsonPath("$.message").value("success"))
+                .andExpect(jsonPath("$.message").value("success"));
+
+        JsonNode done = awaitPrecheckFinished(id);
+        assertThat(done.path("ok").asBoolean()).isTrue();
+        assertThat(done.path("jobPhase").asString()).isEqualTo("PRECHECKED");
+        assertThat(done.path("jobState").asString()).isEqualTo("STARTING");
+        assertThat(done.path("results").isArray()).isTrue();
+        assertThat(done.path("sourceResults").isArray()).isTrue();
+        assertThat(done.path("targetResults").isArray()).isTrue();
+
+        mockMvc.perform(get(BASE + "/" + id + "/precheck"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(1000))
                 .andExpect(jsonPath("$.data.ok").value(true))
                 .andExpect(jsonPath("$.data.jobPhase").value("PRECHECKED"))
                 .andExpect(jsonPath("$.data.jobState").value("STARTING"))
-                .andExpect(jsonPath("$.data.results").isArray())
                 .andExpect(jsonPath("$.data.results[?(@.name=='log_bin' && @.ok==true)]").isNotEmpty())
-                .andExpect(jsonPath("$.data.results[?(@.name=='table_absent')]").isNotEmpty());
+                .andExpect(jsonPath("$.data.results[?(@.name=='table_absent')]").isNotEmpty())
+                .andExpect(jsonPath("$.data.sourceResults[?(@.name=='log_bin')]").isNotEmpty())
+                .andExpect(jsonPath("$.data.targetResults[?(@.name=='table_absent')]").isNotEmpty());
 
         var stored = taskMapper.findById(id);
         assertThat(stored.getJobPhase()).isEqualTo(JobPhase.PRECHECKED);
         assertThat(stored.getJobState()).isEqualTo(JobState.STARTING);
         assertThat(stored.getErrorMessage()).isNull();
+        assertThat(stored.getPrecheckResultsJson()).isNotNull();
+        assertThat(stored.getPrecheckResultsJson().source()).isNotEmpty();
+        assertThat(stored.getPrecheckResultsJson().target()).isNotEmpty();
 
         mockMvc.perform(post(BASE + "/" + id + "/start"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(1003));
+    }
+
+    @Test
+    void postPrecheckReturnsWhileJdbcBlocked() throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        when(jdbcConnectionFactory.open(any(ConnectionInfo.class))).thenAnswer(invocation -> {
+            entered.countDown();
+            if (!release.await(10, TimeUnit.SECONDS)) {
+                throw new IllegalStateException("test latch timed out");
+            }
+            return conn;
+        });
+        when(mysqlDialect.schemaExists(any(), any())).thenReturn(true);
+        when(mysqlDialect.tableExists(any(), any(), any())).thenReturn(true);
+        stubTargetAbsent();
+        long id = createMysqlToPostgres("precheck-async");
+
+        try {
+            long startedAt = System.nanoTime();
+            mockMvc.perform(post(BASE + "/" + id + "/precheck"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(1000))
+                    .andExpect(jsonPath("$.data.ok").value(false))
+                    .andExpect(jsonPath("$.data.jobPhase").value("PRECHECKING"));
+            assertThat(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt)).isLessThan(1500);
+            assertThat(entered.await(2, TimeUnit.SECONDS)).isTrue();
+
+            mockMvc.perform(get(BASE + "/" + id + "/precheck"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data.ok").value(false))
+                    .andExpect(jsonPath("$.data.jobPhase").value("PRECHECKING"));
+
+            mockMvc.perform(post(BASE + "/" + id + "/precheck"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(1000))
+                    .andExpect(jsonPath("$.data.jobPhase").value("PRECHECKING"));
+        } finally {
+            release.countDown();
+        }
+        JsonNode done = awaitPrecheckFinished(id);
+        assertThat(done.path("ok").asBoolean()).isTrue();
+        assertThat(done.path("jobPhase").asString()).isEqualTo("PRECHECKED");
+        assertThat(done.path("jobState").asString()).isEqualTo("STARTING");
     }
 
     @Test
@@ -113,7 +176,15 @@ class MigrationTaskPrecheckApiTest {
 
         mockMvc.perform(post(BASE + "/" + id + "/precheck"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(1000))
+                .andExpect(jsonPath("$.code").value(1000));
+
+        JsonNode done = awaitPrecheckFinished(id);
+        assertThat(done.path("ok").asBoolean()).isFalse();
+        assertThat(done.path("jobPhase").asString()).isEqualTo("PRECHECKING");
+        assertThat(done.path("jobState").asString()).isEqualTo("FAILED");
+
+        mockMvc.perform(get(BASE + "/" + id + "/precheck"))
+                .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.ok").value(false))
                 .andExpect(jsonPath("$.data.jobPhase").value("PRECHECKING"))
                 .andExpect(jsonPath("$.data.jobState").value("FAILED"))
@@ -137,6 +208,21 @@ class MigrationTaskPrecheckApiTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(1002))
                 .andExpect(jsonPath("$.message").value("Task not found: 999999"));
+        mockMvc.perform(get(BASE + "/999999/precheck"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(1002));
+    }
+
+    @Test
+    void getPrecheckOnCreatedReturnsEmptyResults() throws Exception {
+        long id = createMysqlToPostgres("precheck-get-created");
+        mockMvc.perform(get(BASE + "/" + id + "/precheck"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(1000))
+                .andExpect(jsonPath("$.data.ok").value(false))
+                .andExpect(jsonPath("$.data.jobPhase").value("CREATED"))
+                .andExpect(jsonPath("$.data.results").isArray())
+                .andExpect(jsonPath("$.data.results").isEmpty());
     }
 
     @Test
@@ -144,10 +230,9 @@ class MigrationTaskPrecheckApiTest {
         stubSourceOk();
         stubTargetAbsent();
         long id = createMysqlToPostgres("precheck-starting");
-        mockMvc.perform(post(BASE + "/" + id + "/precheck"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(1000))
-                .andExpect(jsonPath("$.data.jobState").value("STARTING"));
+        mockMvc.perform(post(BASE + "/" + id + "/precheck")).andExpect(status().isOk());
+        JsonNode done = awaitPrecheckFinished(id);
+        assertThat(done.path("jobState").asString()).isEqualTo("STARTING");
 
         mockMvc.perform(post(BASE + "/" + id + "/precheck"))
                 .andExpect(status().isOk())
@@ -161,31 +246,32 @@ class MigrationTaskPrecheckApiTest {
         long id = createMysqlToPostgres("precheck-rerun");
 
         when(mysqlDialect.schemaExists(any(), any())).thenReturn(false);
-        mockMvc.perform(post(BASE + "/" + id + "/precheck"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.ok").value(false))
-                .andExpect(jsonPath("$.data.jobState").value("FAILED"));
+        mockMvc.perform(post(BASE + "/" + id + "/precheck")).andExpect(status().isOk());
+        JsonNode failed = awaitPrecheckFinished(id);
+        assertThat(failed.path("ok").asBoolean()).isFalse();
+        assertThat(failed.path("jobState").asString()).isEqualTo("FAILED");
 
         stubSourceOk();
         mockMvc.perform(post(BASE + "/" + id + "/precheck"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(1000))
-                .andExpect(jsonPath("$.data.ok").value(true))
-                .andExpect(jsonPath("$.data.jobPhase").value("PRECHECKED"))
-                .andExpect(jsonPath("$.data.jobState").value("STARTING"));
+                .andExpect(jsonPath("$.code").value(1000));
+        JsonNode recovered = awaitPrecheckFinished(id);
+        assertThat(recovered.path("ok").asBoolean()).isTrue();
+        assertThat(recovered.path("jobPhase").asString()).isEqualTo("PRECHECKED");
+        assertThat(recovered.path("jobState").asString()).isEqualTo("STARTING");
         assertThat(taskMapper.findById(id).getErrorMessage()).isNull();
 
         mockMvc.perform(post(BASE + "/" + id + "/stop"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.jobState").value("STOPPED"));
-        mockMvc.perform(post(BASE + "/" + id + "/precheck"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.ok").value(true))
-                .andExpect(jsonPath("$.data.jobState").value("STARTING"));
+        mockMvc.perform(post(BASE + "/" + id + "/precheck")).andExpect(status().isOk());
+        JsonNode rerun = awaitPrecheckFinished(id);
+        assertThat(rerun.path("ok").asBoolean()).isTrue();
+        assertThat(rerun.path("jobState").asString()).isEqualTo("STARTING");
     }
 
     @Test
-    void precheckFromStuckPrecheckingRetries() throws Exception {
+    void precheckFromStuckPrecheckingReturnsCurrentWithoutSecondRun() throws Exception {
         stubSourceOk();
         stubTargetAbsent();
         long id = createMysqlToPostgres("precheck-stuck");
@@ -194,9 +280,10 @@ class MigrationTaskPrecheckApiTest {
         mockMvc.perform(post(BASE + "/" + id + "/precheck"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(1000))
-                .andExpect(jsonPath("$.data.ok").value(true))
-                .andExpect(jsonPath("$.data.jobPhase").value("PRECHECKED"))
-                .andExpect(jsonPath("$.data.jobState").value("STARTING"));
+                .andExpect(jsonPath("$.data.ok").value(false))
+                .andExpect(jsonPath("$.data.jobPhase").value("PRECHECKING"));
+        assertThat(taskMapper.findById(id).getJobPhase()).isEqualTo(JobPhase.PRECHECKING);
+        assertThat(taskMapper.findById(id).getJobState()).isNull();
     }
 
     @Test
@@ -228,12 +315,36 @@ class MigrationTaskPrecheckApiTest {
 
         mockMvc.perform(post(BASE + "/" + id + "/precheck"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(1000))
-                .andExpect(jsonPath("$.data.ok").value(false))
-                .andExpect(jsonPath("$.data.jobPhase").value("PRECHECKING"))
-                .andExpect(jsonPath("$.data.jobState").value("FAILED"))
-                .andExpect(jsonPath("$.data.results[0].name").value("connect"))
-                .andExpect(jsonPath("$.data.results[0].ok").value(false));
+                .andExpect(jsonPath("$.code").value(1000));
+
+        JsonNode done = awaitPrecheckFinished(id);
+        assertThat(done.path("ok").asBoolean()).isFalse();
+        assertThat(done.path("jobPhase").asString()).isEqualTo("PRECHECKING");
+        assertThat(done.path("jobState").asString()).isEqualTo("FAILED");
+        assertThat(done.path("results").get(0).path("name").asString()).isEqualTo("connect");
+        assertThat(done.path("results").get(0).path("ok").asBoolean()).isFalse();
+    }
+
+    private JsonNode awaitPrecheckFinished(long id) throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        ResultActions last = null;
+        while (System.nanoTime() < deadline) {
+            last = mockMvc.perform(get(BASE + "/" + id + "/precheck")).andExpect(status().isOk());
+            MvcResult result = last.andReturn();
+            JsonNode data = jsonMapper.readTree(result.getResponse().getContentAsString()).path("data");
+            String phase = data.path("jobPhase").asString();
+            String state = data.path("jobState").isNull() ? null : data.path("jobState").asString();
+            if ("PRECHECKED".equals(phase)
+                    || JobPhase.SCHEMA_SNAPSHOT.name().equals(phase)
+                    || JobPhase.FULL.name().equals(phase)
+                    || JobPhase.INCREMENTAL.name().equals(phase)
+                    || "FAILED".equals(state)) {
+                return data;
+            }
+            Thread.sleep(20);
+        }
+        String body = last == null ? "<none>" : last.andReturn().getResponse().getContentAsString();
+        throw new AssertionError("precheck did not finish for task " + id + ": " + body);
     }
 
     private void stubSourceOk() {

@@ -22,7 +22,8 @@ npm run dev
 浏览器打开 [http://localhost:5173](http://localhost:5173)。
 
 - 连接页：`/connections`
-- 任务页：`/tasks`
+- 任务页：`/tasks`（「新建」进入四步向导）
+- 新建任务：`/tasks/create`（基本信息 → 源库及目标库 → 设置同步 → 预检查；无任务确认页）
 - 任务详情：`/tasks/:id`（`jobState` 为 `STARTING` / `RUNNING` / `STOPPING` 时每 2 秒轮询状态）
 
 生产构建：`npm run build`。当前 `base` 为 `/`。

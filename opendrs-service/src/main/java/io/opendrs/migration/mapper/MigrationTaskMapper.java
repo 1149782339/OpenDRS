@@ -3,6 +3,7 @@ package io.opendrs.migration.mapper;
 import io.opendrs.migration.domain.JobPhase;
 import io.opendrs.migration.domain.JobState;
 import io.opendrs.migration.domain.MigrationTask;
+import io.opendrs.precheck.PrecheckResults;
 import java.util.List;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
@@ -34,6 +35,9 @@ public interface MigrationTaskMapper {
             @Param("id") Long id,
             @Param("expectedPhase") JobPhase expectedPhase,
             @Param("expectedJobState") JobState expectedJobState);
+
+    int updatePrecheckResults(
+            @Param("id") Long id, @Param("precheckResultsJson") PrecheckResults precheckResultsJson);
 
     int completePrecheckSuccess(@Param("id") Long id);
 

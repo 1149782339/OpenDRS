@@ -2,6 +2,7 @@ package io.opendrs.migration.domain;
 
 import io.opendrs.migration.api.request.MigrationOptions;
 import io.opendrs.migration.api.request.TableSelection;
+import io.opendrs.precheck.PrecheckResults;
 import java.time.Instant;
 
 public class MigrationTask {
@@ -15,6 +16,7 @@ public class MigrationTask {
     private Long targetConnectionId;
     private TableSelection tablesJson;
     private MigrationOptions optionsJson;
+    private PrecheckResults precheckResultsJson;
     private int tablesTotal;
     private int tablesDone;
     private long rowsDone;
@@ -93,6 +95,14 @@ public class MigrationTask {
 
     public void setOptionsJson(MigrationOptions optionsJson) {
         this.optionsJson = optionsJson;
+    }
+
+    public PrecheckResults getPrecheckResultsJson() {
+        return precheckResultsJson;
+    }
+
+    public void setPrecheckResultsJson(PrecheckResults precheckResultsJson) {
+        this.precheckResultsJson = precheckResultsJson;
     }
 
     public int getTablesTotal() {
