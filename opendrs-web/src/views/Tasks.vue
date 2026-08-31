@@ -310,7 +310,11 @@ onMounted(load)
             />
           </el-select>
         </el-form-item>
-        <ConnectionFields v-model="form.source" v-model:extra-text="form.sourceExtra" />
+        <ConnectionFields
+          v-model="form.source"
+          v-model:extra-text="form.sourceExtra"
+          password-placeholder="已保存连接的密码为 ***，请重新输入"
+        />
 
         <el-divider content-position="left">目标连接</el-divider>
         <el-form-item label="已保存连接">
@@ -330,7 +334,11 @@ onMounted(load)
             />
           </el-select>
         </el-form-item>
-        <ConnectionFields v-model="form.target" v-model:extra-text="form.targetExtra" />
+        <ConnectionFields
+          v-model="form.target"
+          v-model:extra-text="form.targetExtra"
+          password-placeholder="已保存连接的密码为 ***，请重新输入"
+        />
 
         <el-divider content-position="left">表选择</el-divider>
         <div v-for="(object, index) in form.objects" :key="index" class="schema-row">

@@ -2,10 +2,14 @@
 import { computed } from 'vue'
 import { DEFAULT_PORTS, type ConnectionInfo, type DbType } from '@/types/api'
 
-const props = defineProps<{
-  modelValue: ConnectionInfo
-  extraText: string
-}>()
+const props = withDefaults(
+  defineProps<{
+    modelValue: ConnectionInfo
+    extraText: string
+    passwordPlaceholder?: string
+  }>(),
+  { passwordPlaceholder: '请输入密码' },
+)
 
 const emit = defineEmits<{
   'update:modelValue': [value: ConnectionInfo]
@@ -63,7 +67,7 @@ function onTypeChange(type: DbType) {
       type="password"
       show-password
       autocomplete="new-password"
-      placeholder="已保存连接的密码为 ***，请重新输入"
+      :placeholder="passwordPlaceholder"
       @update:model-value="patch({ password: $event })"
     />
   </el-form-item>
