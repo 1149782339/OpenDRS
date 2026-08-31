@@ -15,15 +15,20 @@ import io.opendrs.migration.mapper.MigrationTaskMapper;
 import io.opendrs.precheck.CheckResult;
 import io.opendrs.precheck.DbPreCheck;
 import io.opendrs.precheck.DbPreChecks;
+import io.opendrs.precheck.PrecheckResults;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Collectors;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
 @Service
 public class MigrationPrecheckService {
 
+    private static final Logger log = LoggerFactory.getLogger(MigrationPrecheckService.class);
     private static final int ERROR_MESSAGE_MAX = 1024;
 
     private final MigrationTaskMapper taskMapper;
@@ -32,6 +37,7 @@ public class MigrationPrecheckService {
     private final TableSelectionExpander tableExpander;
     private final DbPreChecks dbPreChecks;
     private final TransactionTemplate transactionTemplate;
+    private final ThreadPoolTaskExecutor taskJobExecutor;
 
     public MigrationPrecheckService(
             MigrationTaskMapper taskMapper,
@@ -39,42 +45,42 @@ public class MigrationPrecheckService {
             MappingValidator mappingValidator,
             TableSelectionExpander tableExpander,
             DbPreChecks dbPreChecks,
-            TransactionTemplate transactionTemplate) {
+            TransactionTemplate transactionTemplate,
+            ThreadPoolTaskExecutor taskJobExecutor) {
         this.taskMapper = taskMapper;
         this.connectionMapper = connectionMapper;
         this.mappingValidator = mappingValidator;
         this.tableExpander = tableExpander;
         this.dbPreChecks = dbPreChecks;
         this.transactionTemplate = transactionTemplate;
+        this.taskJobExecutor = taskJobExecutor;
     }
 
-    public MigrationPrecheckResponse precheck(Long id) {
-        transactionTemplate.executeWithoutResult(status -> beginPrecheck(id));
-        List<CheckResult> results;
-        try {
-            results = runChecks(requireTask(id));
-        } catch (RuntimeException ex) {
-            taskMapper.markPrecheckFailed(id, truncate(ex.getMessage()));
-            throw ex;
-        }
-        boolean ok = results.stream().allMatch(CheckResult::ok);
-        if (ok) {
-            int updated = taskMapper.completePrecheckSuccess(id);
-            if (updated == 0) {
-                MigrationTask current = requireTask(id);
-                throw AppException.of(
-                        ErrorCode.TASK_CONFLICT,
-                        "Task " + id + " cannot complete precheck from phase " + current.getJobPhase()
-                                + " jobState " + current.getJobState());
+    public MigrationPrecheckResponse startPrecheck(Long id) {
+        boolean submitted = Boolean.TRUE.equals(transactionTemplate.execute(status -> beginPrecheck(id)));
+        if (submitted) {
+            try {
+                taskJobExecutor.execute(() -> runPrecheckJob(id));
+            } catch (RuntimeException ex) {
+                taskMapper.markPrecheckFailed(id, truncate(ex.getMessage()));
+                throw ex;
             }
-            return new MigrationPrecheckResponse(true, JobPhase.PRECHECKED, JobState.STARTING, results);
         }
-        taskMapper.markPrecheckFailed(id, truncate(summarizeFailures(results)));
-        return new MigrationPrecheckResponse(false, JobPhase.PRECHECKING, JobState.FAILED, results);
+        return getPrecheck(id);
     }
 
-    private void beginPrecheck(Long id) {
+    public MigrationPrecheckResponse getPrecheck(Long id) {
+        return toResponse(requireTask(id));
+    }
+
+    /**
+     * @return true when a new background run was CAS-started
+     */
+    private boolean beginPrecheck(Long id) {
         MigrationTask task = requireTask(id);
+        if (isAlreadyPrechecking(task)) {
+            return false;
+        }
         if (!canPrecheck(task)) {
             throw AppException.of(
                     ErrorCode.TASK_CONFLICT,
@@ -87,11 +93,17 @@ public class MigrationPrecheckService {
         requirePreCheck(target.getType(), "target");
         int updated = taskMapper.beginPrecheck(id, task.getJobPhase(), task.getJobState());
         if (updated == 0) {
+            MigrationTask latest = requireTask(id);
+            if (isAlreadyPrechecking(latest)) {
+                return false;
+            }
             throw AppException.of(
                     ErrorCode.TASK_CONFLICT,
-                    "Task " + id + " cannot be prechecked from phase " + task.getJobPhase()
-                            + " jobState " + task.getJobState());
+                    "Task " + id + " cannot be prechecked from phase " + latest.getJobPhase()
+                            + " jobState " + latest.getJobState());
         }
+        taskMapper.updatePrecheckResults(id, PrecheckResults.empty());
+        return true;
     }
 
     static boolean canPrecheck(MigrationTask task) {
@@ -101,38 +113,90 @@ public class MigrationPrecheckService {
             return false;
         }
         JobPhase phase = task.getJobPhase();
-        if (phase != JobPhase.CREATED && phase != JobPhase.PRECHECKING && phase != JobPhase.PRECHECKED) {
-            return false;
+        if (phase == JobPhase.CREATED) {
+            return task.getJobState() == null;
         }
-        if (phase == JobPhase.CREATED && task.getJobState() != null) {
-            return false;
+        if (phase == JobPhase.PRECHECKING) {
+            return task.getJobState() == JobState.FAILED;
         }
-        return true;
+        if (phase == JobPhase.PRECHECKED) {
+            return task.getJobState() == null
+                    || task.getJobState() == JobState.STOPPED
+                    || task.getJobState() == JobState.FAILED;
+        }
+        return false;
     }
 
-    private List<CheckResult> runChecks(MigrationTask task) {
+    static boolean isAlreadyPrechecking(MigrationTask task) {
+        return task.getJobPhase() == JobPhase.PRECHECKING && task.getJobState() == null;
+    }
+
+    private void runPrecheckJob(Long id) {
+        try {
+            runChecks(id);
+        } catch (RuntimeException ex) {
+            log.warn("Precheck job failed for task {}", id, ex);
+            taskMapper.markPrecheckFailed(id, truncate(ex.getMessage()));
+        }
+    }
+
+    private void runChecks(Long id) {
+        MigrationTask task = requireTask(id);
         ConnectionInfo source = requireConnection(task.getSourceConnectionId());
         ConnectionInfo target = requireConnection(task.getTargetConnectionId());
         DbPreCheck sourceCheck = requirePreCheck(source.getType(), "source");
         DbPreCheck targetCheck = requirePreCheck(target.getType(), "target");
         TableSelection selection = task.getTablesJson();
 
-        List<CheckResult> results = new ArrayList<>();
+        PrecheckResults accumulated = PrecheckResults.empty();
+        persistResults(id, accumulated);
+
+        List<CheckResult> sourceResults = new ArrayList<>();
         List<Table> sourceTables;
         try {
             sourceTables = tableExpander.expand(source, selection);
         } catch (AppException ex) {
-            results.add(CheckResult.fail("connect", ex.getMessage()));
+            sourceResults.add(CheckResult.fail("connect", ex.getMessage()));
             sourceTables = tableExpander.expandExplicit(selection);
         }
 
-        if (results.stream().noneMatch(result -> "connect".equals(result.name()) && !result.ok())) {
-            results.addAll(sourceCheck.precheckSource(source, sourceTables));
+        if (sourceResults.stream().noneMatch(result -> "connect".equals(result.name()) && !result.ok())) {
+            sourceResults.addAll(sourceCheck.precheckSource(source, sourceTables));
         }
+        accumulated = accumulated.withSource(sourceResults);
+        persistResults(id, accumulated);
 
         List<Table> targetTables = mappingValidator.mapTargets(selection, sourceTables);
-        results.addAll(targetCheck.precheckTarget(target, targetTables));
-        return results;
+        List<CheckResult> targetResults = new ArrayList<>(targetCheck.precheckTarget(target, targetTables));
+        accumulated = accumulated.withTarget(targetResults);
+        persistResults(id, accumulated);
+
+        boolean ok = accumulated.all().stream().allMatch(CheckResult::ok);
+        if (ok) {
+            int updated = taskMapper.completePrecheckSuccess(id);
+            if (updated == 0) {
+                MigrationTask current = requireTask(id);
+                throw AppException.of(
+                        ErrorCode.TASK_CONFLICT,
+                        "Task " + id + " cannot complete precheck from phase " + current.getJobPhase()
+                                + " jobState " + current.getJobState());
+            }
+            return;
+        }
+        taskMapper.markPrecheckFailed(id, truncate(summarizeFailures(accumulated.all())));
+    }
+
+    private void persistResults(Long id, PrecheckResults results) {
+        taskMapper.updatePrecheckResults(id, results);
+    }
+
+    private MigrationPrecheckResponse toResponse(MigrationTask task) {
+        PrecheckResults stored = task.getPrecheckResultsJson() == null
+                ? PrecheckResults.empty()
+                : task.getPrecheckResultsJson();
+        boolean ok = task.getJobPhase() == JobPhase.PRECHECKED
+                && stored.all().stream().allMatch(CheckResult::ok);
+        return MigrationPrecheckResponse.of(ok, task.getJobPhase(), task.getJobState(), stored);
     }
 
     private DbPreCheck requirePreCheck(DbType type, String role) {

@@ -52,7 +52,12 @@ public class MigrationTaskController {
 
     @PostMapping("/{id}/precheck")
     public Response<MigrationPrecheckResponse> precheck(@PathVariable Long id) {
-        return Response.success(precheckService.precheck(id));
+        return Response.success(precheckService.startPrecheck(id));
+    }
+
+    @GetMapping("/{id}/precheck")
+    public Response<MigrationPrecheckResponse> getPrecheck(@PathVariable Long id) {
+        return Response.success(precheckService.getPrecheck(id));
     }
 
     @PostMapping("/{id}/start")

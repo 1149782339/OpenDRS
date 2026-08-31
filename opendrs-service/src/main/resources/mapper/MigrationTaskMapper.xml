@@ -15,6 +15,8 @@
                 typeHandler="io.opendrs.migration.mapper.type.TableSelectionTypeHandler"/>
         <result property="optionsJson" column="options_json"
                 typeHandler="io.opendrs.migration.mapper.type.MigrationOptionsTypeHandler"/>
+        <result property="precheckResultsJson" column="precheck_results_json"
+                typeHandler="io.opendrs.migration.mapper.type.PrecheckResultsTypeHandler"/>
         <result property="tablesTotal" column="tables_total"/>
         <result property="tablesDone" column="tables_done"/>
         <result property="rowsDone" column="rows_done"/>
@@ -26,7 +28,7 @@
 
     <sql id="taskColumns">
         id, name, mode, job_phase, job_state, source_connection_id, target_connection_id,
-        tables_json, options_json, tables_total, tables_done, rows_done, lag_ms,
+        tables_json, options_json, precheck_results_json, tables_total, tables_done, rows_done, lag_ms,
         error_message, created_at, updated_at
     </sql>
 
@@ -89,6 +91,7 @@
         SET job_phase = 'PRECHECKING',
             job_state = NULL,
             error_message = NULL,
+            precheck_results_json = NULL,
             updated_at = CURRENT_TIMESTAMP
         WHERE id = #{id}
           AND job_phase = #{expectedPhase}
@@ -96,6 +99,13 @@
             <when test="expectedJobState == null">AND job_state IS NULL</when>
             <otherwise>AND job_state = #{expectedJobState}</otherwise>
         </choose>
+    </update>
+
+    <update id="updatePrecheckResults">
+        UPDATE migration_task
+        SET precheck_results_json = #{precheckResultsJson, typeHandler=io.opendrs.migration.mapper.type.PrecheckResultsTypeHandler},
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = #{id}
     </update>
 
     <update id="completePrecheckSuccess">
