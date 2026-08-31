@@ -45,9 +45,9 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.mysql.MySQLContainer;
 
 /**
- * Real MySQL binlog IT: SCHEMA_SNAPSHOT Engine exits after writing offset + schema history, then
- * INCREMENTAL Engine emits a CDC {@link SourceRecord} for a JDBC insert. Offset/history live in H2;
- * the source is Testcontainers MySQL (not docker-compose metadata).
+ * Real MySQL binlog IT: one Engine snapshots existing rows then emits a CDC {@link SourceRecord}
+ * for a JDBC insert. Offset/history live in H2; the source is Testcontainers MySQL (not
+ * docker-compose metadata).
  */
 @SpringBootTest
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
@@ -107,7 +107,7 @@ class MysqlBinlogCdcIT {
 
     @Test
     @Timeout(value = 120, unit = TimeUnit.SECONDS)
-    void schemaSnapshotExitsThenIncrementalEmitsInsert() throws Exception {
+    void oneEngineSnapshotsExistingRowThenEmitsInsert() throws Exception {
         grantCdcPrivilegesAndCreateTable();
         long taskId = insertTask();
         ConnectionInfo source = sourceFromContainer();
@@ -119,23 +119,29 @@ class MysqlBinlogCdcIT {
             thread.setDaemon(true);
             return thread;
         });
-        CdcEngine schemaEngine = engineFactory.createSchemaSnapshot(spec);
+        RecordingChangeConsumer consumer = new RecordingChangeConsumer(taskId);
+        CdcEngine engine = engineFactory.create(spec, consumer, null);
+        Future<?> engineDone = executor.submit(engine::run);
         try {
-            Future<?> schemaDone = executor.submit(schemaEngine::run);
-            schemaDone.get(90, TimeUnit.SECONDS);
-            assertThat(schemaDone.isDone())
-                    .as("SCHEMA_SNAPSHOT Engine must exit (SchemaOnlySnapshotter.shouldStream=false)")
+            boolean seedSeen = consumer.awaitRow(1, "seed", 90, TimeUnit.SECONDS);
+            assertThat(seedSeen)
+                    .as("snapshot must emit the row that existed before Engine start")
                     .isTrue();
-            assertThat(schemaDone.isCancelled()).isFalse();
+            SourceRecord snapshot = consumer.findRow(1, "seed");
+            assertThat(LoggingChangeConsumer.extractOp(snapshot)).isEqualTo("r");
+
+            assertThat(consumer.awaitInitialSnapshotCompleted(30, TimeUnit.SECONDS))
+                    .as("Debezium must report Initial Snapshot COMPLETED without stopping the Engine")
+                    .isTrue();
 
             List<DebeziumOffset> offsets = offsetMapper.findByTaskId(taskId);
             assertThat(offsets).as("debezium_offset row for task " + taskId).isNotEmpty();
             String offsetVal = offsets.getFirst().getOffsetVal();
             assertThat(offsetVal)
-                    .as("schema snapshot offset must include binlog file/pos")
+                    .as("snapshot offset must include binlog file/pos")
                     .contains("file")
                     .contains("pos");
-            log.info("SCHEMA_SNAPSHOT offset task={} val={}", taskId, offsetVal);
+            log.info("capture offset task={} val={}", taskId, offsetVal);
 
             Integer historyRows = jdbcTemplate.queryForObject(
                     "SELECT COUNT(*) FROM debezium_schema_history WHERE task_id = ?", Integer.class, taskId);
@@ -144,42 +150,34 @@ class MysqlBinlogCdcIT {
                     .isGreaterThanOrEqualTo(1);
 
             insertCustomer(42, "cdc-it-row");
+            boolean insertSeen = consumer.awaitRow(42, "cdc-it-row", 60, TimeUnit.SECONDS);
+            assertThat(insertSeen)
+                    .as("Engine must emit a CDC SourceRecord after INSERT")
+                    .isTrue();
 
-            RecordingChangeConsumer consumer = new RecordingChangeConsumer(taskId);
-            CdcEngine incremental = engineFactory.createIncremental(spec, consumer);
-            Future<?> incrementalDone = executor.submit(incremental::run);
-            try {
-                boolean seen = consumer.awaitDataChange(60, TimeUnit.SECONDS);
-                assertThat(seen)
-                        .as("INCREMENTAL Engine must emit a CDC SourceRecord after INSERT")
-                        .isTrue();
+            SourceRecord record = consumer.findRow(42, "cdc-it-row");
+            assertThat(record).isNotNull();
+            Object op = LoggingChangeConsumer.extractOp(record);
+            Struct after = RecordingChangeConsumer.after(record);
+            String assertionLine = "CDC assertion: op="
+                    + op
+                    + " sourceOffset="
+                    + record.sourceOffset()
+                    + " after="
+                    + after;
+            log.info(assertionLine);
+            System.out.println(assertionLine);
 
-                SourceRecord record = consumer.firstTableDataChange();
-                assertThat(record).isNotNull();
-                Object op = LoggingChangeConsumer.extractOp(record);
-                Struct after = RecordingChangeConsumer.after(record);
-                String assertionLine = "CDC assertion: op="
-                        + op
-                        + " sourceOffset="
-                        + record.sourceOffset()
-                        + " after="
-                        + after;
-                log.info(assertionLine);
-                System.out.println(assertionLine);
-
-                assertThat(op)
-                        .as(assertionLine)
-                        .isIn("c", "r");
-                assertThat(after).as("envelope after for insert").isNotNull();
-                assertThat(String.valueOf(after.get("name"))).isEqualTo("cdc-it-row");
-                assertThat(String.valueOf(after.get("id"))).isEqualTo("42");
-                assertThat(record.sourceOffset()).isNotEmpty();
-            } finally {
-                incremental.stop();
-                incrementalDone.get(30, TimeUnit.SECONDS);
-            }
+            assertThat(op)
+                    .as(assertionLine)
+                    .isEqualTo("c");
+            assertThat(after).as("envelope after for insert").isNotNull();
+            assertThat(String.valueOf(after.get("name"))).isEqualTo("cdc-it-row");
+            assertThat(String.valueOf(after.get("id"))).isEqualTo("42");
+            assertThat(record.sourceOffset()).isNotEmpty();
         } finally {
-            schemaEngine.stop();
+            engine.stop();
+            engineDone.get(30, TimeUnit.SECONDS);
             executor.shutdownNow();
         }
     }

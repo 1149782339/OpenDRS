@@ -5,7 +5,7 @@ Open data replication service (DRS). This repository is a **Maven multi-module**
 - `opendrs-sink` — JDBC applier, PostgreSQL target dialect, MySQL→PostgreSQL ANTLR DDL converter (no Spring, no Kafka Connect plugin).
 - `opendrs-service` — Spring Boot app (`io.opendrs.OpenDRSApplication`). Incremental CDC applies Debezium events onto PostgreSQL through the sink.
 
-The service persists migration tasks with MyBatis, validates table mappings, runs a **synchronous precheck**, drives a **start/stop** coordinator via `job_phase` + `job_state`, and runs **two Debezium Engine rounds** (schema snapshot that creates target tables, then streaming apply). Full dump is a **stub** (log the offset JSON only).
+The service persists migration tasks with MyBatis, validates table mappings, runs a **synchronous precheck**, drives a **start/stop** coordinator via `job_phase` + `job_state`, and runs **one Debezium Engine** per job (schema + data snapshot, then streaming apply through the sink). There is no separate FULL dump round.
 
 ## Requirements
 
@@ -323,19 +323,19 @@ Two columns on `migration_task` (Flyway V2):
 | `job_state` | `NULL` \| `STARTING` \| `RUNNING` \| `STOPPING` \| `STOPPED` \| `FAILED` |
 
 ```
-phase:  CREATED → PRECHECKING → PRECHECKED → SCHEMA_SNAPSHOT → FULL → INCREMENTAL
+phase:  CREATED → PRECHECKING → PRECHECKED → SCHEMA_SNAPSHOT → INCREMENTAL
 state:  null    → (null / FAILED) → STARTING → RUNNING → STOPPING → STOPPED
                                     ↘ FAILED
 ```
 
 - **Dispatcher** (`@Scheduled` ~2s, single JVM): `SELECT` rows with `job_state IN (STARTING, RUNNING)` that have no live `TaskJobRegistry` entry → `putIfAbsent` then submit the coordinator. Re-reads after register: if `STOPPED`, does not start. Never spawns for `STOPPING`/`STOPPED`/`FAILED`/`NULL`.
 - **Boot**: any `STOPPING` → `STOPPED` (do not resume those). `RUNNING` with no live thread is respawned by the dispatcher (resume stub).
-- **Thread after attach**: `STARTING`→`RUNNING`. Then:
-  1. **SCHEMA_SNAPSHOT** — first `DebeziumEngine` (MySQL connector, custom Snapshotter: schema yes / data no / stream no; equivalent to `snapshot.mode=no_data`). AsyncEmbeddedEngine still polls after `shouldStream=false`, so this round enables the Debezium **sink notification** channel and `SchemaSnapshotStopConsumer` stops the Engine on Initial Snapshot `COMPLETED`. Schema-change events are converted (MySQL→PG) and executed on the target so tables exist before DML (Postgres precheck requires target tables **must not** already exist). If snapshot events are not enough to CREATE a table, `SHOW CREATE TABLE` on the source is converted as a fallback. Offset + schema history go to the metadata tables. CAS `job_phase=FULL`. On failure: `job_state=FAILED`, phase stays `SCHEMA_SNAPSHOT`.
-  2. **FULL** (stub) — `log.info` this task's offset JSON (`file` / `pos` / `gtids`). No SELECT/INSERT dump. CAS `job_phase=INCREMENTAL` when the mode includes incremental.
-  3. **INCREMENTAL** — second Engine, **same stores** so the binlog offset is reused (no second schema snapshot). `SinkApplyChangeConsumer` converts Debezium `SourceRecord`s and applies them through `opendrs-sink` (`JdbcApplier` + PostgreSQL upsert). Blocks until `STOPPING`: `engine.stop()` / `close()`, then `STOPPED` and `registry.remove`.
-- **Start** (`STOPPED`/`FAILED` → `STARTING`, phase unchanged so resume stays on `FULL`/`INCREMENTAL`). Reject `null` (not prechecked), `STARTING`, `RUNNING`, `STOPPING`. Precheck-failed (`PRECHECKING`+`FAILED`) cannot start.
-- **Stop**: `STARTING`→`STOPPED` directly. `RUNNING`→`STOPPING` + `job.requestStop()` which **stops the running Engine** (schema or incremental). Thread then `STOPPED` and `registry.remove`. `STOPPING`/`STOPPED` idempotent. `FAILED`/`null` → `1003`.
+- **Thread after attach**: `STARTING`→`RUNNING`. Then **one Engine**:
+  1. If `job_phase=PRECHECKED`, CAS `SCHEMA_SNAPSHOT`. If `FULL` (legacy stored row), CAS `INCREMENTAL` so the job is not stuck. `CREATED`/`PRECHECKING` do not start an Engine.
+  2. **Capture** — a single `DebeziumEngine` (`snapshot.mode=initial`: schema yes / data yes / then stream). Same `SinkApplyChangeConsumer` for DDL, snapshot rows (`op=r`), and incremental `c/u/d`. Offset + schema history go to the metadata tables. When Debezium reports Initial Snapshot `COMPLETED`, CAS `job_phase=INCREMENTAL` and **keep the Engine running**. Stop only on user STOP / failure. Blocking initial snapshot vs binlog TTL is deferred.
+  3. Resume from `INCREMENTAL` (or `SCHEMA_SNAPSHOT` mid-snapshot) starts the same one Engine; `initial` skips a completed snapshot when an offset already exists.
+- **Start** (`STOPPED`/`FAILED` → `STARTING`, phase unchanged so resume stays on `SCHEMA_SNAPSHOT`/`INCREMENTAL`). Reject `null` (not prechecked), `STARTING`, `RUNNING`, `STOPPING`. Precheck-failed (`PRECHECKING`+`FAILED`) cannot start.
+- **Stop**: `STARTING`→`STOPPED` directly. `RUNNING`→`STOPPING` + `job.requestStop()` which **stops the running Engine**. Thread then `STOPPED` and `registry.remove`. `STOPPING`/`STOPPED` idempotent. `FAILED`/`null` → `1003`.
 - **Delete**: `1003` if `jobState` is `STARTING`/`RUNNING`/`STOPPING`, or phase `PRECHECKING` with `jobState` null.
 
 `database.server.id` comes from task `options.databaseServerId` (`options_json`), not connection `extra`. Connection fields map through `DbDialect.debeziumSourceFields` (`database.hostname`, port, user, password, db) plus `JdbcUrlBuilder` extra (`useSsl` → `database.ssl.mode`). Official `JdbcOffsetBackingStore` is not used (it `DELETE FROM` the whole offset table).
@@ -368,13 +368,14 @@ From the reactor root this runs `opendrs-sink` then `opendrs-service`.
 
 Uses in-memory H2 (MySQL compatibility mode) with a Flyway schema that still names tables `debezium_offset` / `debezium_schema_history`. Connection test APIs are mocked in CI (`JdbcConnectionFactory`); no live Oracle/MySQL is required. TaskJob CDC phases are covered with a **fake Engine**; offset/history stores run against H2.
 
-`MysqlBinlogCdcIT` is a **Testcontainers** MySQL 8.0 binlog test (not the metadata `docker-compose`). It is included in `mvn test` (`*IT` via Surefire). When Docker is available it starts `mysql:8.0` with ROW/FULL binlog, runs the production SCHEMA_SNAPSHOT Engine until it exits (offset + schema history), then an INCREMENTAL Engine and asserts a CDC `SourceRecord` for a JDBC insert. When Docker is missing, JUnit `@EnabledIfDockerAvailable` / `@Testcontainers(disabledWithoutDocker = true)` skips it.
+`MysqlBinlogCdcIT` is a **Testcontainers** MySQL 8.0 binlog test (not the metadata `docker-compose`). It is included in `mvn test` (`*IT` via Surefire). When Docker is available it starts `mysql:8.0` with ROW/FULL binlog, runs **one** production capture Engine, asserts a snapshot `SourceRecord` (`op=r`) for a row that existed before Engine start, then a CDC record for a JDBC insert. When Docker is missing, JUnit `@EnabledIfDockerAvailable` / `@Testcontainers(disabledWithoutDocker = true)` skips it.
 
-`MysqlToPostgresCdcIT` starts MySQL 8 + PostgreSQL. SCHEMA_SNAPSHOT must CREATE the mapped target table; INCREMENTAL applies a MySQL INSERT and asserts the row on Postgres. Also skipped without Docker.
+`MysqlToPostgresCdcIT` starts MySQL 8 + PostgreSQL. One Engine must snapshot the pre-existing seed row onto Postgres, then apply a later MySQL INSERT. Also skipped without Docker.
 
 ## Out of scope (this batch)
 
-- Parallel SELECT/INSERT dump
+- Parallel SELECT/INSERT dump / table slicing
+- Incremental-snapshot signaling (blocking initial snapshot vs binlog TTL is deferred)
 - Oracle source connector / OffsetCapture SQL
 - Quartz
 - Connection list / update

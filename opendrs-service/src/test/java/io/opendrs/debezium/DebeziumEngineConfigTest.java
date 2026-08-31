@@ -15,13 +15,12 @@ import org.junit.jupiter.api.Test;
 class DebeziumEngineConfigTest {
 
     @Test
-    void schemaSnapshotUsesCustomNoDataFlagsAndStores() {
-        Properties props = DebeziumEngineConfig.schemaSnapshot(spec(7L));
+    void captureUsesInitialSnapshotAndStores() {
+        Properties props = DebeziumEngineConfig.capture(spec(7L));
 
         assertThat(props.getProperty("connector.class")).isEqualTo(DebeziumEngineConfig.CONNECTOR_CLASS);
-        assertThat(props.getProperty("snapshot.mode")).isEqualTo("custom");
-        assertThat(props.getProperty("snapshot.mode.custom.name")).isEqualTo(SchemaOnlySnapshotter.NAME);
-        assertThat(props.getProperty("opendrs.snapshot.mode")).isEqualTo("no_data");
+        assertThat(props.getProperty("snapshot.mode")).isEqualTo(DebeziumEngineConfig.SNAPSHOT_MODE_INITIAL);
+        assertThat(props.getProperty("snapshot.mode.custom.name")).isNull();
         assertThat(props.getProperty("offset.storage")).isEqualTo(TaskOffsetBackingStore.class.getName());
         assertThat(props.getProperty(TaskOffsetBackingStore.TASK_ID_CONFIG)).isEqualTo("7");
         assertThat(props.getProperty("schema.history.internal")).isEqualTo(TaskSchemaHistory.class.getName());
@@ -43,26 +42,9 @@ class DebeziumEngineConfigTest {
     }
 
     @Test
-    void incrementalReusesStoresAndSkipsSnapshot() {
-        Properties schema = DebeziumEngineConfig.schemaSnapshot(spec(7L));
-        Properties incremental = DebeziumEngineConfig.incremental(spec(7L));
-
-        assertThat(incremental.getProperty("offset.storage")).isEqualTo(schema.getProperty("offset.storage"));
-        assertThat(incremental.getProperty(TaskOffsetBackingStore.TASK_ID_CONFIG))
-                .isEqualTo(schema.getProperty(TaskOffsetBackingStore.TASK_ID_CONFIG));
-        assertThat(incremental.getProperty("schema.history.internal"))
-                .isEqualTo(schema.getProperty("schema.history.internal"));
-        assertThat(incremental.getProperty("topic.prefix")).isEqualTo(schema.getProperty("topic.prefix"));
-        assertThat(incremental.getProperty("name")).isEqualTo(schema.getProperty("name"));
-        assertThat(incremental.getProperty("snapshot.mode")).isEqualTo("custom");
-        assertThat(incremental.getProperty("snapshot.mode.custom.name")).isEqualTo(IncrementalSnapshotter.NAME);
-        assertThat(incremental.getProperty("notification.enabled.channels")).isNull();
-    }
-
-    @Test
     void requiresDatabaseServerIdFromOptions() {
         EngineSpec missing = new EngineSpec(1L, mysql(), tables(), null);
-        assertThatThrownBy(() -> DebeziumEngineConfig.schemaSnapshot(missing))
+        assertThatThrownBy(() -> DebeziumEngineConfig.capture(missing))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("databaseServerId");
     }

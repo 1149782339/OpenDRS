@@ -37,23 +37,25 @@ public class DebeziumCdcEngineFactory implements CdcEngineFactory {
         this.schemaReconciler = new TargetSchemaReconciler(connectionFactory);
     }
 
+    public CdcEngine create(DebeziumEngineConfig.EngineSpec spec) {
+        return create(spec, (Runnable) null);
+    }
+
     @Override
-    public CdcEngine createSchemaSnapshot(DebeziumEngineConfig.EngineSpec spec) {
+    public CdcEngine create(DebeziumEngineConfig.EngineSpec spec, Runnable onSnapshotCompleted) {
         if (spec.target() == null) {
             return build(
-                    DebeziumEngineConfig.schemaSnapshot(spec),
+                    DebeziumEngineConfig.capture(spec),
                     spec.taskId(),
-                    true,
-                    new SchemaSnapshotStopConsumer(new LoggingChangeConsumer(spec.taskId())),
+                    new SnapshotCompletionConsumer(new LoggingChangeConsumer(spec.taskId()), onSnapshotCompleted),
                     null,
                     null);
         }
         SinkApplyChangeConsumer applyConsumer = applyConsumer(spec);
         return build(
-                DebeziumEngineConfig.schemaSnapshot(spec),
+                DebeziumEngineConfig.capture(spec),
                 spec.taskId(),
-                true,
-                new SchemaSnapshotStopConsumer(applyConsumer),
+                new SnapshotCompletionConsumer(applyConsumer, onSnapshotCompleted),
                 applyConsumer,
                 () -> {
                     try {
@@ -64,36 +66,26 @@ public class DebeziumCdcEngineFactory implements CdcEngineFactory {
                                 new DefaultColumnNamingStrategy());
                     } catch (ApplierException ex) {
                         throw new IllegalStateException(
-                                "Failed to ensure target schema after SCHEMA_SNAPSHOT for task "
-                                        + spec.taskId(),
+                                "Failed to ensure target schema before snapshot for task " + spec.taskId(),
                                 ex);
                     }
                 });
     }
 
-    @Override
-    public CdcEngine createIncremental(DebeziumEngineConfig.EngineSpec spec) {
-        if (spec.target() == null) {
-            return createIncremental(spec, new LoggingChangeConsumer(spec.taskId()));
-        }
-        SinkApplyChangeConsumer applyConsumer = applyConsumer(spec);
-        return build(
-                DebeziumEngineConfig.incremental(spec),
-                spec.taskId(),
-                false,
-                applyConsumer,
-                applyConsumer,
-                null);
-    }
-
     /**
-     * Same INCREMENTAL Engine as production, with a caller-supplied consumer. Tests use this to
-     * record {@link SourceRecord}s without applying to a target.
+     * Same capture Engine as production, with a caller-supplied consumer. Tests use this to record
+     * {@link SourceRecord}s without applying to a target.
      */
-    public CdcEngine createIncremental(
+    public CdcEngine create(
             DebeziumEngineConfig.EngineSpec spec,
-            DebeziumEngine.ChangeConsumer<RecordChangeEvent<SourceRecord>> consumer) {
-        return build(DebeziumEngineConfig.incremental(spec), spec.taskId(), false, consumer, null, null);
+            DebeziumEngine.ChangeConsumer<RecordChangeEvent<SourceRecord>> consumer,
+            Runnable onSnapshotCompleted) {
+        return build(
+                DebeziumEngineConfig.capture(spec),
+                spec.taskId(),
+                new SnapshotCompletionConsumer(consumer, onSnapshotCompleted),
+                null,
+                null);
     }
 
     private SinkApplyChangeConsumer applyConsumer(DebeziumEngineConfig.EngineSpec spec) {
@@ -113,12 +105,11 @@ public class DebeziumCdcEngineFactory implements CdcEngineFactory {
     private CdcEngine build(
             java.util.Properties props,
             long taskId,
-            boolean alwaysCommit,
             DebeziumEngine.ChangeConsumer<RecordChangeEvent<SourceRecord>> consumer,
             AutoCloseable resource,
-            Runnable afterRun) {
+            Runnable beforeRun) {
         AtomicReference<Throwable> error = new AtomicReference<>();
-        DebeziumEngine.Builder<RecordChangeEvent<SourceRecord>> builder = DebeziumEngine
+        DebeziumEngine<RecordChangeEvent<SourceRecord>> engine = DebeziumEngine
                 .create(ChangeEventFormat.of(Connect.class))
                 .using(props)
                 .notifying(consumer)
@@ -131,12 +122,10 @@ public class DebeziumCdcEngineFactory implements CdcEngineFactory {
                     } else if (message != null && !message.isBlank()) {
                         error.set(new IllegalStateException(message));
                     }
-                });
-        if (alwaysCommit) {
-            builder.using(OffsetCommitPolicy.always());
-        }
-        DebeziumEngine<RecordChangeEvent<SourceRecord>> engine = builder.build();
-        return new DebeziumCdcEngine(engine, error, taskId, resource, afterRun);
+                })
+                .using(OffsetCommitPolicy.always())
+                .build();
+        return new DebeziumCdcEngine(engine, error, taskId, resource, beforeRun);
     }
 
     static final class DebeziumCdcEngine implements CdcEngine {
@@ -145,23 +134,26 @@ public class DebeziumCdcEngineFactory implements CdcEngineFactory {
         private final AtomicReference<Throwable> error;
         private final long taskId;
         private final AutoCloseable resource;
-        private final Runnable afterRun;
+        private final Runnable beforeRun;
 
         DebeziumCdcEngine(
                 DebeziumEngine<?> engine,
                 AtomicReference<Throwable> error,
                 long taskId,
                 AutoCloseable resource,
-                Runnable afterRun) {
+                Runnable beforeRun) {
             this.engine = engine;
             this.error = error;
             this.taskId = taskId;
             this.resource = resource;
-            this.afterRun = afterRun;
+            this.beforeRun = beforeRun;
         }
 
         @Override
         public void run() {
+            if (beforeRun != null) {
+                beforeRun.run();
+            }
             engine.run();
             Throwable failure = error.get();
             if (failure != null) {
@@ -169,9 +161,6 @@ public class DebeziumCdcEngineFactory implements CdcEngineFactory {
                     throw runtime;
                 }
                 throw new IllegalStateException("Debezium Engine failed for task " + taskId, failure);
-            }
-            if (afterRun != null) {
-                afterRun.run();
             }
         }
 

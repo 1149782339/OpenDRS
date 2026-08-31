@@ -4,7 +4,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -24,12 +23,12 @@ import io.opendrs.migration.domain.JobState;
 import io.opendrs.migration.domain.MigrationMode;
 import io.opendrs.migration.domain.MigrationTask;
 import io.opendrs.migration.mapper.ConnectionInfoMapper;
-import io.opendrs.migration.mapper.DebeziumOffsetMapper;
 import io.opendrs.migration.mapper.MigrationTaskMapper;
 import io.opendrs.migration.service.TableSelectionExpander;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
@@ -38,7 +37,6 @@ class TaskJobTest {
 
     private MigrationTaskMapper taskMapper;
     private ConnectionInfoMapper connectionMapper;
-    private DebeziumOffsetMapper offsetMapper;
     private TaskJobRegistry registry;
     private TableSelectionExpander expander;
     private FakeEngineFactory engines;
@@ -47,11 +45,9 @@ class TaskJobTest {
     void setUp() {
         taskMapper = Mockito.mock(MigrationTaskMapper.class);
         connectionMapper = Mockito.mock(ConnectionInfoMapper.class);
-        offsetMapper = Mockito.mock(DebeziumOffsetMapper.class);
         registry = new TaskJobRegistry();
         expander = Mockito.mock(TableSelectionExpander.class);
         engines = new FakeEngineFactory();
-        when(offsetMapper.findByTaskId(anyLong())).thenReturn(List.of());
         when(expander.expand(any(), any())).thenReturn(List.of(new Table(new TableRef("hr", "emp"))));
         when(connectionMapper.findById(anyLong())).thenReturn(mysql());
         when(taskMapper.compareAndSetJobState(anyLong(), any(), any())).thenReturn(1);
@@ -60,7 +56,7 @@ class TaskJobTest {
     }
 
     @Test
-    void schemaThenFullThenIncrementalUntilStop() throws Exception {
+    void oneEngineSnapshotsThenStreamsUntilStop() throws Exception {
         MigrationTask task = task(1L, JobPhase.PRECHECKED, JobState.STARTING, MigrationMode.FULL_AND_INCREMENTAL);
         stubTask(task);
         TaskJob job = job(task);
@@ -68,26 +64,26 @@ class TaskJobTest {
 
         Thread thread = new Thread(job, "test-job-1");
         thread.start();
-        assertThat(engines.schema.runStarted.await(5, TimeUnit.SECONDS)).isTrue();
-        assertThat(engines.incremental.runStarted.await(5, TimeUnit.SECONDS)).isTrue();
+        assertThat(engines.engine.runStarted.await(5, TimeUnit.SECONDS)).isTrue();
+        assertThat(engines.createCount.get()).isEqualTo(1);
         verify(taskMapper).compareAndSetPhase(1L, JobPhase.PRECHECKED, JobPhase.SCHEMA_SNAPSHOT);
-        verify(taskMapper).compareAndSetPhase(1L, JobPhase.SCHEMA_SNAPSHOT, JobPhase.FULL);
-        verify(taskMapper).compareAndSetPhase(1L, JobPhase.FULL, JobPhase.INCREMENTAL);
-        verify(offsetMapper, atLeastOnce()).findByTaskId(1L);
+        verify(taskMapper).compareAndSetPhase(1L, JobPhase.SCHEMA_SNAPSHOT, JobPhase.INCREMENTAL);
+        verify(taskMapper, never()).compareAndSetPhase(1L, JobPhase.SCHEMA_SNAPSHOT, JobPhase.FULL);
+        verify(taskMapper, never()).compareAndSetPhase(eq(1L), eq(JobPhase.FULL), eq(JobPhase.INCREMENTAL));
 
         task.setJobPhase(JobPhase.INCREMENTAL);
         task.setJobState(JobState.STOPPING);
         job.requestStop();
         thread.join(5_000);
 
-        assertThat(engines.incremental.stopCalled).isTrue();
+        assertThat(engines.engine.stopCalled).isTrue();
         verify(taskMapper).compareAndSetJobState(1L, JobState.STOPPING, JobState.STOPPED);
         assertThat(registry.hasLive(1L)).isFalse();
     }
 
     @Test
-    void schemaFailureLeavesPhaseAndMarksFailed() throws Exception {
-        engines.schemaFailure = new IllegalStateException("binlog unavailable");
+    void engineFailureLeavesPhaseAndMarksFailed() throws Exception {
+        engines.failure = new IllegalStateException("binlog unavailable");
         MigrationTask task = task(2L, JobPhase.PRECHECKED, JobState.STARTING, MigrationMode.FULL_AND_INCREMENTAL);
         stubTask(task);
         TaskJob job = job(task);
@@ -95,21 +91,22 @@ class TaskJobTest {
         job.run();
 
         verify(taskMapper).compareAndSetPhase(2L, JobPhase.PRECHECKED, JobPhase.SCHEMA_SNAPSHOT);
+        verify(taskMapper, never()).compareAndSetPhase(2L, JobPhase.SCHEMA_SNAPSHOT, JobPhase.INCREMENTAL);
         verify(taskMapper, never()).compareAndSetPhase(2L, JobPhase.SCHEMA_SNAPSHOT, JobPhase.FULL);
         verify(taskMapper).markJobFailed(eq(2L), eq("binlog unavailable"));
-        verify(taskMapper, never()).compareAndSetPhase(eq(2L), eq(JobPhase.FULL), eq(JobPhase.INCREMENTAL));
+        assertThat(engines.createCount.get()).isEqualTo(1);
     }
 
     @Test
-    void resumeFromIncrementalSkipsSchemaEngine() throws Exception {
+    void resumeFromIncrementalStartsOneEngine() throws Exception {
         MigrationTask task = task(3L, JobPhase.INCREMENTAL, JobState.RUNNING, MigrationMode.FULL_AND_INCREMENTAL);
         stubTask(task);
         TaskJob job = job(task);
 
         Thread thread = new Thread(job, "test-job-3");
         thread.start();
-        assertThat(engines.incremental.runStarted.await(5, TimeUnit.SECONDS)).isTrue();
-        assertThat(engines.schemaCreated).isFalse();
+        assertThat(engines.engine.runStarted.await(5, TimeUnit.SECONDS)).isTrue();
+        assertThat(engines.createCount.get()).isEqualTo(1);
         task.setJobState(JobState.STOPPING);
         job.requestStop();
         thread.join(5_000);
@@ -119,36 +116,54 @@ class TaskJobTest {
     }
 
     @Test
-    void fullOnlyStopsAfterFullStub() {
+    void fullOnlyRunsSingleEngineUntilStop() throws Exception {
         MigrationTask task = task(4L, JobPhase.PRECHECKED, JobState.STARTING, MigrationMode.FULL_ONLY);
         stubTask(task);
-        engines.schema.finish.countDown();
         TaskJob job = job(task);
-        job.run();
+        registry.tryRegister(job);
 
-        verify(taskMapper).compareAndSetPhase(4L, JobPhase.SCHEMA_SNAPSHOT, JobPhase.FULL);
-        verify(taskMapper, never()).compareAndSetPhase(eq(4L), eq(JobPhase.FULL), eq(JobPhase.INCREMENTAL));
-        assertThat(engines.incrementalCreated).isFalse();
-        verify(taskMapper).compareAndSetJobState(4L, JobState.RUNNING, JobState.STOPPED);
+        Thread thread = new Thread(job, "test-job-4");
+        thread.start();
+        assertThat(engines.engine.runStarted.await(5, TimeUnit.SECONDS)).isTrue();
+        verify(taskMapper).compareAndSetPhase(4L, JobPhase.PRECHECKED, JobPhase.SCHEMA_SNAPSHOT);
+        verify(taskMapper).compareAndSetPhase(4L, JobPhase.SCHEMA_SNAPSHOT, JobPhase.INCREMENTAL);
+        verify(taskMapper, never()).compareAndSetPhase(eq(4L), eq(JobPhase.SCHEMA_SNAPSHOT), eq(JobPhase.FULL));
+        assertThat(engines.createCount.get()).isEqualTo(1);
+
+        task.setJobState(JobState.STOPPING);
+        job.requestStop();
+        thread.join(5_000);
+        verify(taskMapper).compareAndSetJobState(4L, JobState.STOPPING, JobState.STOPPED);
+    }
+
+    @Test
+    void resumeFromFullUnsticksPhaseAndStartsEngine() throws Exception {
+        MigrationTask task = task(5L, JobPhase.FULL, JobState.RUNNING, MigrationMode.FULL_AND_INCREMENTAL);
+        stubTask(task);
+        TaskJob job = job(task);
+
+        Thread thread = new Thread(job, "test-job-5");
+        thread.start();
+        assertThat(engines.engine.runStarted.await(5, TimeUnit.SECONDS)).isTrue();
+        verify(taskMapper).compareAndSetPhase(5L, JobPhase.FULL, JobPhase.INCREMENTAL);
+        verify(taskMapper, never()).compareAndSetPhase(eq(5L), eq(JobPhase.PRECHECKED), any());
+        assertThat(engines.createCount.get()).isEqualTo(1);
+
+        task.setJobState(JobState.STOPPING);
+        job.requestStop();
+        thread.join(5_000);
     }
 
     private void stubTask(MigrationTask task) {
-        when(taskMapper.findById(task.getId())).thenAnswer(invocation -> {
-            MigrationTask copy = task;
-            if (copy.getJobPhase() == JobPhase.PRECHECKED
-                    && copy.getJobState() == JobState.RUNNING) {
-                // after STARTING→RUNNING CAS in run()
-            }
-            return copy;
-        });
+        when(taskMapper.findById(task.getId())).thenAnswer(invocation -> task);
         when(taskMapper.compareAndSetPhase(eq(task.getId()), eq(JobPhase.PRECHECKED), eq(JobPhase.SCHEMA_SNAPSHOT)))
                 .thenAnswer(invocation -> {
                     task.setJobPhase(JobPhase.SCHEMA_SNAPSHOT);
                     return 1;
                 });
-        when(taskMapper.compareAndSetPhase(eq(task.getId()), eq(JobPhase.SCHEMA_SNAPSHOT), eq(JobPhase.FULL)))
+        when(taskMapper.compareAndSetPhase(eq(task.getId()), eq(JobPhase.SCHEMA_SNAPSHOT), eq(JobPhase.INCREMENTAL)))
                 .thenAnswer(invocation -> {
-                    task.setJobPhase(JobPhase.FULL);
+                    task.setJobPhase(JobPhase.INCREMENTAL);
                     return 1;
                 });
         when(taskMapper.compareAndSetPhase(eq(task.getId()), eq(JobPhase.FULL), eq(JobPhase.INCREMENTAL)))
@@ -179,7 +194,6 @@ class TaskJobTest {
                 task.getMode(),
                 taskMapper,
                 connectionMapper,
-                offsetMapper,
                 registry,
                 expander,
                 engines);
@@ -209,48 +223,36 @@ class TaskJobTest {
     }
 
     static final class FakeEngineFactory implements CdcEngineFactory {
-        final FakeEngine schema = new FakeEngine(false);
-        final FakeEngine incremental = new FakeEngine(true);
-        volatile boolean schemaCreated;
-        volatile boolean incrementalCreated;
-        RuntimeException schemaFailure;
+        final FakeEngine engine = new FakeEngine();
+        final AtomicInteger createCount = new AtomicInteger();
+        RuntimeException failure;
 
         @Override
-        public CdcEngine createSchemaSnapshot(EngineSpec spec) {
-            schemaCreated = true;
-            if (schemaFailure != null) {
-                schema.failure = schemaFailure;
-            }
-            return schema;
-        }
-
-        @Override
-        public CdcEngine createIncremental(EngineSpec spec) {
-            incrementalCreated = true;
-            return incremental;
+        public CdcEngine create(EngineSpec spec, Runnable onSnapshotCompleted) {
+            createCount.incrementAndGet();
+            engine.failure = failure;
+            engine.onSnapshotCompleted = onSnapshotCompleted;
+            return engine;
         }
     }
 
     static final class FakeEngine implements CdcEngine {
         final CountDownLatch runStarted = new CountDownLatch(1);
         final CountDownLatch finish = new CountDownLatch(1);
-        final boolean block;
         volatile boolean stopCalled;
         RuntimeException failure;
-
-        FakeEngine(boolean block) {
-            this.block = block;
-            if (!block) {
-                finish.countDown();
-            }
-        }
+        Runnable onSnapshotCompleted;
 
         @Override
         public void run() {
-            runStarted.countDown();
             if (failure != null) {
+                runStarted.countDown();
                 throw failure;
             }
+            if (onSnapshotCompleted != null) {
+                onSnapshotCompleted.run();
+            }
+            runStarted.countDown();
             try {
                 if (!finish.await(10, TimeUnit.SECONDS)) {
                     throw new IllegalStateException("fake engine timed out");
