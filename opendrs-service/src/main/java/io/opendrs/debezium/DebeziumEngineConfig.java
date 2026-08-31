@@ -14,36 +14,25 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
- * Builds Debezium Engine properties for the two MySQL Engine rounds.
+ * Builds Debezium Engine properties for the single MySQL capture Engine (snapshot then stream).
  */
 public final class DebeziumEngineConfig {
 
     public static final String CONNECTOR_CLASS = "io.debezium.connector.mysql.MySqlConnector";
-    public static final String SNAPSHOT_MODE_NO_DATA = "no_data";
-    public static final String SNAPSHOT_MODE_CUSTOM = "custom";
+    public static final String SNAPSHOT_MODE_INITIAL = "initial";
     public static final String NOTIFICATION_CHANNEL_SINK = "sink";
 
     private DebeziumEngineConfig() {
     }
 
-    public static Properties schemaSnapshot(EngineSpec spec) {
+    /**
+     * Schema + data snapshot, then binlog streaming. Blocking initial snapshot vs binlog TTL is deferred.
+     */
+    public static Properties capture(EngineSpec spec) {
         Properties props = common(spec);
-        // no_data (schema yes, data no) is the MySQL 3.6 mode; recovery is wrong here.
-        // Built-in no_data still streams, so SCHEMA_SNAPSHOT uses a custom Snapshotter with
-        // shouldStream=false. AsyncEmbeddedEngine still polls after that, so we enable the
-        // sink notification channel and stop on Initial Snapshot COMPLETED.
-        props.setProperty("snapshot.mode", SNAPSHOT_MODE_CUSTOM);
-        props.setProperty("snapshot.mode.custom.name", SchemaOnlySnapshotter.NAME);
-        props.setProperty("opendrs.snapshot.mode", SNAPSHOT_MODE_NO_DATA);
+        props.setProperty("snapshot.mode", SNAPSHOT_MODE_INITIAL);
         props.setProperty("notification.enabled.channels", NOTIFICATION_CHANNEL_SINK);
         props.setProperty("notification.sink.topic.name", notificationTopic(spec.taskId()));
-        return props;
-    }
-
-    public static Properties incremental(EngineSpec spec) {
-        Properties props = common(spec);
-        props.setProperty("snapshot.mode", SNAPSHOT_MODE_CUSTOM);
-        props.setProperty("snapshot.mode.custom.name", IncrementalSnapshotter.NAME);
         return props;
     }
 

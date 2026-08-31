@@ -20,8 +20,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * After SCHEMA_SNAPSHOT, creates any target tables that Debezium schema-change events did not
- * materialize, using source {@code SHOW CREATE TABLE} + the sink MySQL→PG converter.
+ * Creates any target tables missing before snapshot rows are applied, using source
+ * {@code SHOW CREATE TABLE} + the sink MySQL→PG converter.
  */
 public final class TargetSchemaReconciler {
 
@@ -69,7 +69,7 @@ public final class TargetSchemaReconciler {
                                     + ": " + converted.getErrors());
                 }
                 log.info(
-                        "SCHEMA_SNAPSHOT fallback CREATE for task {} table {} via SHOW CREATE TABLE",
+                        "pre-snapshot CREATE for task {} table {} via SHOW CREATE TABLE",
                         spec.taskId(),
                         resolved);
                 applier.applyConvertedDdl(resolved, converted.getStatements());

@@ -5,13 +5,11 @@ import io.opendrs.debezium.CdcEngineFactory;
 import io.opendrs.debezium.DebeziumEngineConfig;
 import io.opendrs.jdbc.metadata.Table;
 import io.opendrs.migration.domain.ConnectionInfo;
-import io.opendrs.migration.domain.DebeziumOffset;
 import io.opendrs.migration.domain.JobPhase;
 import io.opendrs.migration.domain.JobState;
 import io.opendrs.migration.domain.MigrationMode;
 import io.opendrs.migration.domain.MigrationTask;
 import io.opendrs.migration.mapper.ConnectionInfoMapper;
-import io.opendrs.migration.mapper.DebeziumOffsetMapper;
 import io.opendrs.migration.mapper.MigrationTaskMapper;
 import io.opendrs.migration.service.TableSelectionExpander;
 import java.util.List;
@@ -20,9 +18,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Coordinator thread for one task. Wires SCHEMA_SNAPSHOT / FULL stub / INCREMENTAL onto the
- * existing dispatcher thread. Cooperative stop calls {@link CdcEngine#stop()} ({@code engine.stop()}
- * / {@code close()}).
+ * Coordinator thread for one task. Starts a single Debezium Engine that snapshots schema+data then
+ * streams CDC. Cooperative stop calls {@link CdcEngine#stop()} ({@code engine.stop()} /
+ * {@code close()}).
  */
 public class TaskJob implements Runnable {
 
@@ -32,7 +30,6 @@ public class TaskJob implements Runnable {
     private final MigrationMode mode;
     private final MigrationTaskMapper taskMapper;
     private final ConnectionInfoMapper connectionMapper;
-    private final DebeziumOffsetMapper offsetMapper;
     private final TaskJobRegistry registry;
     private final TableSelectionExpander tableExpander;
     private final CdcEngineFactory engineFactory;
@@ -41,7 +38,7 @@ public class TaskJob implements Runnable {
     private volatile CdcEngine runningEngine;
 
     public TaskJob(Long taskId, MigrationMode mode, MigrationTaskMapper taskMapper, TaskJobRegistry registry) {
-        this(taskId, mode, taskMapper, null, null, registry, null, null);
+        this(taskId, mode, taskMapper, null, registry, null, null);
     }
 
     public TaskJob(
@@ -49,7 +46,6 @@ public class TaskJob implements Runnable {
             MigrationMode mode,
             MigrationTaskMapper taskMapper,
             ConnectionInfoMapper connectionMapper,
-            DebeziumOffsetMapper offsetMapper,
             TaskJobRegistry registry,
             TableSelectionExpander tableExpander,
             CdcEngineFactory engineFactory) {
@@ -57,7 +53,6 @@ public class TaskJob implements Runnable {
         this.mode = mode;
         this.taskMapper = taskMapper;
         this.connectionMapper = connectionMapper;
-        this.offsetMapper = offsetMapper;
         this.registry = registry;
         this.tableExpander = tableExpander;
         this.engineFactory = engineFactory;
@@ -115,32 +110,7 @@ public class TaskJob implements Runnable {
                 return;
             }
 
-            runSchemaSnapshot();
-            if (stopRequested()) {
-                finishStopped();
-                return;
-            }
-
-            JobPhase phase = currentPhase();
-            if (phase == JobPhase.FULL || phase == JobPhase.SCHEMA_SNAPSHOT) {
-                if (phase == JobPhase.SCHEMA_SNAPSHOT) {
-                    taskMapper.compareAndSetPhase(taskId, JobPhase.SCHEMA_SNAPSHOT, JobPhase.FULL);
-                    phase = JobPhase.FULL;
-                }
-                runFull();
-            }
-            if (stopRequested()) {
-                finishStopped();
-                return;
-            }
-
-            if (mode == MigrationMode.FULL_AND_INCREMENTAL || mode == MigrationMode.INCREMENTAL_ONLY) {
-                phase = currentPhase();
-                if (phase == JobPhase.FULL) {
-                    taskMapper.compareAndSetPhase(taskId, JobPhase.FULL, JobPhase.INCREMENTAL);
-                }
-                runIncremental();
-            }
+            runCapture();
             finishStopped();
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
@@ -159,19 +129,24 @@ public class TaskJob implements Runnable {
         }
     }
 
-    void runSchemaSnapshot() throws Exception {
+    void runCapture() throws Exception {
         JobPhase phase = currentPhase();
         if (phase == JobPhase.PRECHECKED) {
             taskMapper.compareAndSetPhase(taskId, JobPhase.PRECHECKED, JobPhase.SCHEMA_SNAPSHOT);
             phase = JobPhase.SCHEMA_SNAPSHOT;
         }
-        if (phase != JobPhase.SCHEMA_SNAPSHOT) {
+        if (phase == JobPhase.FULL) {
+            taskMapper.compareAndSetPhase(taskId, JobPhase.FULL, JobPhase.INCREMENTAL);
+            phase = JobPhase.INCREMENTAL;
+        }
+        if (phase != JobPhase.SCHEMA_SNAPSHOT && phase != JobPhase.INCREMENTAL) {
             return;
         }
         if (stopRequested()) {
             return;
         }
-        CdcEngine engine = engineFactory.createSchemaSnapshot(engineSpec());
+        log.info("Task job {} mode {} starting one capture Engine", taskId, mode);
+        CdcEngine engine = engineFactory.create(engineSpec(), this::onSnapshotCompleted);
         runningEngine = engine;
         try {
             if (stopRequested()) {
@@ -183,50 +158,14 @@ public class TaskJob implements Runnable {
             runningEngine = null;
             stopQuietly(engine);
         }
-        if (stopRequested()) {
-            return;
-        }
-        taskMapper.compareAndSetPhase(taskId, JobPhase.SCHEMA_SNAPSHOT, JobPhase.FULL);
     }
 
-    void runFull() {
-        if (offsetMapper == null) {
-            log.info("FULL dump stub: task {} (offset mapper unavailable)", taskId);
-            return;
-        }
-        List<DebeziumOffset> offsets = offsetMapper.findByTaskId(taskId);
-        if (offsets.isEmpty()) {
-            log.info("FULL dump stub: task {} has no offset rows", taskId);
-            return;
-        }
-        for (DebeziumOffset offset : offsets) {
-            log.info(
-                    "FULL dump stub: task {} offset key={} val={} (file/pos/gtids in JSON; no SELECT/INSERT)",
-                    taskId,
-                    offset.getOffsetKey(),
-                    offset.getOffsetVal());
-        }
-    }
-
-    void runIncremental() throws Exception {
+    private void onSnapshotCompleted() {
         JobPhase phase = currentPhase();
-        if (phase != JobPhase.INCREMENTAL) {
-            return;
-        }
-        if (stopRequested()) {
-            return;
-        }
-        CdcEngine engine = engineFactory.createIncremental(engineSpec());
-        runningEngine = engine;
-        try {
-            if (stopRequested()) {
-                engine.stop();
-                return;
-            }
-            engine.run();
-        } finally {
-            runningEngine = null;
-            stopQuietly(engine);
+        if (phase == JobPhase.SCHEMA_SNAPSHOT) {
+            taskMapper.compareAndSetPhase(taskId, JobPhase.SCHEMA_SNAPSHOT, JobPhase.INCREMENTAL);
+        } else if (phase == JobPhase.FULL) {
+            taskMapper.compareAndSetPhase(taskId, JobPhase.FULL, JobPhase.INCREMENTAL);
         }
     }
 

@@ -4,8 +4,8 @@ import io.debezium.spi.snapshot.Snapshotter;
 import java.util.Map;
 
 /**
- * Streaming-only snapshotter for the second Engine round. Schema/data snapshot is skipped so an
- * existing offset from {@link SchemaOnlySnapshotter} is reused.
+ * Streaming-only snapshotter (schema/data snapshot skipped). Kept on the Snapshotter SPI for unit
+ * tests; the production capture path uses Debezium {@code snapshot.mode=initial} instead.
  */
 public class IncrementalSnapshotter implements Snapshotter {
 

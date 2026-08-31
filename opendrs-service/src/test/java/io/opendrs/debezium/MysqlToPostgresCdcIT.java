@@ -43,8 +43,8 @@ import org.testcontainers.mysql.MySQLContainer;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 
 /**
- * MySQL ROW binlog → PostgreSQL apply: SCHEMA_SNAPSHOT creates the target table, INCREMENTAL
- * applies an insert through {@link SinkApplyChangeConsumer}.
+ * MySQL ROW binlog → PostgreSQL apply: one Engine snapshots existing rows then streams incremental
+ * inserts through {@link SinkApplyChangeConsumer}.
  */
 @SpringBootTest
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
@@ -107,7 +107,7 @@ class MysqlToPostgresCdcIT {
 
     @Test
     @Timeout(value = 180, unit = TimeUnit.SECONDS)
-    void schemaSnapshotCreatesTableThenIncrementalAppliesInsert() throws Exception {
+    void oneEngineSnapshotsExistingRowsThenAppliesIncrementalInsert() throws Exception {
         grantCdcPrivilegesAndCreateSourceTable();
         long taskId = insertTask();
         EngineSpec spec = new EngineSpec(
@@ -123,40 +123,25 @@ class MysqlToPostgresCdcIT {
             thread.setDaemon(true);
             return thread;
         });
-        CdcEngine schemaEngine = engineFactory.createSchemaSnapshot(spec);
+        CdcEngine engine = engineFactory.create(spec);
+        Future<?> engineDone = executor.submit(engine::run);
         try {
-            Future<?> schemaDone = executor.submit(schemaEngine::run);
-            schemaDone.get(90, TimeUnit.SECONDS);
-            assertThat(schemaDone.isDone()).isTrue();
-
-            assertThat(postgresTableExists())
-                    .as("SCHEMA_SNAPSHOT must CREATE the target table on PostgreSQL")
+            boolean seedAppeared = awaitPostgresRow(1, "seed", 90, TimeUnit.SECONDS);
+            assertThat(seedAppeared)
+                    .as("snapshot rows that existed before Engine start must appear on PostgreSQL")
                     .isTrue();
+            log.info("PG snapshot assertion: id=1 name=seed present");
 
             insertCustomer(99, "pg-cdc-row");
-
-            CdcEngine incremental = engineFactory.createIncremental(spec);
-            Future<?> incrementalDone = executor.submit(incremental::run);
-            try {
-                boolean appeared = awaitPostgresRow(99, "pg-cdc-row", 60, TimeUnit.SECONDS);
-                assertThat(appeared)
-                        .as("INCREMENTAL apply must insert the MySQL row into PostgreSQL")
-                        .isTrue();
-                log.info("PG apply assertion: id=99 name=pg-cdc-row present");
-            } finally {
-                incremental.stop();
-                incrementalDone.get(30, TimeUnit.SECONDS);
-            }
+            boolean incrementalAppeared = awaitPostgresRow(99, "pg-cdc-row", 60, TimeUnit.SECONDS);
+            assertThat(incrementalAppeared)
+                    .as("insert after snapshot/stream must appear on PostgreSQL")
+                    .isTrue();
+            log.info("PG incremental assertion: id=99 name=pg-cdc-row present");
         } finally {
-            schemaEngine.stop();
+            engine.stop();
+            engineDone.get(30, TimeUnit.SECONDS);
             executor.shutdownNow();
-        }
-    }
-
-    private boolean postgresTableExists() throws SQLException {
-        try (Connection connection = postgresConnection();
-                ResultSet rs = connection.getMetaData().getTables(null, DB, TABLE, new String[] {"TABLE"})) {
-            return rs.next();
         }
     }
 

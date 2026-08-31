@@ -4,8 +4,8 @@ import io.debezium.spi.snapshot.Snapshotter;
 import java.util.Map;
 
 /**
- * Schema snapshot without table data and without streaming. Used for {@code SCHEMA_SNAPSHOT} so
- * the Engine exits after the schema snapshot (MySQL {@code snapshot.mode=no_data} still streams).
+ * Schema snapshot without table data and without streaming. Kept on the Snapshotter SPI for unit
+ * tests; the production capture path uses Debezium {@code snapshot.mode=initial} instead.
  */
 public class SchemaOnlySnapshotter implements Snapshotter {
 

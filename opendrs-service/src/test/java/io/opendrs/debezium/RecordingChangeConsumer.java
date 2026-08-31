@@ -55,12 +55,48 @@ final class RecordingChangeConsumer implements DebeziumEngine.ChangeConsumer<Rec
         return dataChangeLatch.await(timeout, unit);
     }
 
+    boolean awaitRow(int id, String name, long timeout, TimeUnit unit) throws InterruptedException {
+        long deadline = System.nanoTime() + unit.toNanos(timeout);
+        while (System.nanoTime() < deadline) {
+            if (findRow(id, name) != null) {
+                return true;
+            }
+            Thread.sleep(100);
+        }
+        return findRow(id, name) != null;
+    }
+
+    boolean awaitInitialSnapshotCompleted(long timeout, TimeUnit unit) throws InterruptedException {
+        long deadline = System.nanoTime() + unit.toNanos(timeout);
+        while (System.nanoTime() < deadline) {
+            if (records.stream().anyMatch(SnapshotNotifications::isInitialSnapshotCompleted)) {
+                return true;
+            }
+            Thread.sleep(100);
+        }
+        return records.stream().anyMatch(SnapshotNotifications::isInitialSnapshotCompleted);
+    }
+
     List<SourceRecord> records() {
         return List.copyOf(records);
     }
 
     SourceRecord firstTableDataChange() {
         return records.stream().filter(RecordingChangeConsumer::isTableDataChange).findFirst().orElse(null);
+    }
+
+    SourceRecord findRow(int id, String name) {
+        for (SourceRecord record : records) {
+            Struct after = after(record);
+            if (after == null) {
+                continue;
+            }
+            if (String.valueOf(id).equals(String.valueOf(after.get("id")))
+                    && name.equals(String.valueOf(after.get("name")))) {
+                return record;
+            }
+        }
+        return null;
     }
 
     static boolean isTableDataChange(SourceRecord record) {
