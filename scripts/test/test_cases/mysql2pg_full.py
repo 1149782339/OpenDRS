@@ -10,34 +10,36 @@
 
 import pytest
 
-import dbutil
+import utils
 from facade import OpenDrs
+from utils import MySqlConnection, PostgresConnection
 
 ROW_COUNT = 10_000
 
 
 @pytest.fixture(scope="module")
 def prepared(env, case_ctx, fw_config):
-    mysql = env.datasources["mysql1"]
-    pg = env.datasources["postgres1"]
-    schema = mysql["database"]              # MySQL 库名迁移后是同名的 PG schema
+    mysql = MySqlConnection(env.datasources["mysql1"])
+    pg = PostgresConnection(env.datasources["postgres1"])
+    schema = mysql.cfg["database"]        # MySQL 库名迁移后是同名的 PG schema
     table = case_ctx.ns("user_wallet")
     timeout = float(fw_config.get("case_timeout_sec", 900))
 
     # ---------------- prepare
-    dbutil.ensure_source_privileges(mysql)
-    dbutil.drop_target_table(pg, schema, table)
-    dbutil.seed_user_wallet(mysql, table, ROW_COUNT)
+    mysql.ensure_cdc_privileges()
+    pg.drop_table(schema, table)
+    utils.seed_user_wallet(mysql, table, ROW_COUNT)
 
     opendrs = OpenDrs(env.endpoint["url"])
     source = opendrs.create_datasource(
         case_ctx.ns("src_mysql"), "MYSQL",
-        host=mysql["host"], port=int(mysql["port"]), database=mysql["database"],
-        username=mysql["user"], password=mysql["password"])
+        host=mysql.cfg["host"], port=int(mysql.cfg["port"]),
+        database=mysql.cfg["database"],
+        username=mysql.cfg["user"], password=mysql.cfg["password"])
     target = opendrs.create_datasource(
         case_ctx.ns("tgt_pg"), "POSTGRESQL",
-        host=pg["host"], port=int(pg["port"]), database=pg["database"],
-        username=pg["user"], password=pg["password"])
+        host=pg.cfg["host"], port=int(pg.cfg["port"]), database=pg.cfg["database"],
+        username=pg.cfg["user"], password=pg.cfg["password"])
     assert opendrs.test_datasource(source)
     assert opendrs.test_datasource(target)
     task = opendrs.create_migration_task(
@@ -58,8 +60,8 @@ def prepared(env, case_ctx, fw_config):
         finally:
             opendrs.delete_datasource(source)
             opendrs.delete_datasource(target)
-            dbutil.drop_target_table(pg, schema, table)
-            dbutil.drop_source_table(mysql, table)
+            pg.drop_table(schema, table)
+            mysql.drop_table(table)
 
 
 def test_full_migration(prepared):
@@ -72,6 +74,6 @@ def test_full_migration(prepared):
     assert status.phase == "FULL"
 
     # ---------------- check
-    dbutil.assert_sampled_rows_match(
+    utils.assert_sampled_rows_match(
         prepared["mysql"], prepared["pg"],
         prepared["schema"], prepared["table"], ROW_COUNT)
