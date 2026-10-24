@@ -12,16 +12,16 @@ env:
     mysql1:              # migration source (binlog ROW + GTID)
       host: "127.0.0.1"
       port: 3406
-      user: "e2e"
+      user: "e2e_mysql"
       password: "123456"
-      database: "e2e_source"
+      database: "e2e_db"
       root_password: "123456"
     postgres1:           # migration target
       host: "127.0.0.1"
       port: 5432
-      user: "opendrs"
+      user: "e2e_postgres"
       password: "123456"
-      database: "e2e_target"
+      database: "e2e_db"
 
 config:
   max_parallel: 4        # per-stage xdist workers; keep low — parallel cases are

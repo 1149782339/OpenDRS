@@ -27,7 +27,7 @@ cmd="${1:-up}"
 case "$cmd" in
   up)
     "$COMPOSE" -p "$PROJECT" -f docker-compose.yml up -d --wait
-    printf '\nData sources ready:\n  source MySQL    127.0.0.1:3406  db=e2e_source  e2e/123456\n  target Postgres 127.0.0.1:5432  db=e2e_target  opendrs/123456\n'
+    printf '\nData sources ready:\n  e2e-mysql1     127.0.0.1:3406  db=e2e_db  e2e_mysql/123456\n  e2e-postgres1  127.0.0.1:5432  db=e2e_db  e2e_postgres/123456\n'
     ;;
   down)
     "$COMPOSE" -p "$PROJECT" -f docker-compose.yml down

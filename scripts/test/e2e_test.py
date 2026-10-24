@@ -45,10 +45,10 @@ def env(prefix: str, defaults: dict[str, str]) -> dict[str, str]:
     return {key: os.environ.get(prefix + key.upper(), value) for key, value in defaults.items()}
 
 
-SOURCE = env("SOURCE_", {"host": "127.0.0.1", "port": "3406", "db": "e2e_source",
-                         "user": "e2e", "password": "123456"})
-TARGET = env("TARGET_", {"host": "127.0.0.1", "port": "5432", "db": "e2e_target",
-                         "user": "opendrs", "password": "123456"})
+SOURCE = env("SOURCE_", {"host": "127.0.0.1", "port": "3406", "db": "e2e_db",
+                         "user": "e2e_mysql", "password": "123456"})
+TARGET = env("TARGET_", {"host": "127.0.0.1", "port": "5432", "db": "e2e_db",
+                         "user": "e2e_postgres", "password": "123456"})
 
 # MySQL database name maps to a same-named PostgreSQL schema during schema migration.
 PG_SCHEMA = SOURCE["db"]

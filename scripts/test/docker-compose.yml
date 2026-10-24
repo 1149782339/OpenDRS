@@ -1,21 +1,23 @@
-# Migration data sources for e2e: binlog-enabled source MySQL + PostgreSQL target.
+# Migration data sources for e2e: binlog-enabled MySQL + PostgreSQL target.
 # NOT part of the application stack — start them only when a run needs real data:
 #
 #   docker compose -p opendrs -f deploy/docker-compose.yml \
 #       -f scripts/test/docker-compose.yml up -d --wait
 #   ./scripts/test/data-sources.sh        (this file alone, daily driver)
 #
-# Volumes are named (no workspace-relative paths), so this file stacks safely
-# after deploy/docker-compose.yml in any order of -f anchors.
+# Service/container names carry the e2e- prefix (e2e-mysql1, e2e-postgres1):
+# obviously test fixtures, not parts of the application stack, while matching
+# the datasource keys (mysql1, postgres1) in profiles/*.yml. Volumes are
+# named, not bind-mounted.
 services:
-  mysql-source:
+  e2e-mysql1:
     image: docker.m.daocloud.io/library/mysql:8.0
-    container_name: opendrs-mysql-source
+    container_name: e2e-mysql1
     environment:
       MYSQL_ROOT_PASSWORD: "123456"
       MYSQL_ROOT_HOST: "%"
-      MYSQL_DATABASE: e2e_source
-      MYSQL_USER: e2e
+      MYSQL_DATABASE: e2e_db
+      MYSQL_USER: e2e_mysql
       MYSQL_PASSWORD: "123456"
     network_mode: host
     command:
@@ -30,25 +32,26 @@ services:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
     volumes:
-      - mysql_source_data:/var/lib/mysql
+      - e2e-mysql1-data:/var/lib/mysql
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-P3406", "-ue2e", "-p123456"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-P3406",
+             "-ue2e_mysql", "-p123456"]
       interval: 5s
       timeout: 5s
       retries: 20
 
-  postgres:
+  e2e-postgres1:
     image: docker.m.daocloud.io/library/postgres:17
-    container_name: opendrs-postgres
+    container_name: e2e-postgres1
     environment:
-      POSTGRES_USER: opendrs
+      POSTGRES_USER: e2e_postgres
       POSTGRES_PASSWORD: "123456"
-      POSTGRES_DB: e2e_target
+      POSTGRES_DB: e2e_db
     network_mode: host
     volumes:
-      - pg_data:/var/lib/postgresql/data
+      - e2e-postgres1-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U opendrs -d e2e_target"]
+      test: ["CMD-SHELL", "pg_isready -U e2e_postgres -d e2e_db"]
       interval: 5s
       timeout: 5s
       retries: 20
@@ -57,5 +60,5 @@ volumes:
   # Named (not bind-mounted under the workspace): Postgres re-chowns its data dir to
   # postgres:postgres mode 0700 during initdb, and a root-owned bind mount at the
   # repo root then breaks any workspace-wide scan on the CI runner.
-  mysql_source_data:
-  pg_data:
+  e2e-mysql1-data:
+  e2e-postgres1-data:
