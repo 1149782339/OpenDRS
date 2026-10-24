@@ -1,10 +1,12 @@
 # Migration data sources for e2e: binlog-enabled source MySQL + PostgreSQL target.
 # NOT part of the application stack — start them only when a run needs real data:
 #
-#   docker compose -f docker-compose.yml -f scripts/test/docker-compose.yml up -d --wait
+#   docker compose -p opendrs -f deploy/docker-compose.yml \
+#       -f scripts/test/docker-compose.yml up -d --wait
+#   ./scripts/test/data-sources.sh        (this file alone, daily driver)
 #
-# This file must come AFTER the root docker-compose.yml on the command line so
-# relative volume paths still resolve against the repository root.
+# Volumes are named (no workspace-relative paths), so this file stacks safely
+# after deploy/docker-compose.yml in any order of -f anchors.
 services:
   mysql-source:
     image: docker.m.daocloud.io/library/mysql:8.0

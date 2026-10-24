@@ -12,7 +12,9 @@ COMPOSE="${COMPOSE:-docker-compose}"
 # Application stack only. The migration data sources (scripts/test/docker-compose.yml)
 # are started once separately via scripts/test/data-sources.sh and are NOT touched here,
 # so re-running this script never disturbs a running migration demo.
-COMPOSE_FILES=(-f docker-compose.yml)
+# -p opendrs pins the project name: with this file under deploy/ the default would
+#   become "deploy", breaking container/volume sharing with data-sources.sh and CI.
+COMPOSE_FILES=(-p opendrs -f deploy/docker-compose.yml)
 
 cd "$ROOT"
 

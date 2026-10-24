@@ -4,11 +4,12 @@
 # Migration data sources (binlog-enabled source MySQL on 3406 + PostgreSQL target)
 # live in scripts/test/docker-compose.yml; they are started only for e2e runs:
 #
-#   docker compose -f docker-compose.yml -f scripts/test/docker-compose.yml up -d --wait
+#   docker compose -p opendrs -f deploy/docker-compose.yml \
+#       -f scripts/test/docker-compose.yml up -d --wait
 #
-# This file must stay first on the command line: compose resolves relative
-# paths against the first -f file's directory, and every path below is
-# repository-root relative.
+# The project name is pinned to "opendrs" everywhere (dev.sh, data-sources.sh,
+# CI): the first -f file's directory names the project by default, which is no
+# longer the repository root now that this file lives in deploy/.
 services:
   # Metadata store for the backend (task registry, Debezium offsets, schema history).
   mysql:
@@ -25,7 +26,7 @@ services:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
     volumes:
-      - ./mysql_data:/var/lib/mysql
+      - ../mysql_data:/var/lib/mysql
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uopendrs", "-p123456"]
       interval: 5s
@@ -42,13 +43,13 @@ services:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.retention.time=7d
     volumes:
-      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
 
   backend:
     image: opendrs-backend:local
     build:
-      context: .
-      dockerfile: deploy/Dockerfile
+      context: ..            # podman classic builder resolves the Dockerfile
+      dockerfile: deploy/Dockerfile  # path against CWD, not the context dir
     container_name: opendrs-backend
     network_mode: host
     environment:
@@ -71,7 +72,7 @@ services:
     volumes:
       # Bind mounted rather than baked into an image: `npm run build` on the host is the
       # only refresh step, no image rebuild and no 149 MB node_modules upload.
-      - ./opendrs-web/dist:/usr/share/nginx/html:ro
-      - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ../opendrs-web/dist:/usr/share/nginx/html:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:
       - backend
