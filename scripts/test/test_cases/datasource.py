@@ -1,23 +1,33 @@
-"""Case datasource: register a data source through the REST API.
+"""Case datasource: register a data source and verify it is reachable.
 
-Dummy body (framework skeleton phase): only sleeps and asserts the env wiring.
-The real body will call api.py's create_connection against env.endpoint.
+This is the fast-fail gate of the suite: every later stage calls the same API
+through nginx, so a backend-down or proxy-broken environment dies here in
+seconds instead of inside a migration task.
 """
-
-import time
 
 import pytest
 
+from facade import OpenDrs
+
 
 @pytest.fixture(scope="module")
-def prepared(case_ctx, env):
-    print(f"\n[prepare] {case_ctx.case} worker={case_ctx.worker} "
-          f"endpoint={env.endpoint['url']}", flush=True)
-    time.sleep(1)
-    yield {"registered": 2}
-    print(f"\n[clean] {case_ctx.case}", flush=True)
+def registered(env, case_ctx):
+    opendrs = OpenDrs(env.endpoint["url"])
+    created = []
+    for key, db_type in (("mysql1", "MYSQL"), ("postgres1", "POSTGRESQL")):
+        cfg = env.datasources[key]
+        ds = opendrs.create_datasource(
+            case_ctx.ns(f"ds_{key}"), db_type,
+            host=cfg["host"], port=int(cfg["port"]), database=cfg["database"],
+            username=cfg["user"], password=cfg["password"])
+        created.append(ds)
+    try:
+        yield {"opendrs": opendrs, "datasources": created}
+    finally:
+        for ds in created:
+            opendrs.delete_datasource(ds)
 
 
-def test_register_datasource(prepared):
-    time.sleep(1)  # run: the REST call goes here
-    assert prepared["registered"] == 2  # check
+def test_datasource_reachable(registered):
+    for ds in registered["datasources"]:
+        assert registered["opendrs"].test_datasource(ds), f"{ds.name} unreachable"

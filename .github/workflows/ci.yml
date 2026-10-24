@@ -109,13 +109,12 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Run e2e smoke
+      # Framework runner: datasource fast-fail -> mysql2pg (full, full+inc) ->
+      # mysql2pg_bi, stages ordered, cases within a stage parallel. Replaces the
+      # retired e2e_smoke.py / e2e_test.py (superseded by the framework cases).
+      - name: Run test framework (ci profile)
         working-directory: scripts/test
-        run: uv run e2e_smoke.py
-
-      - name: Run full-migration e2e
-        working-directory: scripts/test
-        run: uv run e2e_test.py
+        run: ./run_test.sh --profile profiles/ci.yml
 
       - name: Teardown
         if: always()
