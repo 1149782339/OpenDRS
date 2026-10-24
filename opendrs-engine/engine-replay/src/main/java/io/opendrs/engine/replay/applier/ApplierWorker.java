@@ -73,6 +73,15 @@ public class ApplierWorker extends WorkerThread implements LifeCycle {
                 if (!applierEvent.getEvents().isEmpty()) {
                     jdbcApplier.apply(applierEvent.getEvents());
                 }
+            } catch (Exception e) {
+                // 时序约束：必须先 setThrowable 登记异常，再（在 finally 里）
+                // onTransactionComplete 唤醒 dispatcher/引擎线程。
+                // 完成信号是引擎线程 awaitQuiescent 放行的唯一依据，若先放行后登记，
+                // 引擎线程可能在登记完成前调 checkFailure，读到空登记簿，
+                // 导致失败的事务被当作成功提交 offset（真实存在的竞态窗口）。
+                // （外层 WorkerThread.run 会重复登记同一个 throwable，幂等无害。）
+                errorHandler.setThrowable(e);
+                throw e;
             } finally {
                 dispatcher.onTransactionComplete(sequenceNumber);
             }

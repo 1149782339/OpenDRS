@@ -78,10 +78,27 @@ class TransactionApplierTest {
                 row(Operation.CREATE, "s", "b", 3, "t2"),
                 txMark("t2", TransactionEvent.Status.END)));
         assertThat(executor.transactions).hasSize(2);
-        assertThat(((TransactionEvent) executor.transactions.get(0).get(3)).getTransactionId())
-                .isEqualTo("t1");
-        assertThat(((TransactionEvent) executor.transactions.get(1).get(2)).getTransactionId())
-                .isEqualTo("t2");
+        // 两个事务写的是不同表、writeset 不冲突，谁先完成由调度决定 —— 完成顺序
+        // （= 记录顺序）不是契约，只能按内容匹配，不能按列表位置断言。
+        List<ChangeEvent> t1 = unitEndingWith(executor.transactions, "t1");
+        List<ChangeEvent> t2 = unitEndingWith(executor.transactions, "t2");
+        assertThat(t1).hasSize(4);
+        assertThat(((TransactionEvent) t1.get(3)).getTransactionId()).isEqualTo("t1");
+        assertThat(t2).hasSize(3);
+        assertThat(((TransactionEvent) t2.get(2)).getTransactionId()).isEqualTo("t2");
+    }
+
+    /** 找出以指定事务的 END 标记收尾的那个单元；不存在则断言失败。 */
+    private static List<ChangeEvent> unitEndingWith(List<List<ChangeEvent>> units, String transactionId) {
+        return units.stream()
+                .filter(unit -> {
+                    ChangeEvent last = unit.get(unit.size() - 1);
+                    return last instanceof TransactionEvent
+                            && ((TransactionEvent) last).getStatus() == TransactionEvent.Status.END
+                            && transactionId.equals(((TransactionEvent) last).getTransactionId());
+                })
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("no unit ends with transaction " + transactionId));
     }
 
     @Test
