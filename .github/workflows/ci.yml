@@ -49,7 +49,7 @@ jobs:
         run: npm run build
 
   e2e:
-    name: E2E (app stack smoke)
+    name: E2E (full migration MySQL -> PostgreSQL)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -73,11 +73,12 @@ jobs:
       - name: Build frontend bundle
         run: cd opendrs-web && npm ci && npm run build
 
-      # Application stack only (backend + frontend + prometheus + metadata MySQL).
-      # Migration data sources in scripts/test/docker-compose.yml are intentionally
-      # not started in this phase.
-      - name: Start application stack
-        run: docker compose up -d --wait
+      # Application stack (backend + frontend + prometheus + metadata MySQL) plus the
+      # migration data sources from scripts/test (source MySQL :3406, target PostgreSQL :5432).
+      # The root file must come first: relative paths inside the second file resolve
+      # against the first file's directory.
+      - name: Start stacks
+        run: docker compose -f docker-compose.yml -f scripts/test/docker-compose.yml up -d --wait
 
       - name: Wait for API through nginx
         run: |
@@ -87,7 +88,7 @@ jobs:
             [ "$code" = "200" ] && exit 0
             sleep 1
           done
-          docker compose logs --tail 60 backend
+          docker compose -f docker-compose.yml -f scripts/test/docker-compose.yml logs --tail 60 backend
           exit 1
 
       - uses: astral-sh/setup-uv@v5
@@ -98,6 +99,10 @@ jobs:
         working-directory: scripts/test
         run: uv run e2e_smoke.py
 
+      - name: Run full-migration e2e
+        working-directory: scripts/test
+        run: uv run e2e_test.py
+
       - name: Teardown
         if: always()
-        run: docker compose down -v
+        run: docker compose -f docker-compose.yml -f scripts/test/docker-compose.yml down -v

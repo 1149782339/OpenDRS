@@ -48,7 +48,7 @@ services:
     image: opendrs-backend:local
     build:
       context: .
-      dockerfile: deploy/Dockerfile.backend
+      dockerfile: deploy/Dockerfile
     container_name: opendrs-backend
     network_mode: host
     environment:
