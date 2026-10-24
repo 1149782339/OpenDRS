@@ -145,6 +145,10 @@ public class DebeziumCdcEngineFactory implements CdcEngineFactory {
         // DataSource for this engine run until the Engine stops. The key is the engine name, so
         // the two directions of one bidirectional task bind and unbind independently.
         String engineKey = props.getProperty("name");
+        // 诊断日志：这里记录的是实际写进 Debezium Properties 的值，以及 classpath 上真正加载的
+        // debezium-connector-mysql 版本——两边对不上时（如胖 jar 内嵌旧版依赖）一眼可见。
+        log.info("Debezium engine {} starting: snapshot.mode={}, debezium-connector-mysql={}",
+                engineKey, props.getProperty("snapshot.mode"), debeziumConnectorVersion());
         TaskDataSourceRegistry.bind(engineKey, metadataDataSource);
         DebeziumEngine<RecordChangeEvent<SourceRecord>> engine = DebeziumEngine
                 .create(ChangeEventFormat.of(Connect.class))
@@ -235,6 +239,32 @@ public class DebeziumCdcEngineFactory implements CdcEngineFactory {
             if (onClosed != null) {
                 onClosed.run();
             }
+        }
+    }
+
+    /**
+     * Version of the debezium-connector-mysql artifact actually on the classpath. Reading it from
+     * the code source location (rather than the pom) catches stale fat jars, where the packaged
+     * dependency silently differs from what the build file declares. In a Spring Boot fat jar the
+     * location looks like "jar:nested:/app/app.jar/!BOOT-INF/lib/debezium-connector-mysql-3.7.0.Final.jar!/".
+     */
+    private static String debeziumConnectorVersion() {
+        try {
+            java.net.URL location = io.debezium.connector.mysql.MySqlConnector.class
+                    .getProtectionDomain()
+                    .getCodeSource()
+                    .getLocation();
+            String path = java.net.URLDecoder.decode(location.getPath(), java.nio.charset.StandardCharsets.UTF_8);
+            String artifact = "debezium-connector-mysql-";
+            int start = path.lastIndexOf(artifact);
+            if (start >= 0) {
+                String rest = path.substring(start + artifact.length());
+                int end = rest.indexOf(".jar");
+                return end > 0 ? rest.substring(0, end) : rest;
+            }
+            return path;
+        } catch (RuntimeException ex) {
+            return "unknown (" + ex.getMessage() + ")";
         }
     }
 

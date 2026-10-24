@@ -73,6 +73,14 @@ public class MigrationCoordinator implements Runnable {
     /** Direction keys that have entered INCREMENTAL during this run. */
     private final java.util.Set<String> incrementalDirections = new java.util.concurrent.ConcurrentHashMap<String, Boolean>().keySet(true);
 
+    /**
+     * FULL_ONLY 专用：快照完成通知已到达。Debezium 的 initial_only 只让协调器跳过 streaming
+     * 循环，内嵌引擎（AsyncEmbeddedEngine）并不会因此结束——复现程序实测 3.6.1 与 3.7.0 都永久
+     * 挂起在 POLLING_TASKS。所以快照回放完后必须由协调器主动停机，任务才能落库 COMPLETED。
+     * 该标志可能在 track() 之前被引擎线程置位（信号与注册存在竞态），两处都要消费它。
+     */
+    private volatile boolean fullLoadSnapshotDone = false;
+
     public MigrationCoordinator(Long taskId, MigrationMode mode, MigrationTaskMapper taskMapper, MigrationCoordinatorRegistry registry) {
         this(taskId, mode, taskMapper, null, registry, null, MigrationLogListener.NONE);
     }
@@ -326,9 +334,16 @@ public class MigrationCoordinator implements Runnable {
                 handles.add(engine.migrateData(pipelineParam(task, pipeline, pipelines)));
             }
             track(handles);
+            // 竞态收口：FULL_ONLY 的快照完成信号若先于 track() 到达（假引擎测试里会发生），
+            // 停机线程看到的 currentTasks 还是空的，这里补一次。
+            if (fullLoadSnapshotDone) {
+                stopPipelinesForFullLoad();
+            }
             log.info("Task job {} mode {} started data migration on {} pipeline(s)",
                     taskId, mode, pipelines.size());
-            note(MigrationLogLevel.INFO, "data migration started, snapshot then incremental");
+            note(MigrationLogLevel.INFO, mode == MigrationMode.FULL_ONLY
+                    ? "data migration started, full load only"
+                    : "data migration started, snapshot then incremental");
             for (io.opendrs.engine.core.MigrationTask handle : handles) {
                 awaitEngine(handle);
             }
@@ -345,8 +360,19 @@ public class MigrationCoordinator implements Runnable {
         if (!stopRequested() && mode != MigrationMode.FULL_ONLY) {
             throw new IllegalStateException("CDC engine for task " + taskId + " ended without a stop request");
         }
-        // 全量模式（initial_only）：连接器快照完成后自行结束是正常路径，
-        // run() 会据此把任务落库为 COMPLETED 而不是暂停。
+        // 全量模式：引擎是被 fullLoadSnapshotDone 触发的主动停机结束的（Debezium 的
+        // initial_only 不会自行结束内嵌引擎），run() 会据此把任务落库为 COMPLETED。
+    }
+
+    /**
+     * FULL_ONLY 的快照回放完成停机。必须在引擎自己的回调线程之外执行：engine.close() 会
+     * 停掉并等待引擎的轮询/处理线程，从其中一条线程内部发起有自连接风险，所以 onTaskPhase
+     * 用独立线程调用这里。
+     */
+    private void stopPipelinesForFullLoad() {
+        for (io.opendrs.engine.core.MigrationTask handle : currentTasks) {
+            handle.requestStop();
+        }
     }
 
     /** The task's pipeline rows; unit tests without a mapper get one ephemeral row from the task. */
@@ -480,9 +506,15 @@ public class MigrationCoordinator implements Runnable {
     private void onTaskPhase(DataMigrationTaskPhase taskPhase, io.opendrs.migration.domain.TaskPipeline pipeline) {
         log.info("Task job {} pipeline {} entered phase {}", taskId, pipeline.getId(), taskPhase);
         if (taskPhase == DataMigrationTaskPhase.INCREMENTAL && mode == MigrationMode.FULL_ONLY) {
-            // 全量模式的引擎在 initial_only 快照完成后自行停机，进入不了真正的增量阶段；
-            // 快照完成通知仍会触发这个回调，忽略它，phase 保持 FULL 直到落库 COMPLETED。
-            log.info("Task job {} FULL_ONLY: ignoring INCREMENTAL signal, snapshot is done", taskId);
+            // 全量模式：快照完成通知意味着全部存量数据已同步回放完毕（全量回放是同步的，
+            // 通知在最后一个数据批次应用之后才触发）。phase 保持 FULL 不再前进，由
+            // stopPipelinesForFullLoad 主动停机，run() 随后把任务落库为 COMPLETED。
+            fullLoadSnapshotDone = true;
+            log.info("Task job {} FULL_ONLY: snapshot fully replayed, stopping pipelines", taskId);
+            note(MigrationLogLevel.INFO, "full load finished, completing task");
+            Thread stopper = new Thread(this::stopPipelinesForFullLoad, "full-load-stop-" + taskId);
+            stopper.setDaemon(true);
+            stopper.start();
             return;
         }
         if (taskPhase == DataMigrationTaskPhase.INCREMENTAL) {
