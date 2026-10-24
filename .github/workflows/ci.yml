@@ -114,7 +114,7 @@ jobs:
       # retired e2e_smoke.py / e2e_test.py (superseded by the framework cases).
       - name: Run test framework (ci profile)
         working-directory: scripts/test
-        run: ./run_test.sh --profile profiles/ci.yml
+        run: bash ./run_test.sh --profile profiles/ci.yml
 
       - name: Teardown
         if: always()
