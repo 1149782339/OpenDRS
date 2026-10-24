@@ -6,10 +6,11 @@ passes the profile YAML in via --profile. Everything a case needs comes from fix
   env        session:  profile env section (endpoint, datasources), ${VAR} expanded
   case_ctx   module:   identity of the current case — the isolation namespace
 
-Contract between runner and cases: case `x` of group `g` lives in
-test_cases/g/test_x.py. Group-level prepare/clean is a module-scoped fixture written
-inside the case file; under xdist it runs once per worker, so cases must isolate
-every shared resource through case_ctx.ns(...).
+Contract between runner and cases: test_cases/ is flat, case `x` is
+test_cases/x.py, and the stage's `tests` list selects the files. Group-level
+prepare/clean is a module-scoped fixture written inside the case file; under
+xdist it runs once per worker, so cases must isolate every shared resource
+through case_ctx.ns(...).
 """
 
 from __future__ import annotations
@@ -18,7 +19,6 @@ import dataclasses
 import os
 import re
 import uuid
-from pathlib import Path
 
 import pytest
 import yaml
@@ -94,20 +94,14 @@ class CaseContext:
         return f"{name}_{self.case_id}"
 
 
-TEST_CASES_DIR = Path(__file__).resolve().parent / "test_cases"
-
-
 @pytest.fixture(scope="module")
 def case_ctx(request: pytest.FixtureRequest) -> CaseContext:
-    # Derive group/case from the file's location under test_cases/, so the cases
-    # need no __init__.py packages and run standalone just as well as under xdist.
-    relative = request.node.path.resolve().relative_to(TEST_CASES_DIR)
-    group = relative.parts[0] if len(relative.parts) > 1 else "ungrouped"
-    stem = request.node.path.stem
-    case = stem[len("test_"):] if stem.startswith("test_") else stem
+    # Flat layout: the case is the file stem; the group is the stage the runner
+    # put this file in (PYTEST_STAGE), which the file cannot know by itself.
+    case = request.node.path.stem
     worker = getattr(request.config, "workerinput", {}).get("workerid", "master")
     return CaseContext(
-        group=group,
+        group=os.environ.get("PYTEST_STAGE", "default"),
         case=case,
         worker=worker,
         case_id=uuid.uuid4().hex[:8],

@@ -9,8 +9,10 @@ Profile YAML contract:
     env:        endpoint/datasources handed to cases via the `env` fixture
     config:     max_parallel, case_timeout_sec (framework scheduling)
     testcases:  ordered list of stages; a stage runs to green before the next
-                starts. A stage without `tests` runs the whole group directory;
-                with `tests` only those cases (test_cases/<group>/test_<case>.py).
+                starts. test_cases/ is FLAT — case `x` is test_cases/x.py, and
+                the stage's `tests` list names the files. A stage without
+                `tests` means the stage name itself is the single case
+                ("若无 tests，则 name 就是 test").
 
 Each stage is one pytest subprocess (xdist for intra-stage parallelism), which
 keeps the semantics honest: nothing in stage N+1 starts before stage N is fully
@@ -35,22 +37,15 @@ TEST_CASES = TEST_ROOT / "test_cases"
 def run_stage(profile_path: Path, stage: dict, config: dict, reports_dir: Path,
               verbose: bool) -> int:
     name = stage["name"]
-    tests = stage.get("tests")
-    group_dir = TEST_CASES / name
-    if not group_dir.is_dir():
-        print(f"[stage:{name}] ERROR: no such group directory {group_dir}", flush=True)
-        return 2
+    cases = stage.get("tests") or [name]
 
-    if tests:
-        targets = []
-        for case in tests:
-            path = group_dir / f"test_{case}.py"
-            if not path.is_file():
-                print(f"[stage:{name}] ERROR: case '{case}' not found at {path}", flush=True)
-                return 2
-            targets.append(str(path))
-    else:
-        targets = [str(group_dir)]
+    targets = []
+    for case in cases:
+        path = TEST_CASES / f"{case}.py"
+        if not path.is_file():
+            print(f"[stage:{name}] ERROR: case '{case}' not found at {path}", flush=True)
+            return 2
+        targets.append(str(path))
 
     max_parallel = int(config.get("max_parallel", 4))
     timeout_sec = int(config.get("case_timeout_sec", 900))
@@ -72,10 +67,13 @@ def run_stage(profile_path: Path, stage: dict, config: dict, reports_dir: Path,
         "--profile", str(profile_path),
         *targets,
     ]
-    print(f"[stage:{name}] pytest -n {workers} ({len(tests) if tests else 'all'} case(s), "
+    print(f"[stage:{name}] pytest -n {workers} ({len(cases)} case(s), "
           f"timeout {timeout_sec}s)", flush=True)
     started = time.monotonic()
-    result = subprocess.run(cmd, cwd=TEST_ROOT)
+    # The group name is positional now (flat layout), so it travels by env var;
+    # xdist workers inherit the parent's environment.
+    env = {**os.environ, "PYTEST_STAGE": name}
+    result = subprocess.run(cmd, cwd=TEST_ROOT, env=env)
     elapsed = time.monotonic() - started
     mark = "PASS" if result.returncode == 0 else "FAIL"
     print(f"[stage:{name}] {mark} in {elapsed:.1f}s (exit {result.returncode})", flush=True)

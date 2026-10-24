@@ -28,7 +28,7 @@ config:
   case_timeout_sec: 900  # per-case wall clock; the runner has no other global guard
 
 testcases:
-  - name: reg_datasource
+  - name: datasource
   - name: mysql2pg
     tests:
       - mysql2pg_full

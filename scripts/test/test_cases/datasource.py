@@ -1,4 +1,4 @@
-"""Case reg_datasource: register a data source through the REST API.
+"""Case datasource: register a data source through the REST API.
 
 Dummy body (framework skeleton phase): only sleeps and asserts the env wiring.
 The real body will call api.py's create_connection against env.endpoint.
