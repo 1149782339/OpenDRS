@@ -114,9 +114,9 @@ export function canTerminateTask(row: TaskStatusInput): boolean {
   return true // STARTING/RUNNING/STOPPING(含暂停中)/STOPPED/FAILED 都可结束
 }
 
-/** 删除可用：只有 TERMINATED（COMPLETED 目前后端不可达，到了再放开）。 */
+/** 删除可用：TERMINATED（用户宣告结束）或 COMPLETED（全量任务的自然终态）。 */
 export function canDeleteTask(row: TaskStatusInput): boolean {
-  return row.state === 'TERMINATED'
+  return row.state === 'TERMINATED' || row.state === 'COMPLETED'
 }
 
 /**

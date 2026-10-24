@@ -225,6 +225,24 @@ class MigrationCoordinatorTest {
         verify(taskMapper, never()).markFailed(anyLong(), any());
     }
 
+    @Test
+    void fullOnlyRunEndsCompletedNotPaused() {
+        MigrationTask task = task(9L, MigrationPhase.PRECHECKED, TaskState.STARTING, MigrationMode.FULL_ONLY);
+        stubTask(task);
+        engine.finiteData = true;
+
+        job(task).run();
+
+        // 连接器 initial_only 快照完自行结束：落库 COMPLETED，phase 停在 FULL，
+        // 快照完成触发的 INCREMENTAL 信号被忽略（不能推进到 INCREMENTAL 相位）。
+        verify(taskMapper).compareAndSetState(9L, TaskState.RUNNING, TaskState.COMPLETED);
+        assertThat(task.getState()).isEqualTo(TaskState.COMPLETED);
+        assertThat(task.getPhase()).isEqualTo(MigrationPhase.FULL);
+        verify(taskMapper, never()).compareAndSetPhase(eq(9L), eq(MigrationPhase.FULL), eq(MigrationPhase.INCREMENTAL));
+        verify(taskMapper, never()).landPausing(anyLong());
+        verify(taskMapper, never()).markFailed(anyLong(), any());
+    }
+
     private void stubTask(MigrationTask task) {
         when(taskMapper.findById(task.getId())).thenAnswer(invocation -> task);
         when(taskMapper.compareAndSetPhase(eq(task.getId()), eq(MigrationPhase.PRECHECKED), eq(MigrationPhase.SCHEMA_MIGRATION)))
@@ -255,6 +273,11 @@ class MigrationCoordinatorTest {
         when(taskMapper.compareAndSetState(eq(task.getId()), eq(TaskState.RUNNING), eq(TaskState.STOPPED)))
                 .thenAnswer(invocation -> {
                     task.setState(TaskState.STOPPED);
+                    return 1;
+                });
+        when(taskMapper.compareAndSetState(eq(task.getId()), eq(TaskState.RUNNING), eq(TaskState.COMPLETED)))
+                .thenAnswer(invocation -> {
+                    task.setState(TaskState.COMPLETED);
                     return 1;
                 });
     }
@@ -309,6 +332,8 @@ class MigrationCoordinatorTest {
         final AtomicInteger dataCount = new AtomicInteger();
         RuntimeException schemaFailure;
         RuntimeException dataFailure;
+        /** FULL_ONLY 形态：数据 handle 自行结束（initial_only 快照完自动停）。 */
+        volatile boolean finiteData;
         /** Reads the persisted phase, so a test can assert what the row said when data started. */
         Supplier<MigrationPhase> phaseSupplier = () -> null;
         volatile MigrationPhase phaseAtDataStart;
@@ -328,6 +353,14 @@ class MigrationCoordinatorTest {
         public DataMigrationTask migrateData(DataMigrationParam param) {
             dataCount.incrementAndGet();
             phaseAtDataStart = phaseSupplier.get();
+            if (finiteData) {
+                // 快照完成通知照常触发（含 INCREMENTAL 信号）——协调器必须忽略它。
+                if (param.phaseListener() != null) {
+                    param.phaseListener().accept(DataMigrationTaskPhase.FULL);
+                    param.phaseListener().accept(DataMigrationTaskPhase.INCREMENTAL);
+                }
+                return new FiniteFakeDataTask();
+            }
             if (dataFailure != null) {
                 return new FakeDataTask(param.taskId(), dataFailure, run);
             }
@@ -436,6 +469,38 @@ class MigrationCoordinatorTest {
             }
             run.stop.await(10, TimeUnit.SECONDS);
             state.set(TaskState.STOPPED);
+        }
+    }
+
+    /**
+     * 全量模式（initial_only）的数据 handle：await 立即返回、状态 COMPLETED ——
+     * 连接器快照完成后自行停机，不是用户暂停。
+     */
+    static final class FiniteFakeDataTask implements DataMigrationTask {
+
+        @Override
+        public DataMigrationTaskPhase taskPhase() {
+            return DataMigrationTaskPhase.FULL;
+        }
+
+        @Override
+        public TaskState state() {
+            return TaskState.COMPLETED;
+        }
+
+        @Override
+        public Throwable failure() {
+            return null;
+        }
+
+        @Override
+        public void requestStop() {
+            // already finished
+        }
+
+        @Override
+        public void await() {
+            // already finished
         }
     }
 

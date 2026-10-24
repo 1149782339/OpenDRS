@@ -1,6 +1,7 @@
 package io.opendrs.engine.capture;
 
 import io.opendrs.common.metadata.DatabaseType;
+import io.opendrs.engine.replay.SnapshotStrategy;
 import io.opendrs.jdbc.JdbcConnectionConfig;
 import io.opendrs.jdbc.metadata.Table;
 import io.opendrs.engine.replay.GtidLoopConfig;
@@ -53,7 +54,10 @@ public final class DebeziumEngineConfig {
      */
     public static Properties capture(EngineSpec spec) {
         Properties props = common(spec);
-        props.setProperty("snapshot.mode", SNAPSHOT_MODE_INITIAL);
+        // Sync mode → Debezium snapshot mode: initial (全量+增量) / no_data (增量，只抓结构)
+        // / initial_only (全量，快照完自动停). No "never" mapping: a connector without stored
+        // offsets refuses to start with no snapshot at all — no_data is the incremental entry.
+        props.setProperty("snapshot.mode", snapshotModeValue(spec.snapshotStrategy()));
         props.setProperty("notification.enabled.channels", NOTIFICATION_CHANNEL_SINK);
         props.setProperty("notification.sink.topic.name", notificationTopic(spec.pipelineId()));
         // Parallel snapshot read: threads × multiplier ≈ the number of chunks Debezium splits
@@ -109,6 +113,14 @@ public final class DebeziumEngineConfig {
         props.setProperty("provide.transaction.metadata", "true");
         DebeziumSourceFields.of(spec.source()).forEach(props::setProperty);
         return props;
+    }
+
+    static String snapshotModeValue(SnapshotStrategy strategy) {
+        return switch (strategy) {
+            case INITIAL -> "initial";
+            case NO_DATA -> "no_data";
+            case INITIAL_ONLY -> "initial_only";
+        };
     }
 
     static void applySelection(Properties props, EngineSpec spec) {
@@ -235,16 +247,26 @@ public final class DebeziumEngineConfig {
              * 实际分片数 ≈ 并发线程数 × 分片倍率. The service wires
              * {@code options.full.chunkMultiplier}. Null keeps the connector default.
              */
-            Integer snapshotThreadsMultiplier) {
+            Integer snapshotThreadsMultiplier,
+            /**
+             * Sync mode of the run, mapped to Debezium {@code snapshot.mode}:
+             * {@link SnapshotStrategy#INITIAL} → {@code initial} (full+incremental),
+             * {@link SnapshotStrategy#NO_DATA} → {@code no_data} (增量：schema only, then
+             * follow the log), {@link SnapshotStrategy#INITIAL_ONLY} → {@code initial_only}
+             * (全量：snapshot then the connector stops by itself). Null keeps
+             * {@link SnapshotStrategy#INITIAL}.
+             */
+            SnapshotStrategy snapshotStrategy) {
 
         public EngineSpec {
             direction = direction == null ? ReplayDirection.FORWARD : direction;
+            snapshotStrategy = snapshotStrategy == null ? SnapshotStrategy.INITIAL : snapshotStrategy;
         }
 
         /** Compact form for callers without a persisted pipeline; the task id stands in as pipeline id. */
         public EngineSpec(long taskId, JdbcConnectionConfig source, List<Table> tables, Long databaseServerId) {
             this(taskId, taskId, source, tables, databaseServerId, null, null,
-                    ReplayMetrics.NONE, null, ReplayDirection.FORWARD, null, null, null, null);
+                    ReplayMetrics.NONE, null, ReplayDirection.FORWARD, null, null, null, null, null);
         }
 
         public EngineSpec(
@@ -255,7 +277,7 @@ public final class DebeziumEngineConfig {
                 JdbcConnectionConfig target,
                 TableSelection tableSelection) {
             this(taskId, taskId, source, tables, databaseServerId, target, tableSelection,
-                    ReplayMetrics.NONE, null, ReplayDirection.FORWARD, null, null, null, null);
+                    ReplayMetrics.NONE, null, ReplayDirection.FORWARD, null, null, null, null, null);
         }
 
         public EngineSpec(
@@ -267,7 +289,7 @@ public final class DebeziumEngineConfig {
                 TableSelection tableSelection,
                 ReplayMetrics metrics) {
             this(taskId, taskId, source, tables, databaseServerId, target, tableSelection,
-                    metrics, null, ReplayDirection.FORWARD, null, null, null, null);
+                    metrics, null, ReplayDirection.FORWARD, null, null, null, null, null);
         }
 
         public EngineSpec(
@@ -280,7 +302,7 @@ public final class DebeziumEngineConfig {
                 TableSelection tableSelection,
                 ReplayMetrics metrics) {
             this(taskId, pipelineId, source, tables, databaseServerId, target, tableSelection,
-                    metrics, null, ReplayDirection.FORWARD, null, null, null, null);
+                    metrics, null, ReplayDirection.FORWARD, null, null, null, null, null);
         }
 
         public EngineSpec(
@@ -294,7 +316,7 @@ public final class DebeziumEngineConfig {
                 ReplayMetrics metrics,
                 GtidLoopConfig gtidLoop) {
             this(taskId, pipelineId, source, tables, databaseServerId, target, tableSelection,
-                    metrics, gtidLoop, ReplayDirection.FORWARD, null, null, null, null);
+                    metrics, gtidLoop, ReplayDirection.FORWARD, null, null, null, null, null);
         }
     }
 }

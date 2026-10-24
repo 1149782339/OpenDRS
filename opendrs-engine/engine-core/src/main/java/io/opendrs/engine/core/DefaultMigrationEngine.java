@@ -167,7 +167,8 @@ public class DefaultMigrationEngine implements MigrationEngine {
                 param.txApplierConcurrency(),
                 param.tableApplierConcurrency(),
                 param.snapshotThreads(),
-                param.snapshotThreadsMultiplier());
+                param.snapshotThreadsMultiplier(),
+                param.snapshotStrategy());
         return cdcEngineFactory.create(spec, onSnapshot, listener, param.lagListener());
     }
 

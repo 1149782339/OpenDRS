@@ -235,7 +235,11 @@ public class MigrationCoordinator implements Runnable {
                 return;
             }
             runPipeline();
-            finishStopped();
+            if (mode == MigrationMode.FULL_ONLY && !stopRequested()) {
+                finishCompleted();
+            } else {
+                finishStopped();
+            }
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
             finishStopped();
@@ -338,9 +342,11 @@ public class MigrationCoordinator implements Runnable {
         for (io.opendrs.engine.core.MigrationTask handle : handles) {
             checkEngineFailure(handle, "Data migration failed");
         }
-        if (!stopRequested()) {
+        if (!stopRequested() && mode != MigrationMode.FULL_ONLY) {
             throw new IllegalStateException("CDC engine for task " + taskId + " ended without a stop request");
         }
+        // 全量模式（initial_only）：连接器快照完成后自行结束是正常路径，
+        // run() 会据此把任务落库为 COMPLETED 而不是暂停。
     }
 
     /** The task's pipeline rows; unit tests without a mapper get one ephemeral row from the task. */
@@ -359,6 +365,20 @@ public class MigrationCoordinator implements Runnable {
         ephemeral.setCaptureOptions(java.util.Map.of());
         ephemeral.setReplayOptions(java.util.Map.of());
         return java.util.List.of(ephemeral);
+    }
+
+    /**
+     * 同步模式 → 引擎快照策略：全量 = 快照完自动停（initial_only，引擎自然结束）；
+     * 增量 = 只抓结构后追日志（no_data）；全量+增量 = initial。
+     */
+    private static io.opendrs.engine.replay.SnapshotStrategy strategyOf(MigrationMode mode) {
+        if (mode == MigrationMode.FULL_ONLY) {
+            return io.opendrs.engine.replay.SnapshotStrategy.INITIAL_ONLY;
+        }
+        if (mode == MigrationMode.INCREMENTAL_ONLY) {
+            return io.opendrs.engine.replay.SnapshotStrategy.NO_DATA;
+        }
+        return io.opendrs.engine.replay.SnapshotStrategy.INITIAL;
     }
 
     private DataMigrationParam pipelineParam(
@@ -392,6 +412,7 @@ public class MigrationCoordinator implements Runnable {
                 .tableApplierConcurrency(tableApplierConcurrency)
                 .snapshotThreads(snapshotThreads)
                 .snapshotThreadsMultiplier(snapshotThreadsMultiplier)
+                .snapshotStrategy(strategyOf(mode))
                 .phaseListener(phase -> onTaskPhase(phase, pipeline))
                 .logListener(logListener)
                 .lagListener(lagListenerFactory.apply(pipeline.getId()))
@@ -458,6 +479,12 @@ public class MigrationCoordinator implements Runnable {
      */
     private void onTaskPhase(DataMigrationTaskPhase taskPhase, io.opendrs.migration.domain.TaskPipeline pipeline) {
         log.info("Task job {} pipeline {} entered phase {}", taskId, pipeline.getId(), taskPhase);
+        if (taskPhase == DataMigrationTaskPhase.INCREMENTAL && mode == MigrationMode.FULL_ONLY) {
+            // 全量模式的引擎在 initial_only 快照完成后自行停机，进入不了真正的增量阶段；
+            // 快照完成通知仍会触发这个回调，忽略它，phase 保持 FULL 直到落库 COMPLETED。
+            log.info("Task job {} FULL_ONLY: ignoring INCREMENTAL signal, snapshot is done", taskId);
+            return;
+        }
         if (taskPhase == DataMigrationTaskPhase.INCREMENTAL) {
             incrementalDirections.add(String.valueOf(pipeline.getId()));
             if (incrementalDirections.size() >= expectedDirections) {
@@ -617,6 +644,22 @@ public class MigrationCoordinator implements Runnable {
             if (taskMapper.compareAndSetState(taskId, TaskState.RUNNING, TaskState.STOPPED) > 0) {
                 note(MigrationLogLevel.WARNING, "job paused");
             }
+        }
+    }
+
+    /**
+     * 全量模式正常跑完：连接器 initial_only 快照完成后自行结束，引擎 handle 走到 COMPLETED。
+     * 这是有限任务的自然终态 —— 任务不可再启动，允许直接删除（同 TERMINATED）。
+     */
+    private void finishCompleted() {
+        MigrationTask task = taskMapper.findById(taskId);
+        if (task == null) {
+            return;
+        }
+        if (task.getState() == TaskState.RUNNING
+                && taskMapper.compareAndSetState(taskId, TaskState.RUNNING, TaskState.COMPLETED) > 0) {
+            note(MigrationLogLevel.INFO, "full load finished, task completed");
+            log.info("Task job {} full-only run finished, state COMPLETED", taskId);
         }
     }
 

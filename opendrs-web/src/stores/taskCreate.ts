@@ -1,4 +1,4 @@
-import type { MigrationOptions, SelectedTable, TableSelection } from '@/types/api'
+import type { MigrationMode, MigrationOptions, SelectedTable, TableSelection } from '@/types/api'
 import { defineStore } from 'pinia'
 import { reactive, ref } from 'vue'
 
@@ -22,6 +22,8 @@ export const useTaskCreateStore = defineStore('taskCreate', () => {
     tables: [] as SelectedTable[],
     /** 同步拓扑：默认单向；双向同步仅支持 MySQL ↔ MySQL（源/目标类型不满足时 UI 置灰）。 */
     syncTopology: 'ONE_WAY' as 'ONE_WAY' | 'BIDIRECTIONAL',
+    /** 同步模式：全量 / 增量 / 全量+增量。双向同步要求全量+增量。 */
+    syncMode: 'FULL_AND_INCREMENTAL' as MigrationMode,
     /* ---- 高级设置 ---- */
     /** 全量同步对象类型：同步表结构（含主键和唯一键）/ 同步数据 / 同步普通索引。 */
     fullSyncSchema: true,
@@ -90,6 +92,7 @@ export const useTaskCreateStore = defineStore('taskCreate', () => {
     form.schemas = []
     form.tables = []
     form.syncTopology = 'ONE_WAY'
+    form.syncMode = 'FULL_AND_INCREMENTAL'
     form.fullSyncSchema = true
     form.fullSyncData = true
     form.fullSyncIndex = true

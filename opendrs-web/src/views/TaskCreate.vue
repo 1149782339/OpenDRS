@@ -138,6 +138,15 @@ const bidirectionalAllowed = computed(
 watch(bidirectionalAllowed, (allowed) => {
   if (!allowed && store.form.syncTopology === 'BIDIRECTIONAL') store.form.syncTopology = 'ONE_WAY'
 })
+// 双向要求全量+增量：已选双向时再改同步模式，拓扑自动退回单向（与后端校验一致）。
+watch(
+  () => store.form.syncMode,
+  (mode) => {
+    if (mode !== 'FULL_AND_INCREMENTAL' && store.form.syncTopology === 'BIDIRECTIONAL') {
+      store.form.syncTopology = 'ONE_WAY'
+    }
+  },
+)
 
 /* ---------------- 迁移对象：全部迁移 / 表级迁移 / 库级迁移 ---------------- */
 
@@ -629,7 +638,7 @@ function buildRequest(): CreateMigrationTaskRequest {
   }
   return {
     name: store.form.name.trim(),
-    mode: 'FULL_AND_INCREMENTAL',
+    mode: store.form.syncMode,
     sourceConnectionId: store.form.sourceConnectionId,
     targetConnectionId: store.form.targetConnectionId,
     options: store.toOptions(),
@@ -940,12 +949,16 @@ onUnmounted(() => {
         </div>
         <el-form :label-width="'var(--ops-label-w)'" label-position="left" class="ops-form">
           <el-form-item label="同步模式" required>
-            <el-radio-group model-value="FULL_AND_INCREMENTAL">
-              <el-radio-button value="FULL_ONLY" disabled>全量</el-radio-button>
-              <el-radio-button value="INCREMENTAL_ONLY" disabled>增量</el-radio-button>
+            <el-radio-group v-model="store.form.syncMode">
+              <el-radio-button value="FULL_ONLY">全量</el-radio-button>
+              <el-radio-button value="INCREMENTAL_ONLY">增量</el-radio-button>
               <el-radio-button value="FULL_AND_INCREMENTAL">全量+增量</el-radio-button>
             </el-radio-group>
-            <el-tooltip content="迁移方式由后端按任务类型判定，暂固定为「全量 + 增量」。" placement="top" effect="dark">
+            <el-tooltip
+              content="全量：快照拷完全部数据后任务结束；增量：只抓结构，从任务启动时刻起同步变更；全量+增量：先全量再持续增量。"
+              placement="top"
+              effect="dark"
+            >
               <el-icon class="ops-help" tabindex="0"><QuestionFilled /></el-icon>
             </el-tooltip>
           </el-form-item>
@@ -954,10 +967,20 @@ onUnmounted(() => {
               <el-radio-button value="ONE_WAY">单向同步</el-radio-button>
               <el-tooltip
                 :disabled="bidirectionalAllowed"
-                content="双向同步仅支持 MySQL ↔ MySQL"
+                :content="
+                  bidirectionalAllowed
+                    ? '双向同步仅支持 MySQL ↔ MySQL'
+                    : store.form.syncMode !== 'FULL_AND_INCREMENTAL'
+                      ? '双向同步要求同步模式为全量+增量'
+                      : '双向同步仅支持 MySQL ↔ MySQL'
+                "
                 placement="top"
               >
-                <el-radio-button value="BIDIRECTIONAL" :disabled="!bidirectionalAllowed">双向同步</el-radio-button>
+                <el-radio-button
+                  value="BIDIRECTIONAL"
+                  :disabled="!bidirectionalAllowed || store.form.syncMode !== 'FULL_AND_INCREMENTAL'"
+                  >双向同步</el-radio-button
+                >
               </el-tooltip>
             </el-radio-group>
             <el-tooltip

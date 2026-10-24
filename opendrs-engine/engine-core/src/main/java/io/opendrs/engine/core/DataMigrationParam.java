@@ -3,6 +3,7 @@ package io.opendrs.engine.core;
 import io.opendrs.common.log.MigrationLogListener;
 import io.opendrs.common.progress.MigrationLagListener;
 import io.opendrs.engine.replay.GtidLoopConfig;
+import io.opendrs.engine.replay.SnapshotStrategy;
 import io.opendrs.engine.replay.mapping.TableSelection;
 import io.opendrs.engine.replay.metrics.ReplayDirection;
 import io.opendrs.jdbc.JdbcConnectionConfig;
@@ -69,7 +70,12 @@ public record DataMigrationParam(
          * 实际分片数 ≈ 并发线程数 × 分片倍率. The service wires
          * {@code options.full.chunkMultiplier}. Null keeps the connector default.
          */
-        Integer snapshotThreadsMultiplier)
+        Integer snapshotThreadsMultiplier,
+        /**
+         * Sync mode of the run: full+incremental, incremental-only or full-only. The service
+         * wires the task's mode; null keeps {@link SnapshotStrategy#INITIAL} (full+incremental).
+         */
+        SnapshotStrategy snapshotStrategy)
         implements MigrationParam {
 
     public DataMigrationParam {
@@ -78,6 +84,7 @@ public record DataMigrationParam(
         logListener = logListener == null ? MigrationLogListener.NONE : logListener;
         lagListener = lagListener == null ? MigrationLagListener.NONE : lagListener;
         direction = direction == null ? ReplayDirection.FORWARD : direction;
+        snapshotStrategy = snapshotStrategy == null ? SnapshotStrategy.INITIAL : snapshotStrategy;
     }
 
     /** Compact factory for the classic single-direction run. */
@@ -93,7 +100,7 @@ public record DataMigrationParam(
         return new DataMigrationParam(
                 taskId, source, target, selection, databaseServerId,
                 phaseListener, logListener, lagListener, null, null, ReplayDirection.FORWARD,
-                null, null, null, null);
+                null, null, null, null, null);
     }
 
     public static Builder builder() {
@@ -117,6 +124,7 @@ public record DataMigrationParam(
         private Integer tableApplierConcurrency;
         private Integer snapshotThreads;
         private Integer snapshotThreadsMultiplier;
+        private SnapshotStrategy snapshotStrategy;
 
         private Builder() {
         }
@@ -220,6 +228,12 @@ public record DataMigrationParam(
             return this;
         }
 
+        /** Sync mode of the run; null keeps {@link SnapshotStrategy#INITIAL}. */
+        public Builder snapshotStrategy(SnapshotStrategy snapshotStrategy) {
+            this.snapshotStrategy = snapshotStrategy;
+            return this;
+        }
+
         public DataMigrationParam build() {
             return new DataMigrationParam(
                     taskId,
@@ -236,7 +250,8 @@ public record DataMigrationParam(
                     txApplierConcurrency,
                     tableApplierConcurrency,
                     snapshotThreads,
-                    snapshotThreadsMultiplier);
+                    snapshotThreadsMultiplier,
+                    snapshotStrategy);
         }
     }
 }

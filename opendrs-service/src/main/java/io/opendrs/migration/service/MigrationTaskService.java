@@ -296,6 +296,10 @@ public class MigrationTaskService {
         if (state == TaskState.TERMINATED) {
             return toStatus(task);
         }
+        if (state == TaskState.COMPLETED) {
+            // 全量任务的自然终态，已经结束无可释放 — 视为已结束，幂等返回。
+            return toStatus(task);
+        }
         if (state == TaskState.STOPPING) {
             taskMapper.flipStoppingToTerminating(id);
             coordinatorRegistry.requestStop(id);
@@ -338,7 +342,7 @@ public class MigrationTaskService {
     @Transactional
     public void delete(Long id) {
         MigrationTask task = requireTask(id);
-        if (task.getState() != TaskState.TERMINATED) {
+        if (task.getState() != TaskState.TERMINATED && task.getState() != TaskState.COMPLETED) {
             throw AppException.of(
                     ErrorCode.TASK_CONFLICT,
                     "Task " + id + " is " + describe(task) + " and must be terminated before delete");

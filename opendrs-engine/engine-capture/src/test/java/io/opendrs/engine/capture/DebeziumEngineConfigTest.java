@@ -118,7 +118,7 @@ class DebeziumEngineConfigTest {
                 7L, 7L, mysql(), tables(), 85744L, null, TableSelection.all(),
                 io.opendrs.engine.replay.metrics.ReplayMetrics.NONE, null,
                 io.opendrs.engine.replay.metrics.ReplayDirection.FORWARD,
-                null, null, 8, 4);
+                null, null, 8, 4, null);
         Properties props = DebeziumEngineConfig.capture(spec);
 
         assertThat(props.getProperty("snapshot.max.threads")).isEqualTo("8");
@@ -131,6 +131,29 @@ class DebeziumEngineConfigTest {
 
         assertThat(props.getProperty("snapshot.max.threads")).isNull();
         assertThat(props.getProperty("snapshot.max.threads.multiplier")).isNull();
+    }
+
+    @Test
+    void snapshotModeFollowsSyncMode() {
+        assertThat(snapshotModeOf(io.opendrs.engine.replay.SnapshotStrategy.INITIAL)).isEqualTo("initial");
+        assertThat(snapshotModeOf(io.opendrs.engine.replay.SnapshotStrategy.NO_DATA)).isEqualTo("no_data");
+        assertThat(snapshotModeOf(io.opendrs.engine.replay.SnapshotStrategy.INITIAL_ONLY))
+                .isEqualTo("initial_only");
+    }
+
+    @Test
+    void snapshotModeDefaultsToInitial() {
+        assertThat(DebeziumEngineConfig.capture(spec(7L, TableSelection.all()))
+                .getProperty("snapshot.mode")).isEqualTo("initial");
+    }
+
+    private static String snapshotModeOf(io.opendrs.engine.replay.SnapshotStrategy strategy) {
+        EngineSpec spec = new EngineSpec(
+                7L, 7L, mysql(), tables(), 85744L, null, TableSelection.all(),
+                io.opendrs.engine.replay.metrics.ReplayMetrics.NONE, null,
+                io.opendrs.engine.replay.metrics.ReplayDirection.FORWARD,
+                null, null, null, null, strategy);
+        return DebeziumEngineConfig.capture(spec).getProperty("snapshot.mode");
     }
 
     private static EngineSpec spec(long taskId, TableSelection selection) {
