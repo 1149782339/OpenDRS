@@ -28,7 +28,7 @@ services:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
     volumes:
-      - ./mysql_source_data:/var/lib/mysql
+      - mysql_source_data:/var/lib/mysql
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-P3406", "-ue2e", "-p123456"]
       interval: 5s
@@ -44,9 +44,16 @@ services:
       POSTGRES_DB: e2e_target
     network_mode: host
     volumes:
-      - ./pg_data:/var/lib/postgresql/data
+      - pg_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U opendrs -d e2e_target"]
       interval: 5s
       timeout: 5s
       retries: 20
+
+volumes:
+  # Named (not bind-mounted under the workspace): Postgres re-chowns its data dir to
+  # postgres:postgres mode 0700 during initdb, and a root-owned bind mount at the
+  # repo root then breaks any workspace-wide scan on the CI runner.
+  mysql_source_data:
+  pg_data:

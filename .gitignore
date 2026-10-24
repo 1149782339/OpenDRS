@@ -55,8 +55,6 @@ opendrs-web/dist/
 # Local container data (docker-compose bind mounts)
 mysql_data/
 mysql2_data/
-mysql_source_data/
-pg_data/
 
 # Local assistant state, ad-hoc verification artifacts, and a stray "NUL"
 # created by a Windows-style redirect in Git Bash (reserved device name, cannot

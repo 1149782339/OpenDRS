@@ -160,16 +160,21 @@ class MigrationTaskPrecheckApiTest {
     void postPrecheckReturnsWhileTheEngineIsStillWorking() throws Exception {
         CountDownLatch entered = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);
+        CountDownLatch published = new CountDownLatch(1);
         when(engine.precheck(any(PrecheckParam.class))).thenAnswer(invocation -> {
             PrecheckParam param = invocation.getArgument(0);
             Thread worker = new Thread(() -> {
                 entered.countDown();
                 awaitQuietly(release);
                 publish(param.progressListener(), canned);
+                published.countDown();
             }, "fake-engine");
             worker.setDaemon(true);
             worker.start();
-            return completed(canned);
+            // The handle must not report completion before the final publish landed, or the
+            // service can commit phase=PRECHECKED while the stored results are still the empty
+            // ones and the last read sees ok=false (same race as checklistIsReadable...).
+            return awaiting(canned, published);
         });
         long id = createMysqlToPostgres("precheck-async");
 
