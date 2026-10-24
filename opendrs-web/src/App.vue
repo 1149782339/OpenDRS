@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { Link, List } from '@element-plus/icons-vue'
+import LocaleSwitcher from '@/components/LocaleSwitcher.vue'
 
 const route = useRoute()
 const active = computed(() => {
@@ -34,7 +35,10 @@ const active = computed(() => {
       </el-menu>
     </el-aside>
     <el-container>
-      <el-header class="app-header">{{ (route.meta.title as string) || '管理台' }}</el-header>
+      <el-header class="app-header">
+        <span class="app-title">{{ (route.meta.title as string) || '管理台' }}</span>
+        <LocaleSwitcher />
+      </el-header>
       <el-main class="app-main">
         <router-view />
       </el-main>
@@ -75,6 +79,8 @@ body {
 .app-header {
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: 16px;
   background: #fff;
   border-bottom: 1px solid #ebeef5;
   font-size: 16px;
