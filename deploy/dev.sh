@@ -9,7 +9,10 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COMPOSE="${COMPOSE:-docker-compose}"
-COMPOSE_FILES=(-f docker-compose.yml -f docker-compose.app.yml)
+# Application stack only. The migration data sources (scripts/test/docker-compose.yml)
+# are started once separately via scripts/test/data-sources.sh and are NOT touched here,
+# so re-running this script never disturbs a running migration demo.
+COMPOSE_FILES=(-f docker-compose.yml)
 
 cd "$ROOT"
 
@@ -17,7 +20,10 @@ log() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 
 log "1/4  building backend jar (tests skipped)"
 # The MSYS variables Git Bash injects here break the maven shell entry point.
-env -u MSYS_NO_PATHCONV -u MSYS2_ARG_CONV_EXCL mvn -q -B -DskipTests package
+# Unset them in this shell instead of wrapping mvn in env(1): mvn is an extensionless
+# shell script, and env.exe would bypass bash and fail with "No such file or directory".
+unset MSYS_NO_PATHCONV MSYS2_ARG_CONV_EXCL || true
+mvn -q -B -DskipTests package
 
 log "2/4  building frontend bundle"
 (cd opendrs-web && npm run build)
@@ -27,7 +33,7 @@ log "3/4  refreshing images and restarting the stack"
 # classic builder (no buildx on this host) does not always invalidate the COPY layer on
 # Windows — a plain `--build` can reuse a stale app.jar and run yesterday's code.
 "$COMPOSE" "${COMPOSE_FILES[@]}" build --no-cache backend
-"$COMPOSE" "${COMPOSE_FILES[@]}" up -d
+"$COMPOSE" "${COMPOSE_FILES[@]}" up -d --wait
 
 log "4/4  waiting for http://localhost"
 for _ in $(seq 1 90); do
