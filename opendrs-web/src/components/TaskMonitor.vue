@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { apiErrorMessage } from '@/api/http'
 import { getReplayMetrics } from '@/api/task'
+import TimeRangePicker from '@/components/TimeRangePicker.vue'
 import type { ReplayDirectionMetrics, ReplayMetricsPoint } from '@/types/api'
+import { PRESET_RANGES, spanSeconds, type RangeWindow } from '@/types/monitor'
 import { Search } from '@element-plus/icons-vue'
 import { LineChart } from 'echarts/charts'
 import { GridComponent, LegendComponent, TooltipComponent } from 'echarts/components'
@@ -125,6 +127,13 @@ const cards: MetricCard[] = [
 ]
 
 const keyword = ref('')
+/** 当前选中的时间窗口，默认和过去一致：近15分钟。 */
+const range = ref<RangeWindow>({ ...PRESET_RANGES[0] })
+/**
+ * 自定义区间要服务端认 start/end。服务端还没认的时候它会照默认窗口返回，
+ * 曲线整段偏在右边 —— 与其让人对着空图猜，不如把话说明白。
+ */
+const customNotHonored = ref(false)
 /** 反向磁贴只在数据里真的出现反向方向（双向任务）时渲染，单向任务保持五张的现状。 */
 const hasReverse = computed(() => points.value.some((p) => p.reverse !== null))
 const visibleCards = computed(() => {
@@ -171,9 +180,16 @@ async function load() {
   if (inFlight) return
   inFlight = true
   try {
-    const data = await getReplayMetrics(props.taskId)
+    const window = range.value
+    const data = await getReplayMetrics(props.taskId, {
+      minutes: window.minutes,
+      step: window.step,
+      start: window.start,
+      end: window.end,
+    })
     points.value = data.points
     hasData.value = data.points.length > 0
+    customNotHonored.value = !honorsCustomWindow(data.points, window)
     render(data.points)
   } catch (error) {
     if (!attempted.value) {
@@ -183,6 +199,60 @@ async function load() {
     attempted.value = true
     inFlight = false
   }
+}
+
+/**
+ * 服务端认了 start/end 时，返回的首个采样点会落在请求区间的起点附近；
+ * 没认时它照默认窗口（最近 15 分钟）返回，首个点明显晚于请求起点。
+ */
+function honorsCustomWindow(data: ReplayMetricsPoint[], window: RangeWindow): boolean {
+  if (window.key !== 'custom' || window.start === null) return true
+  const first = data[0]?.t
+  if (first === undefined) return true
+  return first <= window.start + 4 * window.step
+}
+
+/** 横轴区间（epoch 毫秒）：相对窗口右端对齐「现在」，自定义区间用请求的起止。 */
+function axisBounds(window: RangeWindow): { min: number; max: number } {
+  if (window.key === 'custom' && window.start !== null && window.end !== null) {
+    return { min: window.start * 1000, max: window.end * 1000 }
+  }
+  const nowMs = Date.now()
+  return { min: nowMs - (window.minutes ?? 15) * 60_000, max: nowMs }
+}
+
+/**
+ * 横轴刻度格式跟着窗口长度走：只看时分秒，超过一小时就分不清是哪一天了。
+ */
+function axisLabelFormatter(window: RangeWindow): string {
+  const minutes = spanSeconds(window) / 60
+  if (minutes <= 60) return '{HH}:{mm}'
+  if (minutes <= 1440) return '{MM}-{DD} {HH}:{mm}'
+  return '{MM}-{DD}'
+}
+
+/**
+ * 轮询节奏跟着窗口长度走：窗口越长，一次查询越贵，刷新就放慢。
+ * 近15分钟保持 5 秒，窗口放大后依次退让到 10 秒 / 20 秒 / 1 分钟 / 5 分钟。
+ */
+function pollInterval(window: RangeWindow): number {
+  const seconds = spanSeconds(window)
+  if (seconds <= 15 * 60) return 5_000
+  if (seconds <= 30 * 60) return 10_000
+  if (seconds <= 60 * 60) return 20_000
+  if (seconds <= 3 * 3600) return 60_000
+  return 300_000
+}
+
+function restartTimer() {
+  if (timer !== null) {
+    clearInterval(timer)
+    timer = null
+  }
+  timer = setInterval(() => {
+    // 页面在后台时不轮询：省下长窗口的高频查询，回到前台再补一次。
+    if (!document.hidden) void load()
+  }, pollInterval(range.value))
 }
 
 function render(data: ReplayMetricsPoint[]) {
@@ -210,8 +280,8 @@ function render(data: ReplayMetricsPoint[]) {
         ? 100
         : Math.max(1, Math.ceil(yMax / 5))
       : undefined
-    // 固定横轴为查询窗口（近 15 分钟），数据稀疏时坐标也不会收缩，刻度均匀分布。
-    const nowMs = Date.now()
+    // 固定横轴为当前查询窗口，数据稀疏时坐标也不会收缩，刻度均匀分布。
+    const bounds = axisBounds(range.value)
     chart.setOption({
       animation: false,
       // top 给坐标轴顶部的单位，bottom 给横轴刻度 + 图例留出两层高度
@@ -233,13 +303,13 @@ function render(data: ReplayMetricsPoint[]) {
       },
       xAxis: {
         type: 'time',
-        min: nowMs - 15 * 60 * 1000,
-        max: nowMs,
+        min: bounds.min,
+        max: bounds.max,
         splitNumber: 5,
         axisLine: { lineStyle: { color: '#dcdfe6' } },
         axisTick: { show: false },
         axisLabel: {
-          formatter: '{HH}:{mm}',
+          formatter: axisLabelFormatter(range.value),
           hideOverlap: true,
           color: '#909399',
           fontSize: 12,
@@ -331,8 +401,14 @@ watch(
   },
 )
 
+// 换了时间窗口：立刻重查一次，并把轮询节奏调成新窗口该有的速度
+watch(range, () => {
+  void load()
+  restartTimer()
+})
+
 // 反向磁贴随 hasReverse 首次出现时懒挂载，挂载后立刻补一次渲染，
-// 不必等下一个 5 秒轮询周期
+// 不必等下一个轮询周期
 watch(hasReverse, async (nowHasReverse) => {
   if (nowHasReverse) {
     await nextTick()
@@ -340,12 +416,19 @@ watch(hasReverse, async (nowHasReverse) => {
   }
 })
 
+function onVisibilityChange() {
+  // 回到前台先补一次：后台期间跳过的那些周期，界面上不该留下陈旧的数据。
+  if (!document.hidden) void load()
+}
+
 onMounted(() => {
   void load()
-  timer = setInterval(() => void load(), 5000)
+  restartTimer()
+  document.addEventListener('visibilitychange', onVisibilityChange)
 })
 
 onUnmounted(() => {
+  document.removeEventListener('visibilitychange', onVisibilityChange)
   if (timer != null) {
     clearInterval(timer)
     timer = null
@@ -371,6 +454,10 @@ onUnmounted(() => {
         clearable
         :prefix-icon="Search"
       />
+      <TimeRangePicker v-model="range" />
+      <span v-if="customNotHonored" class="toolbar-note">
+        服务端尚未支持自定义时间区间，当前显示的是默认窗口的数据
+      </span>
     </div>
     <div v-show="visibleCards.length > 0" class="card-grid">
       <div v-for="card in visibleCards" :key="card.key" class="metric-card">
@@ -411,11 +498,21 @@ onUnmounted(() => {
 
 <style scoped>
 .toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   margin-bottom: 16px;
 }
 
 .search {
   width: 280px;
+}
+
+/* 服务端还没跟上自定义区间时的提示：贴在工具栏右端，不抢磁贴的视线。 */
+.toolbar-note {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--el-color-warning);
 }
 
 /* 指标磁贴：接近方形的紧凑块，不跟着视口拉成横条。

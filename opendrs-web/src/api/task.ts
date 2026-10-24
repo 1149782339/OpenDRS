@@ -51,15 +51,27 @@ export function getTaskStatus(id: number): Promise<MigrationStatusResponse> {
   return http.get(`${BASE}/${id}/status`)
 }
 
-/** 任务监控页的源端捕获 / 目标回放 TPS 曲线（后端代理 Prometheus query_range）。 */
+/**
+ * 任务监控页的源端捕获 / 目标回放 TPS 曲线（后端代理 Prometheus query_range）。
+ *
+ * minutes 是相对窗口（服务端据此反算起止），start/end 是绝对区间（epoch 秒），
+ * 两者互斥：给了 start/end 就按绝对区间取数。
+ */
 export function getReplayMetrics(
   id: number,
-  params: { minutes?: number; step?: number } = {},
+  params: {
+    minutes?: number | null
+    step?: number
+    start?: number | null
+    end?: number | null
+  } = {},
 ): Promise<TaskReplayMetrics> {
   return http.get(`${BASE}/${id}/metrics/replay`, {
     params: {
-      minutes: params.minutes ?? 15,
+      minutes: params.minutes ?? undefined,
       step: params.step ?? 5,
+      start: params.start ?? undefined,
+      end: params.end ?? undefined,
     },
   })
 }
