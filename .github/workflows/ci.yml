@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    name: Backend (Maven test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Unit tests
+        # MysqlBinlogCdcIT / MysqlToPostgresCdcIT need live databases; run them
+        # in a services job once container-based ITs are wired up.
+        run: >-
+          mvn test
+          -Dtest='!MysqlBinlogCdcIT,!MysqlToPostgresCdcIT'
+          -DfailIfNoTests=false
+          -Dsurefire.failIfNoSpecifiedTests=false
+
+  frontend:
+    name: Frontend (type-check + build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: opendrs-web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: opendrs-web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check and build
+        run: npm run build
