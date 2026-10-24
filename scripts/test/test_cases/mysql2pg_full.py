@@ -44,7 +44,11 @@ def prepared(env, case_ctx, fw_config):
     assert opendrs.test_datasource(target)
     task = opendrs.create_migration_task(
         case_ctx.ns("task"), "FULL_ONLY", source, target,
-        options={"topology": "ONE_WAY", "selection": {"mode": "ALL"}})
+        options={"topology": "ONE_WAY", "selection": {
+            "mode": "TABLE",
+            # 只迁移本用例的隔离表：并行用例共用源库时，ALL 会让两个任务互相
+            # 抓取对方的表，目标端建表/建序列发生竞争
+            "tables": [{"schema": schema, "table": table}]}})
 
     ctx = {
         "opendrs": opendrs, "task": task, "source": source, "target": target,

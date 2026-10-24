@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import random
+import time
 from decimal import Decimal
 
 import psycopg2
@@ -149,6 +150,44 @@ def seed_user_wallet(mysql: MySqlConnection, table: str, rows: int) -> None:
             raise RuntimeError(f"seed count {count} != {rows}")
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------- 增量辅助
+def append_user_wallet_rows(mysql: MySqlConnection, table: str,
+                            start_id: int, count: int) -> None:
+    """在已有表上按同样的确定性规则续写（id 从 start_id 起），供增量场景补写。"""
+    conn = mysql._connect(autocommit=False)
+    try:
+        with conn.cursor() as cur:
+            batch = []
+            for i in range(start_id, start_id + count):
+                batch.append((f"user-{i:05d}", Decimal(i % 997) * Decimal("1.25")))
+                if len(batch) >= BATCH:
+                    cur.executemany(f"INSERT INTO {table} (name, money) VALUES (%s, %s)", batch)
+                    batch.clear()
+            if batch:
+                cur.executemany(f"INSERT INTO {table} (name, money) VALUES (%s, %s)", batch)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def wait_row_count(pg: PostgresConnection, schema: str, table: str,
+                   expected: int, timeout: float = 180, poll: float = 2) -> None:
+    """轮询目标端行数直到达到 expected（增量追平的判据）。"""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            count = pg.count(schema, table)
+        except psycopg2.errors.UndefinedTable:
+            count = 0  # 目标端建表晚于任务启动，属正常时序
+        if count >= expected:
+            return
+        if time.monotonic() > deadline:
+            raise RuntimeError(
+                f"{schema}.{table} row count {count} did not reach {expected} "
+                f"within {timeout:.0f}s")
+        time.sleep(poll)
 
 
 # ---------------------------------------------------------------------- 对账

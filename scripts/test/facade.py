@@ -78,6 +78,14 @@ class MigrationTask:
     def start(self) -> None:
         self._facade._api.start_task(self.id)
 
+    def terminate(self) -> None:
+        """Stop a streaming (FULL_AND_INCREMENTAL / INCREMENTAL_ONLY) task.
+
+        Required before delete: the backend refuses to delete a task that is
+        still running.
+        """
+        self._facade._api._request("POST", f"/api/v1/migration/tasks/{self.id}/terminate")
+
     def status(self) -> TaskStatus:
         data = self._facade._api.get_status(self.id)
         return TaskStatus(
