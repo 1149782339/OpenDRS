@@ -9,6 +9,7 @@ import {
 } from '@/api/connection'
 import ConnectionFields from '@/components/ConnectionFields.vue'
 import { emptyConnection, type ConnectionInfo, type ConnectionResponse } from '@/types/api'
+import { DB_LABELS } from '@/utils/taskStatus'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { onMounted, reactive, ref } from 'vue'
 
@@ -102,7 +103,7 @@ async function onTestSaved(row: ConnectionResponse) {
 
 async function onDelete(row: ConnectionResponse) {
   try {
-    await ElMessageBox.confirm(`确认删除连接「${row.name}」？`, '删除连接', {
+    await ElMessageBox.confirm(`确认删除数据源「${row.name}」？`, '删除数据源', {
       type: 'warning',
       confirmButtonText: '删除',
       cancelButtonText: '取消',
@@ -124,7 +125,7 @@ onMounted(load)
 <template>
   <div>
     <div class="page-toolbar">
-      <h2>连接</h2>
+      <h2>数据源</h2>
       <div>
         <el-button @click="load">刷新</el-button>
         <el-button type="primary" @click="openCreate">新建</el-button>
@@ -133,7 +134,9 @@ onMounted(load)
     <el-table v-loading="loading" :data="rows" border stripe>
       <el-table-column prop="id" label="ID" width="80" />
       <el-table-column prop="name" label="名称" min-width="140" />
-      <el-table-column prop="type" label="类型" width="120" />
+      <el-table-column label="类型" min-width="110">
+        <template #default="{ row }: { row: ConnectionResponse }">{{ DB_LABELS[row.type] }}</template>
+      </el-table-column>
       <el-table-column prop="host" label="主机" min-width="140" />
       <el-table-column prop="port" label="端口" width="90" />
       <el-table-column prop="database" label="数据库" min-width="120" />
@@ -153,7 +156,7 @@ onMounted(load)
       </el-table-column>
     </el-table>
 
-    <el-dialog v-model="dialogVisible" title="新建连接" width="560px" destroy-on-close>
+    <el-dialog v-model="dialogVisible" title="新建数据源" width="560px" destroy-on-close>
       <el-form label-width="110px">
         <el-form-item label="名称" required>
           <el-input v-model="form.name" />

@@ -1,23 +1,22 @@
 package io.opendrs.migration.domain;
 
 import io.opendrs.migration.api.request.MigrationOptions;
-import io.opendrs.migration.api.request.TableSelection;
+import io.opendrs.engine.core.TaskState;
+import io.opendrs.engine.precheck.PrecheckResults;
 import java.time.Instant;
 
 public class MigrationTask {
 
     private Long id;
+    private String publicId;
     private String name;
     private MigrationMode mode;
-    private JobPhase jobPhase;
-    private JobState jobState;
+    private MigrationPhase phase;
+    private TaskState state;
     private Long sourceConnectionId;
     private Long targetConnectionId;
-    private TableSelection tablesJson;
     private MigrationOptions optionsJson;
-    private int tablesTotal;
-    private int tablesDone;
-    private long rowsDone;
+    private PrecheckResults precheckResultsJson;
     private Long lagMs;
     private String errorMessage;
     private Instant createdAt;
@@ -29,6 +28,15 @@ public class MigrationTask {
 
     public void setId(Long id) {
         this.id = id;
+    }
+
+    /** Business-facing UUID (column {@code public_id}); internal joins and FKs keep using {@link #id}. */
+    public String getPublicId() {
+        return publicId;
+    }
+
+    public void setPublicId(String publicId) {
+        this.publicId = publicId;
     }
 
     public String getName() {
@@ -47,20 +55,20 @@ public class MigrationTask {
         this.mode = mode;
     }
 
-    public JobPhase getJobPhase() {
-        return jobPhase;
+    public MigrationPhase getPhase() {
+        return phase;
     }
 
-    public void setJobPhase(JobPhase jobPhase) {
-        this.jobPhase = jobPhase;
+    public void setPhase(MigrationPhase phase) {
+        this.phase = phase;
     }
 
-    public JobState getJobState() {
-        return jobState;
+    public TaskState getState() {
+        return state;
     }
 
-    public void setJobState(JobState jobState) {
-        this.jobState = jobState;
+    public void setState(TaskState state) {
+        this.state = state;
     }
 
     public Long getSourceConnectionId() {
@@ -79,14 +87,6 @@ public class MigrationTask {
         this.targetConnectionId = targetConnectionId;
     }
 
-    public TableSelection getTablesJson() {
-        return tablesJson;
-    }
-
-    public void setTablesJson(TableSelection tablesJson) {
-        this.tablesJson = tablesJson;
-    }
-
     public MigrationOptions getOptionsJson() {
         return optionsJson;
     }
@@ -95,28 +95,12 @@ public class MigrationTask {
         this.optionsJson = optionsJson;
     }
 
-    public int getTablesTotal() {
-        return tablesTotal;
+    public PrecheckResults getPrecheckResultsJson() {
+        return precheckResultsJson;
     }
 
-    public void setTablesTotal(int tablesTotal) {
-        this.tablesTotal = tablesTotal;
-    }
-
-    public int getTablesDone() {
-        return tablesDone;
-    }
-
-    public void setTablesDone(int tablesDone) {
-        this.tablesDone = tablesDone;
-    }
-
-    public long getRowsDone() {
-        return rowsDone;
-    }
-
-    public void setRowsDone(long rowsDone) {
-        this.rowsDone = rowsDone;
+    public void setPrecheckResultsJson(PrecheckResults precheckResultsJson) {
+        this.precheckResultsJson = precheckResultsJson;
     }
 
     public Long getLagMs() {
@@ -152,8 +136,8 @@ public class MigrationTask {
     }
 
     public boolean isJobInFlight() {
-        return jobState == JobState.STARTING
-                || jobState == JobState.RUNNING
-                || jobState == JobState.STOPPING;
+        return state == TaskState.STARTING
+                || state == TaskState.RUNNING
+                || state == TaskState.STOPPING;
     }
 }

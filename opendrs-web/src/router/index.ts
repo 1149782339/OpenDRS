@@ -8,13 +8,19 @@ const router = createRouter({
       path: '/connections',
       name: 'connections',
       component: () => import('@/views/Connections.vue'),
-      meta: { title: '连接' },
+      meta: { title: '数据源' },
     },
     {
       path: '/tasks',
       name: 'tasks',
       component: () => import('@/views/Tasks.vue'),
       meta: { title: '任务' },
+    },
+    {
+      path: '/tasks/create',
+      name: 'task-create',
+      component: () => import('@/views/TaskCreate.vue'),
+      meta: { title: '新建任务' },
     },
     {
       path: '/tasks/:id',

@@ -17,7 +17,38 @@
     <dependencies>
         <dependency>
             <groupId>io.opendrs</groupId>
-            <artifactId>opendrs-sink</artifactId>
+            <artifactId>opendrs-common</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.opendrs</groupId>
+            <artifactId>opendrs-jdbc</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.opendrs</groupId>
+            <artifactId>engine-replay</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <!-- Compile scope on purpose, even though no service source imports io.opendrs.capture:
+             engine-core's DefaultMigrationEngine wires DebeziumCdcEngineFactory at runtime, so the
+             jar must be on the classpath. Declaring it as test scope here would win dependency
+             mediation over the compile scope inherited from engine-core and drop the classes from
+             the executable jar, failing at startup with NoClassDefFoundError.
+             The "service must not reference capture" rule is a source-level rule, not a pom rule. -->
+        <dependency>
+            <groupId>io.opendrs</groupId>
+            <artifactId>engine-capture</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.opendrs</groupId>
+            <artifactId>engine-core</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.opendrs</groupId>
+            <artifactId>engine-precheck</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
@@ -35,6 +66,17 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-flyway</artifactId>
+        </dependency>
+        <!-- Metrics: actuator exposes /actuator/prometheus, scraped by the Prometheus
+             container; MicrometerReplayMetrics turns the engine's ReplayMetrics hooks into
+             opendrs_capture_events counters and opendrs.sink.tx.* timers per task. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
         </dependency>
         <dependency>
             <groupId>org.mybatis.spring.boot</groupId>

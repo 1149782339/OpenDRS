@@ -8,7 +8,7 @@ import org.apache.ibatis.annotations.Param;
 @Mapper
 public interface DebeziumOffsetMapper {
 
-    List<DebeziumOffset> findByTaskId(@Param("taskId") Long taskId);
+    List<DebeziumOffset> findByPipelineId(@Param("pipelineId") Long pipelineId);
 
     int deleteByTaskId(@Param("taskId") Long taskId);
 }

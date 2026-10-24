@@ -1,251 +1,191 @@
 <script setup lang="ts">
-import { listConnections } from '@/api/connection'
 import { apiErrorMessage } from '@/api/http'
+import { deleteTask, listTasks, startTask, stopTask, terminateTask } from '@/api/task'
+import { type MigrationTaskSummary } from '@/types/api'
+import { formatDateTime } from '@/utils/datetime'
 import {
-  createTask,
-  deleteTask,
-  listTasks,
-  precheckTask,
-  startTask,
-  stopTask,
-} from '@/api/task'
-import ConnectionFields from '@/components/ConnectionFields.vue'
-import {
-  copySavedConnection,
-  emptyConnection,
-  type ConnectionInfo,
-  type ConnectionResponse,
-  type CreateMigrationTaskRequest,
-  type MigrationPrecheckResponse,
-  type MigrationTaskSummary,
-  type SchemaObject,
-} from '@/types/api'
+  canDeleteTask,
+  canPauseTask,
+  canStartTask,
+  canTerminateTask,
+  DASH,
+  DB_LABELS,
+  isLiveTask,
+  MODE_LABELS,
+  phaseOf,
+  stateOf,
+  type StatusView,
+} from '@/utils/taskStatus'
+import { CircleCheck, CircleClose, Loading } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 const router = useRouter()
 const loading = ref(false)
 const rows = ref<MigrationTaskSummary[]>([])
-const savedConnections = ref<ConnectionResponse[]>([])
-const dialogVisible = ref(false)
-const creating = ref(false)
 const actionId = ref<number | null>(null)
+const actionKind = ref<'start' | 'pause' | 'terminate' | null>(null)
+let pollTimer: ReturnType<typeof setInterval> | null = null
 
-interface SchemaRow {
-  schema: string
-  allTables: boolean
-  tables: string[]
-  excludeTables: string[]
+/** start() 一个入口三种文案：未启动=启动、已暂停=恢复、失败=重启。 */
+function startLabel(row: MigrationTaskSummary): string {
+  if (row.state === 'STOPPED') return '恢复'
+  if (row.state === 'FAILED') return '重启'
+  return '启动'
 }
 
-const form = reactive({
-  name: '',
-  sourceSavedId: null as number | null,
-  targetSavedId: null as number | null,
-  source: emptyConnection('MYSQL'),
-  target: emptyConnection('POSTGRESQL'),
-  sourceExtra: '',
-  targetExtra: '',
-  objects: [{ schema: '', allTables: false, tables: [] as string[], excludeTables: [] as string[] }] as SchemaRow[],
-  batchSize: 1000,
-  fullDumpParallelism: 8,
-  databaseServerId: undefined as number | undefined,
-})
+interface TaskRow extends MigrationTaskSummary {
+  status: StatusView
+  phaseLabel: string
+  startable: boolean
+  pausable: boolean
+  terminatable: boolean
+  deletable: boolean
+  sourceLabel: string
+  targetLabel: string
+  modeLabel: string
+  createdLabel: string
+}
 
-async function load() {
-  loading.value = true
+const viewRows = computed<TaskRow[]>(() =>
+  rows.value.map((row) => ({
+    ...row,
+    status: stateOf(row),
+    phaseLabel: phaseOf(row),
+    startable: canStartTask(row),
+    pausable: canPauseTask(row),
+    terminatable: canTerminateTask(row),
+    deletable: canDeleteTask(row),
+    sourceLabel: DB_LABELS[row.source?.type] ?? DASH,
+    targetLabel: DB_LABELS[row.target?.type] ?? DASH,
+    modeLabel: MODE_LABELS[row.mode] ?? row.mode,
+    createdLabel: formatDateTime(row.createdAt),
+  })),
+)
+
+/** 有任务在跑就 2s 静默刷新，全静止就停掉，避免列表上的转圈图标不动。 */
+function syncPolling() {
+  const live = rows.value.some(isLiveTask)
+  if (live && pollTimer == null) {
+    pollTimer = setInterval(() => {
+      void load(true)
+    }, 2000)
+  } else if (!live && pollTimer != null) {
+    clearInterval(pollTimer)
+    pollTimer = null
+  }
+}
+
+async function load(silent = false) {
+  if (!silent) loading.value = true
   try {
     rows.value = await listTasks()
   } catch (error) {
-    ElMessage.error(apiErrorMessage(error))
+    if (!silent) ElMessage.error(apiErrorMessage(error))
   } finally {
-    loading.value = false
+    if (!silent) loading.value = false
+    syncPolling()
   }
 }
 
-async function loadSavedConnections() {
-  try {
-    savedConnections.value = await listConnections()
-  } catch {
-    savedConnections.value = []
-  }
-}
-
-function extraToText(extra?: Record<string, unknown> | null): string {
-  if (!extra || Object.keys(extra).length === 0) {
-    return ''
-  }
-  return JSON.stringify(extra, null, 2)
-}
-
-function applySaved(which: 'source' | 'target', id: number | null) {
-  const saved = savedConnections.value.find((item) => item.id === id)
-  if (!saved) {
+function openRow(row: TaskRow) {
+  if (row.phase === 'PRECHECKING') {
+    void router.push({ path: '/tasks/create', query: { taskId: String(row.id), step: '3' } })
     return
   }
-  const copied = copySavedConnection(saved)
-  if (which === 'source') {
-    form.source = copied
-    form.sourceExtra = extraToText(saved.extra)
-  } else {
-    form.target = copied
-    form.targetExtra = extraToText(saved.extra)
-  }
-}
-
-function openCreate() {
-  form.name = ''
-  form.sourceSavedId = null
-  form.targetSavedId = null
-  form.source = emptyConnection('MYSQL')
-  form.target = emptyConnection('POSTGRESQL')
-  form.sourceExtra = ''
-  form.targetExtra = ''
-  form.objects = [{ schema: '', allTables: false, tables: [], excludeTables: [] }]
-  form.batchSize = 1000
-  form.fullDumpParallelism = 8
-  form.databaseServerId = undefined
-  dialogVisible.value = true
-  void loadSavedConnections()
-}
-
-function addObject() {
-  form.objects.push({ schema: '', allTables: false, tables: [], excludeTables: [] })
-}
-
-function removeObject(index: number) {
-  form.objects.splice(index, 1)
-}
-
-function parseExtra(text: string): Record<string, unknown> | undefined {
-  const trimmed = text.trim()
-  if (!trimmed) {
-    return undefined
-  }
-  const parsed: unknown = JSON.parse(trimmed)
-  if (parsed == null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new Error('额外参数必须是 JSON 对象')
-  }
-  return parsed as Record<string, unknown>
-}
-
-function toConnection(info: ConnectionInfo, extraText: string): ConnectionInfo {
-  return { ...info, extra: parseExtra(extraText) }
-}
-
-function toObjects(): SchemaObject[] {
-  return form.objects.map((row) => {
-    const object: SchemaObject = { schema: row.schema.trim() }
-    if (row.allTables) {
-      object.allTables = true
-    } else {
-      object.tables = row.tables
-    }
-    if (row.excludeTables.length > 0) {
-      object.excludeTables = row.excludeTables
-    }
-    return object
-  })
-}
-
-function buildRequest(): CreateMigrationTaskRequest {
-  const request: CreateMigrationTaskRequest = {
-    name: form.name,
-    mode: 'FULL_AND_INCREMENTAL',
-    source: toConnection(form.source, form.sourceExtra),
-    target: toConnection(form.target, form.targetExtra),
-    tables: { objects: toObjects() },
-    options: {
-      batchSize: form.batchSize,
-      fullDumpParallelism: form.fullDumpParallelism,
-      databaseServerId: form.databaseServerId ?? null,
-    },
-  }
-  return request
-}
-
-async function onCreate() {
-  creating.value = true
-  try {
-    await createTask(buildRequest())
-    ElMessage.success('创建成功')
-    dialogVisible.value = false
-    await load()
-  } catch (error) {
-    ElMessage.error(apiErrorMessage(error))
-  } finally {
-    creating.value = false
-  }
-}
-
-function notifyPrecheck(result: MigrationPrecheckResponse) {
-  if (result.ok) {
-    ElMessage.success(`预检查通过，任务已自动启动（jobState=${result.jobState}）`)
+  if (row.phase === 'PRECHECKED') {
+    void router.push({ path: '/tasks/create', query: { taskId: String(row.id), step: '4' } })
     return
   }
-  const failed = result.results?.filter((item) => !item.ok).map((item) => item.message) ?? []
-  ElMessage.warning(failed.length > 0 ? `预检查未通过：${failed.join('；')}` : '预检查未通过')
+  void router.push(`/tasks/${row.id}`)
 }
 
-async function onPrecheck(row: MigrationTaskSummary) {
+async function onStart(row: TaskRow) {
   actionId.value = row.id
+  actionKind.value = 'start'
   try {
-    const result = await precheckTask(row.id)
-    notifyPrecheck(result)
+    await startTask(row.id)
+    ElMessage.success('已启动')
     await load()
   } catch (error) {
     ElMessage.error(apiErrorMessage(error))
   } finally {
     actionId.value = null
+    actionKind.value = null
   }
 }
 
-async function onStart(row: MigrationTaskSummary) {
+/** 暂停：stop → STOPPING(intent PAUSE) → 已暂停，可恢复。 */
+async function onPause(row: TaskRow) {
   actionId.value = row.id
+  actionKind.value = 'pause'
   try {
-    const status = await startTask(row.id)
-    ElMessage.success(`已启动（jobState=${status.jobState}）`)
+    await stopTask(row.id)
+    ElMessage.success('已暂停')
     await load()
   } catch (error) {
     ElMessage.error(apiErrorMessage(error))
   } finally {
     actionId.value = null
+    actionKind.value = null
   }
 }
 
-async function onStop(row: MigrationTaskSummary) {
-  actionId.value = row.id
+/** 结束：terminate → 落地 TERMINATED（运行中先经过 结束中），终态、可删除。 */
+async function onTerminate(row: TaskRow) {
   try {
-    const status = await stopTask(row.id)
-    ElMessage.success(`已停止（jobState=${status.jobState}）`)
+    await ElMessageBox.confirm(
+      `确认结束任务「${row.name}」？结束后任务不可再启动，仅可删除记录。`,
+      '结束任务',
+      { type: 'warning', confirmButtonText: '结束', cancelButtonText: '取消' },
+    )
+  } catch (error) {
+    if (error === 'cancel' || error === 'close') return
+    throw error
+  }
+  actionId.value = row.id
+  actionKind.value = 'terminate'
+  try {
+    await terminateTask(row.id)
+    ElMessage.success('已结束')
     await load()
   } catch (error) {
     ElMessage.error(apiErrorMessage(error))
   } finally {
     actionId.value = null
+    actionKind.value = null
   }
 }
 
-async function onDelete(row: MigrationTaskSummary) {
+async function onDelete(row: TaskRow) {
   try {
-    await ElMessageBox.confirm(`确认删除任务「${row.name}」？`, '删除任务', {
+    await ElMessageBox.confirm(`确认删除任务「${row.name}」的记录？该操作不可恢复。`, '删除任务', {
       type: 'warning',
       confirmButtonText: '删除',
       cancelButtonText: '取消',
     })
+  } catch (error) {
+    if (error === 'cancel' || error === 'close') return
+    throw error
+  }
+  try {
     await deleteTask(row.id)
     ElMessage.success('已删除')
     await load()
   } catch (error) {
-    if (error === 'cancel' || error === 'close') {
-      return
-    }
     ElMessage.error(apiErrorMessage(error))
   }
 }
 
-onMounted(load)
+onMounted(() => load())
+
+onUnmounted(() => {
+  if (pollTimer != null) {
+    clearInterval(pollTimer)
+    pollTimer = null
+  }
+})
 </script>
 
 <template>
@@ -253,151 +193,145 @@ onMounted(load)
     <div class="page-toolbar">
       <h2>任务</h2>
       <div>
-        <el-button @click="load">刷新</el-button>
-        <el-button type="primary" @click="openCreate">新建</el-button>
+        <el-button @click="load()">刷新</el-button>
+        <el-button type="primary" @click="router.push('/tasks/create')">新建</el-button>
       </div>
     </div>
-    <el-table v-loading="loading" :data="rows" border stripe>
-      <el-table-column prop="id" label="ID" width="80" />
-      <el-table-column prop="name" label="名称" min-width="160" />
-      <el-table-column prop="mode" label="模式" width="180" />
-      <el-table-column prop="jobPhase" label="阶段" width="150" />
-      <el-table-column label="状态" width="120">
-        <template #default="{ row }">{{ row.jobState ?? '—' }}</template>
+    <el-table
+      v-loading="loading"
+      :data="viewRows"
+      border
+      stripe
+      row-key="id"
+      class="task-table"
+      @row-click="openRow"
+    >
+      <el-table-column label="名称/ID" min-width="200">
+        <template #default="{ row }: { row: TaskRow }">
+          <div class="task-name" :title="row.name">{{ row.name }}</div>
+          <div class="task-uuid" :title="row.publicId">{{ row.publicId.slice(0, 19) }}…</div>
+        </template>
       </el-table-column>
-      <el-table-column label="操作" width="280" fixed="right">
+      <el-table-column label="状态" width="110">
         <template #default="{ row }">
-          <el-button type="primary" link @click="router.push(`/tasks/${row.id}`)">详情</el-button>
-          <el-button type="primary" link :loading="actionId === row.id" @click="onPrecheck(row)">
-            预检查
-          </el-button>
-          <el-button type="success" link :loading="actionId === row.id" @click="onStart(row)">
-            启动
-          </el-button>
-          <el-button type="warning" link :loading="actionId === row.id" @click="onStop(row)">停止</el-button>
-          <el-button type="danger" link @click="onDelete(row)">删除</el-button>
+          <span class="status" :class="`status-${row.status.tone}`">
+            <el-icon v-if="row.status.tone === 'running'" class="is-loading"><Loading /></el-icon>
+            <el-icon v-else-if="row.status.tone === 'done'"><CircleCheck /></el-icon>
+            <el-icon v-else-if="row.status.tone === 'failed'"><CircleClose /></el-icon>
+            <span>{{ row.status.label }}</span>
+          </span>
+        </template>
+      </el-table-column>
+      <el-table-column label="迁移阶段" width="110">
+        <template #default="{ row }">{{ row.phaseLabel }}</template>
+      </el-table-column>
+      <el-table-column label="源库引擎" min-width="110">
+        <template #default="{ row }">{{ row.sourceLabel }}</template>
+      </el-table-column>
+      <el-table-column label="目标库引擎" min-width="110">
+        <template #default="{ row }">{{ row.targetLabel }}</template>
+      </el-table-column>
+      <el-table-column label="迁移模式" width="110">
+        <template #default="{ row }">{{ row.modeLabel }}</template>
+      </el-table-column>
+      <el-table-column label="创建时间" width="180">
+        <template #default="{ row }">{{ row.createdLabel }}</template>
+      </el-table-column>
+      <el-table-column label="操作" width="240" fixed="right">
+        <template #default="{ row }">
+          <div class="row-actions" @click.stop>
+            <el-button
+              type="success"
+              link
+              :disabled="!row.startable"
+              :loading="actionId === row.id && actionKind === 'start'"
+              @click="onStart(row)"
+            >
+              {{ startLabel(row) }}
+            </el-button>
+            <el-button
+              type="primary"
+              link
+              :disabled="!row.pausable"
+              :loading="actionId === row.id && actionKind === 'pause'"
+              @click="onPause(row)"
+            >
+              暂停
+            </el-button>
+            <el-button
+              type="warning"
+              link
+              :disabled="!row.terminatable"
+              :loading="actionId === row.id && actionKind === 'terminate'"
+              @click="onTerminate(row)"
+            >
+              结束
+            </el-button>
+            <el-button type="danger" link :disabled="!row.deletable" @click="onDelete(row)">
+              删除
+            </el-button>
+          </div>
         </template>
       </el-table-column>
     </el-table>
-
-    <el-dialog v-model="dialogVisible" title="新建任务" width="820px" top="4vh" destroy-on-close>
-      <el-form label-width="130px">
-        <el-form-item label="名称" required>
-          <el-input v-model="form.name" />
-        </el-form-item>
-        <el-form-item label="模式">
-          <el-select model-value="FULL_AND_INCREMENTAL" disabled style="width: 280px">
-            <el-option label="FULL_AND_INCREMENTAL" value="FULL_AND_INCREMENTAL" />
-          </el-select>
-          <span class="hint">v1 仅支持全量+增量</span>
-        </el-form-item>
-
-        <el-divider content-position="left">源连接</el-divider>
-        <el-form-item label="已保存连接">
-          <el-select
-            v-model="form.sourceSavedId"
-            clearable
-            filterable
-            placeholder="可选，复制字段后请重新输入密码"
-            style="width: 100%"
-            @change="(id: number | null) => applySaved('source', id)"
-          >
-            <el-option
-              v-for="item in savedConnections"
-              :key="item.id"
-              :label="`${item.name} (${item.type})`"
-              :value="item.id"
-            />
-          </el-select>
-        </el-form-item>
-        <ConnectionFields
-          v-model="form.source"
-          v-model:extra-text="form.sourceExtra"
-          password-placeholder="已保存连接的密码为 ***，请重新输入"
-        />
-
-        <el-divider content-position="left">目标连接</el-divider>
-        <el-form-item label="已保存连接">
-          <el-select
-            v-model="form.targetSavedId"
-            clearable
-            filterable
-            placeholder="可选，复制字段后请重新输入密码"
-            style="width: 100%"
-            @change="(id: number | null) => applySaved('target', id)"
-          >
-            <el-option
-              v-for="item in savedConnections"
-              :key="item.id"
-              :label="`${item.name} (${item.type})`"
-              :value="item.id"
-            />
-          </el-select>
-        </el-form-item>
-        <ConnectionFields
-          v-model="form.target"
-          v-model:extra-text="form.targetExtra"
-          password-placeholder="已保存连接的密码为 ***，请重新输入"
-        />
-
-        <el-divider content-position="left">表选择</el-divider>
-        <div v-for="(object, index) in form.objects" :key="index" class="schema-row">
-          <el-form-item :label="`Schema ${index + 1}`" required>
-            <el-input v-model="object.schema" placeholder="schema" />
-          </el-form-item>
-          <el-form-item label="全部表">
-            <el-switch v-model="object.allTables" />
-          </el-form-item>
-          <el-form-item v-if="!object.allTables" label="包含表">
-            <el-select v-model="object.tables" multiple filterable allow-create default-first-option style="width: 100%" />
-          </el-form-item>
-          <el-form-item label="排除表">
-            <el-select
-              v-model="object.excludeTables"
-              multiple
-              filterable
-              allow-create
-              default-first-option
-              style="width: 100%"
-            />
-          </el-form-item>
-          <el-button v-if="form.objects.length > 1" type="danger" link @click="removeObject(index)">
-            删除此 schema
-          </el-button>
-        </div>
-        <el-button @click="addObject">添加 schema</el-button>
-        <p class="hint">v1 不填写 mappings，目标名与源名相同。</p>
-
-        <el-divider content-position="left">选项</el-divider>
-        <el-form-item label="batchSize">
-          <el-input-number v-model="form.batchSize" :min="1" />
-        </el-form-item>
-        <el-form-item label="fullDumpParallelism">
-          <el-input-number v-model="form.fullDumpParallelism" :min="1" />
-        </el-form-item>
-        <el-form-item label="databaseServerId">
-          <el-input-number v-model="form.databaseServerId" :min="1" :controls="false" />
-          <span class="hint">源为 MySQL 时需要</span>
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="creating" @click="onCreate">创建</el-button>
-      </template>
-    </el-dialog>
   </div>
 </template>
 
 <style scoped>
-.hint {
-  margin-left: 12px;
-  color: #909399;
-  font-size: 12px;
+.task-table :deep(.el-table__row) {
+  cursor: pointer;
 }
-.schema-row {
-  margin-bottom: 8px;
-  padding: 8px 12px 0;
-  background: #fafafa;
-  border-radius: 6px;
+
+.task-name {
+  font-weight: 500;
+  line-height: 20px;
+}
+
+.task-uuid {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  line-height: 18px;
+}
+
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.status .el-icon {
+  font-size: 15px;
+}
+
+.status-running {
+  color: #409eff;
+}
+
+.status-done {
+  color: #67c23a;
+}
+
+.status-failed {
+  color: #f56c6c;
+}
+
+.status-none {
+  color: var(--el-text-color-placeholder);
+}
+
+.row-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.row-actions .el-button + .el-button {
+  margin-left: 0;
+}
+
+.disabled-wrap {
+  display: inline-flex;
 }
 </style>

@@ -1,19 +1,27 @@
 package io.opendrs.debezium;
 
+import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 
-import io.opendrs.debezium.DebeziumEngineConfig.EngineSpec;
+import io.opendrs.engine.capture.DebeziumEngineConfig.EngineSpec;
+import io.opendrs.jdbc.JdbcConnectionFactory;
 import io.opendrs.jdbc.metadata.Table;
 import io.opendrs.jdbc.metadata.TableRef;
-import io.opendrs.migration.api.request.SchemaObject;
+import io.opendrs.migration.api.request.MigrationOptions;
+import io.opendrs.migration.api.request.SelectedTable;
+import io.opendrs.migration.service.MappingRequests;
 import io.opendrs.migration.api.request.TableSelection;
 import io.opendrs.migration.domain.ConnectionInfo;
 import io.opendrs.migration.domain.DbType;
-import io.opendrs.migration.domain.JobPhase;
+import io.opendrs.migration.domain.MigrationPhase;
 import io.opendrs.migration.domain.MigrationMode;
 import io.opendrs.migration.domain.MigrationTask;
 import io.opendrs.migration.mapper.ConnectionInfoMapper;
 import io.opendrs.migration.mapper.MigrationTaskMapper;
+import io.opendrs.engine.replay.mapping.MappingValidator;
+import io.opendrs.engine.capture.CdcEngine;
+import io.opendrs.engine.capture.DebeziumCdcEngineFactory;
+import io.opendrs.engine.capture.ReplayApplyChangeConsumer;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
@@ -44,7 +52,7 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 
 /**
  * MySQL ROW binlog → PostgreSQL apply: one Engine snapshots existing rows then streams incremental
- * inserts through {@link SinkApplyChangeConsumer}.
+ * inserts through {@link ReplayApplyChangeConsumer}.
  */
 @SpringBootTest
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
@@ -97,12 +105,12 @@ class MysqlToPostgresCdcIT {
     @Autowired
     private MigrationTaskMapper taskMapper;
 
-    @Autowired
     private DebeziumCdcEngineFactory engineFactory;
 
     @BeforeEach
     void registerMetadataDataSource() {
-        EngineDataSourceHolder.initialize(jdbcTemplate.getDataSource());
+        engineFactory = new DebeziumCdcEngineFactory(
+                new JdbcConnectionFactory(), new MappingValidator(), jdbcTemplate.getDataSource());
     }
 
     @Test
@@ -112,11 +120,12 @@ class MysqlToPostgresCdcIT {
         long taskId = insertTask();
         EngineSpec spec = new EngineSpec(
                 taskId,
-                sourceFromMysql(),
+                sourceFromMysql().toJdbcConfig(),
                 List.of(new Table(new TableRef(DB, TABLE))),
                 DEBEZIUM_SERVER_ID,
-                targetFromPostgres(),
-                new TableSelection(List.of(new SchemaObject(DB, List.of(TABLE), null, null)), null));
+                targetFromPostgres().toJdbcConfig(),
+                MappingRequests.toNeutral(
+                        new TableSelection(null, List.of(new SelectedTable(DB, TABLE)), null, null, null)));
 
         ExecutorService executor = Executors.newCachedThreadPool(r -> {
             Thread thread = new Thread(r, "opendrs-pg-cdc-it");
@@ -229,12 +238,18 @@ class MysqlToPostgresCdcIT {
         connectionMapper.insert(source);
         connectionMapper.insert(target);
         MigrationTask task = new MigrationTask();
+        task.setPublicId(UUID.randomUUID().toString());
         task.setName("pg-cdc-it-" + System.nanoTime());
         task.setMode(MigrationMode.FULL_AND_INCREMENTAL);
-        task.setJobPhase(JobPhase.SCHEMA_SNAPSHOT);
+        task.setPhase(MigrationPhase.FULL);
         task.setSourceConnectionId(source.getId());
         task.setTargetConnectionId(target.getId());
-        task.setTablesJson(new TableSelection(List.of(new SchemaObject(DB, List.of(TABLE), null, null)), null));
+        task.setOptionsJson(new MigrationOptions(
+                MigrationOptions.Topology.ONE_WAY,
+                MigrationOptions.Selection.ofTables(List.of(new SelectedTable(DB, TABLE))),
+                MigrationOptions.FullSettings.defaults(),
+                MigrationOptions.IncrementalSettings.defaults(),
+                null));
         taskMapper.insert(task);
         return task.getId();
     }

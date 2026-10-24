@@ -51,4 +51,16 @@ public class ConnectionController {
     public Response<ConnectionTestResponse> testById(@PathVariable Long id) {
         return Response.success(connectionService.testById(id));
     }
+
+    /** Schemas (MySQL databases / PostgreSQL schemas) the object picker offers for this source. */
+    @GetMapping("/{id}/schemas")
+    public Response<List<String>> schemas(@PathVariable Long id) {
+        return Response.success(connectionService.listSchemas(id));
+    }
+
+    /** Base tables of one schema, used to fill the table picker. */
+    @GetMapping("/{id}/schemas/{schema}/tables")
+    public Response<List<String>> tables(@PathVariable Long id, @PathVariable String schema) {
+        return Response.success(connectionService.listTables(id, schema));
+    }
 }

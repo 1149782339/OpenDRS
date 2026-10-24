@@ -1,21 +1,28 @@
 package io.opendrs.debezium;
 
+import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 
-import io.opendrs.debezium.DebeziumEngineConfig.EngineSpec;
+import io.opendrs.engine.capture.DebeziumEngineConfig.EngineSpec;
+import io.opendrs.jdbc.JdbcConnectionFactory;
 import io.opendrs.jdbc.metadata.Table;
 import io.opendrs.jdbc.metadata.TableRef;
-import io.opendrs.migration.api.request.SchemaObject;
-import io.opendrs.migration.api.request.TableSelection;
+import io.opendrs.migration.api.request.MigrationOptions;
+import io.opendrs.migration.api.request.SelectedTable;
 import io.opendrs.migration.domain.ConnectionInfo;
 import io.opendrs.migration.domain.DbType;
 import io.opendrs.migration.domain.DebeziumOffset;
-import io.opendrs.migration.domain.JobPhase;
+import io.opendrs.migration.domain.MigrationPhase;
 import io.opendrs.migration.domain.MigrationMode;
 import io.opendrs.migration.domain.MigrationTask;
 import io.opendrs.migration.mapper.ConnectionInfoMapper;
 import io.opendrs.migration.mapper.DebeziumOffsetMapper;
 import io.opendrs.migration.mapper.MigrationTaskMapper;
+import io.opendrs.engine.replay.mapping.MappingValidator;
+import io.opendrs.engine.capture.CdcEngine;
+import io.opendrs.engine.capture.DebeziumCdcEngineFactory;
+import io.opendrs.engine.capture.LoggingChangeConsumer;
+import io.opendrs.engine.capture.RecordingChangeConsumer;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
@@ -97,12 +104,12 @@ class MysqlBinlogCdcIT {
     @Autowired
     private DebeziumOffsetMapper offsetMapper;
 
-    @Autowired
     private DebeziumCdcEngineFactory engineFactory;
 
     @BeforeEach
     void registerMetadataDataSource() {
-        EngineDataSourceHolder.initialize(jdbcTemplate.getDataSource());
+        engineFactory = new DebeziumCdcEngineFactory(
+                new JdbcConnectionFactory(), new MappingValidator(), jdbcTemplate.getDataSource());
     }
 
     @Test
@@ -112,7 +119,7 @@ class MysqlBinlogCdcIT {
         long taskId = insertTask();
         ConnectionInfo source = sourceFromContainer();
         EngineSpec spec = new EngineSpec(
-                taskId, source, List.of(new Table(new TableRef(DB, TABLE))), DEBEZIUM_SERVER_ID);
+                taskId, source.toJdbcConfig(), List.of(new Table(new TableRef(DB, TABLE))), DEBEZIUM_SERVER_ID);
 
         ExecutorService executor = Executors.newCachedThreadPool(r -> {
             Thread thread = new Thread(r, "opendrs-cdc-it");
@@ -134,8 +141,8 @@ class MysqlBinlogCdcIT {
                     .as("Debezium must report Initial Snapshot COMPLETED without stopping the Engine")
                     .isTrue();
 
-            List<DebeziumOffset> offsets = offsetMapper.findByTaskId(taskId);
-            assertThat(offsets).as("debezium_offset row for task " + taskId).isNotEmpty();
+            List<DebeziumOffset> offsets = offsetMapper.findByPipelineId(taskId);
+            assertThat(offsets).as("debezium_offsets row for pipeline " + taskId).isNotEmpty();
             String offsetVal = offsets.getFirst().getOffsetVal();
             assertThat(offsetVal)
                     .as("snapshot offset must include binlog file/pos")
@@ -144,9 +151,9 @@ class MysqlBinlogCdcIT {
             log.info("capture offset task={} val={}", taskId, offsetVal);
 
             Integer historyRows = jdbcTemplate.queryForObject(
-                    "SELECT COUNT(*) FROM debezium_schema_history WHERE task_id = ?", Integer.class, taskId);
+                    "SELECT COUNT(*) FROM debezium_schema_histories WHERE pipeline_id = ?", Integer.class, taskId);
             assertThat(historyRows)
-                    .as("debezium_schema_history must have at least one record")
+                    .as("debezium_schema_histories must have at least one record")
                     .isGreaterThanOrEqualTo(1);
 
             insertCustomer(42, "cdc-it-row");
@@ -234,13 +241,18 @@ class MysqlBinlogCdcIT {
         connectionMapper.insert(source);
         connectionMapper.insert(target);
         MigrationTask task = new MigrationTask();
+        task.setPublicId(UUID.randomUUID().toString());
         task.setName("cdc-it-" + System.nanoTime());
         task.setMode(MigrationMode.FULL_AND_INCREMENTAL);
-        task.setJobPhase(JobPhase.SCHEMA_SNAPSHOT);
+        task.setPhase(MigrationPhase.FULL);
         task.setSourceConnectionId(source.getId());
         task.setTargetConnectionId(target.getId());
-        task.setTablesJson(new TableSelection(
-                List.of(new SchemaObject(DB, List.of(TABLE), null, null)), null));
+        task.setOptionsJson(new MigrationOptions(
+                MigrationOptions.Topology.ONE_WAY,
+                MigrationOptions.Selection.ofTables(List.of(new SelectedTable(DB, TABLE))),
+                MigrationOptions.FullSettings.defaults(),
+                MigrationOptions.IncrementalSettings.defaults(),
+                null));
         taskMapper.insert(task);
         return task.getId();
     }

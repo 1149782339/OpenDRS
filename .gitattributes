@@ -1,0 +1,5 @@
+# core.autocrlf is true on this machine, so a plain checkout would turn these into CRLF.
+# A shell script with CRLF fails with "\r: command not found", and the container configs
+# are parsed by Linux tooling inside the images. Pin them to LF regardless of platform.
+*.sh text eol=lf
+deploy/** text eol=lf

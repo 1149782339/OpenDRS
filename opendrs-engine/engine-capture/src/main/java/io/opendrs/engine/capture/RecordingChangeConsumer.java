@@ -1,0 +1,114 @@
+package io.opendrs.engine.capture;
+
+import io.debezium.engine.DebeziumEngine;
+import io.debezium.engine.RecordChangeEvent;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import org.apache.kafka.connect.data.Struct;
+import org.apache.kafka.connect.source.SourceRecord;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * Probe {@link DebeziumEngine.ChangeConsumer} that records SourceRecords and counts down when a
+ * matching data-change envelope arrives. Production still uses {@link LoggingChangeConsumer}.
+ */
+public final class RecordingChangeConsumer implements DebeziumEngine.ChangeConsumer<RecordChangeEvent<SourceRecord>> {
+
+    private static final Logger log = LoggerFactory.getLogger(RecordingChangeConsumer.class);
+
+    private final long taskId;
+    private final CountDownLatch dataChangeLatch = new CountDownLatch(1);
+    private final List<SourceRecord> records = new CopyOnWriteArrayList<>();
+
+    public RecordingChangeConsumer(long taskId) {
+        this.taskId = taskId;
+    }
+
+    @Override
+    public void handleBatch(
+            List<RecordChangeEvent<SourceRecord>> events,
+            DebeziumEngine.RecordCommitter<RecordChangeEvent<SourceRecord>> committer)
+            throws InterruptedException {
+        for (RecordChangeEvent<SourceRecord> event : events) {
+            SourceRecord record = event.record();
+            records.add(record);
+            Object op = LoggingChangeConsumer.extractOp(record);
+            log.info(
+                    "CDC record task={} topic={} key={} sourceOffset={} op={}",
+                    taskId,
+                    record.topic(),
+                    record.key(),
+                    record.sourceOffset(),
+                    op);
+            if (isTableDataChange(record)) {
+                dataChangeLatch.countDown();
+            }
+            committer.markProcessed(event);
+        }
+        committer.markBatchFinished();
+    }
+
+    public boolean awaitDataChange(long timeout, TimeUnit unit) throws InterruptedException {
+        return dataChangeLatch.await(timeout, unit);
+    }
+
+    public boolean awaitRow(int id, String name, long timeout, TimeUnit unit) throws InterruptedException {
+        long deadline = System.nanoTime() + unit.toNanos(timeout);
+        while (System.nanoTime() < deadline) {
+            if (findRow(id, name) != null) {
+                return true;
+            }
+            Thread.sleep(100);
+        }
+        return findRow(id, name) != null;
+    }
+
+    public boolean awaitInitialSnapshotCompleted(long timeout, TimeUnit unit) throws InterruptedException {
+        long deadline = System.nanoTime() + unit.toNanos(timeout);
+        while (System.nanoTime() < deadline) {
+            if (records.stream().anyMatch(SnapshotNotifications::isInitialSnapshotCompleted)) {
+                return true;
+            }
+            Thread.sleep(100);
+        }
+        return records.stream().anyMatch(SnapshotNotifications::isInitialSnapshotCompleted);
+    }
+
+    public List<SourceRecord> records() {
+        return List.copyOf(records);
+    }
+
+    public SourceRecord firstTableDataChange() {
+        return records.stream().filter(RecordingChangeConsumer::isTableDataChange).findFirst().orElse(null);
+    }
+
+    public SourceRecord findRow(int id, String name) {
+        for (SourceRecord record : records) {
+            Struct after = after(record);
+            if (after == null) {
+                continue;
+            }
+            if (String.valueOf(id).equals(String.valueOf(after.get("id")))
+                    && name.equals(String.valueOf(after.get("name")))) {
+                return record;
+            }
+        }
+        return null;
+    }
+
+    public static boolean isTableDataChange(SourceRecord record) {
+        Object op = LoggingChangeConsumer.extractOp(record);
+        return "c".equals(op) || "r".equals(op) || "u".equals(op);
+    }
+
+    public static Struct after(SourceRecord record) {
+        Object value = record.value();
+        if (value instanceof Struct envelope && envelope.schema().field("after") != null) {
+            return envelope.getStruct("after");
+        }
+        return null;
+    }
+}

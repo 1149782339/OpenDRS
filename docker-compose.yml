@@ -1,22 +1,85 @@
 services:
   mysql:
-    image: mysql:8.0
+    image: docker.m.daocloud.io/library/mysql:8.0
     container_name: opendrs-mysql
     environment:
-      MYSQL_ROOT_PASSWORD: root
+      MYSQL_ROOT_PASSWORD: "123456"
       MYSQL_DATABASE: opendrs
       MYSQL_USER: opendrs
-      MYSQL_PASSWORD: opendrs
-    ports:
-      - "3306:3306"
-    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+      MYSQL_PASSWORD: "123456"
+    network_mode: host
+    command:
+      - --log-bin=mysql-bin
+      - --binlog-format=ROW
+      - --server-id=1
+      - --gtid-mode=ON
+      - --enforce-gtid-consistency=ON
+      - --bind-address=0.0.0.0
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
     volumes:
-      - opendrs-mysql-data:/var/lib/mysql
+      - ./mysql_data:/var/lib/mysql
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uopendrs", "-popendrs"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uopendrs", "-p123456"]
       interval: 5s
       timeout: 5s
       retries: 20
 
-volumes:
-  opendrs-mysql-data:
+  # Second MySQL for bidirectional-sync development: GTID on, distinct server-id,
+  # listens on 3307 (host network). Paired with the primary mysql as the two regions.
+  mysql2:
+    image: docker.m.daocloud.io/library/mysql:8.0
+    container_name: opendrs-mysql2
+    environment:
+      MYSQL_ROOT_PASSWORD: "123456"
+      MYSQL_ROOT_HOST: "%"
+      MYSQL_DATABASE: bidir_test
+      MYSQL_USER: opendrs
+      MYSQL_PASSWORD: "123456"
+    network_mode: host
+    command:
+      - --log-bin=mysql-bin
+      - --binlog-format=ROW
+      - --server-id=2
+      - --gtid-mode=ON
+      - --enforce-gtid-consistency=ON
+      - --port=3307
+      - --mysqlx-port=33070
+      - --bind-address=0.0.0.0
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - ./mysql2_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-P3307", "-uopendrs", "-p123456"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  postgres:
+    image: docker.m.daocloud.io/library/postgres:17
+    container_name: opendrs-postgres
+    environment:
+      POSTGRES_USER: opendrs
+      POSTGRES_PASSWORD: "123456"
+      POSTGRES_DB: opendrs
+    network_mode: host
+    volumes:
+      - ./pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U opendrs -d opendrs"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  prometheus:
+    # docker.m.daocloud.io only proxies Docker Hub's library/* namespace; the official
+    # Prometheus image is published to Quay too, and DaoCloud mirrors quay.io.
+    image: quay.m.daocloud.io/prometheus/prometheus:v3.2.0
+    container_name: opendrs-prometheus
+    network_mode: host
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro

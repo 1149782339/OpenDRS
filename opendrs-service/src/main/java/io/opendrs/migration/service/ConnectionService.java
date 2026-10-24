@@ -4,6 +4,8 @@ import io.opendrs.common.error.AppException;
 import io.opendrs.common.error.ErrorCode;
 import io.opendrs.jdbc.JdbcConnection;
 import io.opendrs.jdbc.JdbcConnectionFactory;
+import io.opendrs.jdbc.JdbcException;
+import io.opendrs.jdbc.dialect.DbDialects;
 import io.opendrs.migration.api.request.CreateConnectionRequest;
 import io.opendrs.migration.api.response.ConnectionResponse;
 import io.opendrs.migration.api.response.ConnectionTestResponse;
@@ -66,10 +68,46 @@ public class ConnectionService {
         return ping(requireConnection(id));
     }
 
+    /**
+     * Schemas the source picker may offer: MySQL databases, PostgreSQL schemas. System schemas are
+     * filtered by the dialect, so the caller never sees {@code mysql}/{@code information_schema} or
+     * {@code pg_catalog}.
+     */
+    public List<String> listSchemas(Long id) {
+        ConnectionInfo info = requireConnection(id);
+        try (JdbcConnection connection = jdbcConnectionFactory.open(info.toJdbcConfig())) {
+            return DbDialects.of(info.toDatabaseType()).listSchemas(connection);
+        } catch (JdbcException ex) {
+            throw AppException.of(
+                    ErrorCode.METADATA_READ_FAILED, "Failed to list schemas: " + ex.getMessage());
+        }
+    }
+
+    /** Base tables of one schema. Views are not migrated, so they are not offered. */
+    public List<String> listTables(Long id, String schema) {
+        ConnectionInfo info = requireConnection(id);
+        if (schema == null || schema.isBlank()) {
+            throw AppException.of(ErrorCode.PARAM_INVALID, "schema is required");
+        }
+        try (JdbcConnection connection = jdbcConnectionFactory.open(info.toJdbcConfig())) {
+            return DbDialects.of(info.toDatabaseType())
+                    .listTables(connection, schema, List.of())
+                    .stream()
+                    .map(table -> table.ref().table())
+                    .toList();
+        } catch (JdbcException ex) {
+            throw AppException.of(
+                    ErrorCode.METADATA_READ_FAILED,
+                    "Failed to list tables of " + schema + ": " + ex.getMessage());
+        }
+    }
+
     private ConnectionTestResponse ping(ConnectionInfo info) {
         long started = System.nanoTime();
-        try (JdbcConnection connection = jdbcConnectionFactory.open(info)) {
+        try (JdbcConnection connection = jdbcConnectionFactory.open(info.toJdbcConfig())) {
             connection.ping();
+        } catch (JdbcException ex) {
+            throw AppException.of(ErrorCode.CONNECTION_TEST_FAILED, ex.getMessage());
         }
         long latencyMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
         return new ConnectionTestResponse(true, latencyMs);

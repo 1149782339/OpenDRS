@@ -19,6 +19,7 @@ function envelopeMessage(payload: unknown, fallback: string): string {
 }
 
 const client = axios.create({
+  baseURL: import.meta.env.VITE_API_BASE_URL ?? '',
   timeout: 60_000,
 })
 
@@ -29,7 +30,9 @@ client.interceptors.response.use(
       if (body.code === SUCCESS_CODE) {
         return { ...response, data: body.data }
       }
-      return Promise.reject(new Error(body.message || '请求失败'))
+      const error = new Error(body.message || '请求失败') as Error & { code?: number }
+      error.code = body.code
+      return Promise.reject(error)
     }
     return response
   },
@@ -47,6 +50,14 @@ export function apiErrorMessage(error: unknown): string {
     return error.message
   }
   return '请求失败'
+}
+
+/** 业务错误码（1001–1006），拦截器挂在 Error 上；非业务错误返回 null。 */
+export function apiErrorCode(error: unknown): number | null {
+  if (error instanceof Error && typeof (error as unknown as { code?: unknown }).code === 'number') {
+    return (error as unknown as { code: number }).code
+  }
+  return null
 }
 
 export const http = {

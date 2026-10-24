@@ -3,12 +3,12 @@ package io.opendrs.migration.domain;
 import java.time.Instant;
 
 /**
- * Row in {@code debezium_offset} for {@code TaskOffsetBackingStore}.
+ * Row in {@code debezium_offsets} for {@code TaskOffsetBackingStore}.
  */
 public class DebeziumOffset {
 
     private Long id;
-    private Long taskId;
+    private Long pipelineId;
     private String offsetKey;
     private String offsetVal;
     private Instant updatedAt;
@@ -21,12 +21,12 @@ public class DebeziumOffset {
         this.id = id;
     }
 
-    public Long getTaskId() {
-        return taskId;
+    public Long getPipelineId() {
+        return pipelineId;
     }
 
-    public void setTaskId(Long taskId) {
-        this.taskId = taskId;
+    public void setPipelineId(Long pipelineId) {
+        this.pipelineId = pipelineId;
     }
 
     public String getOffsetKey() {

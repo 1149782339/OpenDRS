@@ -5,19 +5,17 @@
 
     <resultMap id="MigrationTaskMap" type="io.opendrs.migration.domain.MigrationTask">
         <id property="id" column="id"/>
+        <result property="publicId" column="public_id"/>
         <result property="name" column="name"/>
         <result property="mode" column="mode"/>
-        <result property="jobPhase" column="job_phase"/>
-        <result property="jobState" column="job_state"/>
-        <result property="sourceConnectionId" column="source_connection_id"/>
-        <result property="targetConnectionId" column="target_connection_id"/>
-        <result property="tablesJson" column="tables_json"
-                typeHandler="io.opendrs.migration.mapper.type.TableSelectionTypeHandler"/>
-        <result property="optionsJson" column="options_json"
+        <result property="phase" column="phase"/>
+        <result property="state" column="state"/>
+        <result property="sourceConnectionId" column="source_endpoint_id"/>
+        <result property="targetConnectionId" column="target_endpoint_id"/>
+        <result property="optionsJson" column="options"
                 typeHandler="io.opendrs.migration.mapper.type.MigrationOptionsTypeHandler"/>
-        <result property="tablesTotal" column="tables_total"/>
-        <result property="tablesDone" column="tables_done"/>
-        <result property="rowsDone" column="rows_done"/>
+        <result property="precheckResultsJson" column="precheck_results"
+                typeHandler="io.opendrs.migration.mapper.type.PrecheckResultsTypeHandler"/>
         <result property="lagMs" column="lag_ms"/>
         <result property="errorMessage" column="error_message"/>
         <result property="createdAt" column="created_at"/>
@@ -25,137 +23,216 @@
     </resultMap>
 
     <sql id="taskColumns">
-        id, name, mode, job_phase, job_state, source_connection_id, target_connection_id,
-        tables_json, options_json, tables_total, tables_done, rows_done, lag_ms,
+        id, public_id, name, mode, phase, state, source_endpoint_id, target_endpoint_id,
+        options, precheck_results, lag_ms,
         error_message, created_at, updated_at
     </sql>
 
     <insert id="insert" useGeneratedKeys="true" keyProperty="id">
-        INSERT INTO migration_task
-            (name, mode, job_phase, job_state, source_connection_id, target_connection_id,
-             tables_json, options_json)
-        VALUES (#{name}, #{mode}, #{jobPhase}, #{jobState}, #{sourceConnectionId}, #{targetConnectionId},
-                #{tablesJson, typeHandler=io.opendrs.migration.mapper.type.TableSelectionTypeHandler},
+        INSERT INTO migration_tasks
+            (public_id, name, mode, phase, state, source_endpoint_id, target_endpoint_id,
+             options)
+        VALUES (#{publicId}, #{name}, #{mode}, #{phase}, #{state}, #{sourceConnectionId}, #{targetConnectionId},
                 #{optionsJson, typeHandler=io.opendrs.migration.mapper.type.MigrationOptionsTypeHandler})
     </insert>
 
     <select id="findById" resultMap="MigrationTaskMap">
         SELECT <include refid="taskColumns"/>
-        FROM migration_task
+        FROM migration_tasks
         WHERE id = #{id}
     </select>
 
     <select id="findByName" resultMap="MigrationTaskMap">
         SELECT <include refid="taskColumns"/>
-        FROM migration_task
+        FROM migration_tasks
         WHERE name = #{name}
     </select>
 
     <select id="findAll" resultMap="MigrationTaskMap">
         SELECT <include refid="taskColumns"/>
-        FROM migration_task
-        ORDER BY id
+        FROM migration_tasks
+        ORDER BY id DESC
+    </select>
+
+    <!-- Next auto-increment value; the create wizard prefills the task name with it (DRS-xxxx).
+         Purely informational: by insert time another transaction may have taken this number. -->
+    <select id="selectNextAutoIncrement" resultType="long">
+        SELECT AUTO_INCREMENT
+        FROM information_schema.TABLES
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = 'migration_tasks'
     </select>
 
     <select id="findDispatchable" resultMap="MigrationTaskMap">
         SELECT <include refid="taskColumns"/>
-        FROM migration_task
-        WHERE job_state IN ('STARTING', 'RUNNING')
+        FROM migration_tasks
+        WHERE state IN ('STARTING', 'RUNNING')
         ORDER BY id
     </select>
 
-    <update id="compareAndSetJobState">
-        UPDATE migration_task
-        SET job_state = #{next},
+    <update id="compareAndSetState">
+        UPDATE migration_tasks
+        SET state = #{next},
             error_message = NULL,
             updated_at = CURRENT_TIMESTAMP
         WHERE id = #{id}
         <choose>
-            <when test="expected == null">AND job_state IS NULL</when>
-            <otherwise>AND job_state = #{expected}</otherwise>
+            <when test="expected == null">AND state IS NULL</when>
+            <otherwise>AND state = #{expected}</otherwise>
         </choose>
+    </update>
+
+    <!-- 暂停: RUNNING → STOPPING with intent PAUSE. Returns 0 when the row is no longer RUNNING. -->
+    <update id="markPausing">
+        UPDATE migration_tasks
+        SET state = 'STOPPING',
+            error_message = NULL,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = #{id}
+          AND state = 'RUNNING'
+    </update>
+
+    <!-- 结束: RUNNING → TERMINATING(结束中). -->
+    <update id="markTerminating">
+        UPDATE migration_tasks
+        SET state = 'TERMINATING',
+            error_message = NULL,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = #{id}
+          AND state = 'RUNNING'
+    </update>
+
+    <!-- 结束 on a task with nothing running (never started, still starting, paused or failed):
+         straight to TERMINATED, no wind-down needed. -->
+    <update id="terminateIdle">
+        UPDATE migration_tasks
+        SET state = 'TERMINATED',
+            error_message = NULL,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = #{id}
+          AND (state IS NULL OR state IN ('STARTING', 'STOPPED', 'FAILED'))
+    </update>
+
+    <!-- 结束 clicked while a pause is still winding down: escalate 暂停中 to 结束中;
+         the task keeps winding down and lands TERMINATED. -->
+    <update id="flipStoppingToTerminating">
+        UPDATE migration_tasks
+        SET state = 'TERMINATING',
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = #{id}
+          AND state = 'STOPPING'
+    </update>
+
+    <!-- Landing CAS used by MigrationCoordinator.finishStopped: 暂停中 → 已暂停. -->
+    <update id="landPausing">
+        UPDATE migration_tasks
+        SET state = 'STOPPED',
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = #{id}
+          AND state = 'STOPPING'
+    </update>
+
+    <!-- Landing CAS used by MigrationCoordinator.finishStopped: 结束中 → 已结束. -->
+    <update id="landTerminating">
+        UPDATE migration_tasks
+        SET state = 'TERMINATED',
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = #{id}
+          AND state = 'TERMINATING'
     </update>
 
     <update id="compareAndSetPhase">
-        UPDATE migration_task
-        SET job_phase = #{next},
+        UPDATE migration_tasks
+        SET phase = #{next},
             updated_at = CURRENT_TIMESTAMP
         WHERE id = #{id}
-          AND job_phase = #{expected}
+          AND phase = #{expected}
     </update>
 
     <update id="beginPrecheck">
-        UPDATE migration_task
-        SET job_phase = 'PRECHECKING',
-            job_state = NULL,
+        UPDATE migration_tasks
+        SET phase = 'PRECHECKING',
+            state = NULL,
             error_message = NULL,
+            precheck_results = NULL,
             updated_at = CURRENT_TIMESTAMP
         WHERE id = #{id}
-          AND job_phase = #{expectedPhase}
+          AND phase = #{expectedPhase}
         <choose>
-            <when test="expectedJobState == null">AND job_state IS NULL</when>
-            <otherwise>AND job_state = #{expectedJobState}</otherwise>
+            <when test="expectedState == null">AND state IS NULL</when>
+            <otherwise>AND state = #{expectedState}</otherwise>
         </choose>
     </update>
 
+    <update id="updatePrecheckResults">
+        UPDATE migration_tasks
+        SET precheck_results = #{precheckResultsJson, typeHandler=io.opendrs.migration.mapper.type.PrecheckResultsTypeHandler},
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = #{id}
+    </update>
+
+    <!-- Precheck success only unlocks the task: it stays idle (state NULL) so the user can
+         review the summary and confirm from the wizard's 任务确认 step. POST /tasks/{id}/start is
+         what turns it into STARTING and lets the dispatcher pick it up. -->
     <update id="completePrecheckSuccess">
-        UPDATE migration_task
-        SET job_phase = 'PRECHECKED',
-            job_state = 'STARTING',
+        UPDATE migration_tasks
+        SET phase = 'PRECHECKED',
+            state = NULL,
             error_message = NULL,
             updated_at = CURRENT_TIMESTAMP
         WHERE id = #{id}
-          AND job_phase = 'PRECHECKING'
-          AND job_state IS NULL
+          AND phase = 'PRECHECKING'
+          AND state IS NULL
     </update>
 
     <update id="markPrecheckFailed">
-        UPDATE migration_task
-        SET job_state = 'FAILED',
+        UPDATE migration_tasks
+        SET state = 'FAILED',
             error_message = #{errorMessage},
             updated_at = CURRENT_TIMESTAMP
         WHERE id = #{id}
-          AND job_phase = 'PRECHECKING'
+          AND phase = 'PRECHECKING'
     </update>
 
     <update id="updatePhase">
-        UPDATE migration_task
-        SET job_phase = #{phase},
+        UPDATE migration_tasks
+        SET phase = #{phase},
             updated_at = CURRENT_TIMESTAMP
         WHERE id = #{id}
     </update>
 
-    <update id="updateJobControl">
-        UPDATE migration_task
-        SET job_phase = #{phase},
-            job_state = #{jobState},
+    <update id="updatePhaseState">
+        UPDATE migration_tasks
+        SET phase = #{phase},
+            state = #{state},
             updated_at = CURRENT_TIMESTAMP
         WHERE id = #{id}
     </update>
 
-    <update id="markJobFailed">
-        UPDATE migration_task
-        SET job_state = 'FAILED',
+    <update id="markFailed">
+        UPDATE migration_tasks
+        SET state = 'FAILED',
             error_message = #{errorMessage},
             updated_at = CURRENT_TIMESTAMP
         WHERE id = #{id}
     </update>
 
+    <!-- Boot sweep: wind-down rows left behind by a crashed service land per their state. -->
     <update id="markStoppingAsStopped">
-        UPDATE migration_task
-        SET job_state = 'STOPPED',
+        UPDATE migration_tasks
+        SET state = CASE state WHEN 'STOPPING' THEN 'STOPPED' WHEN 'TERMINATING' THEN 'TERMINATED' END,
             updated_at = CURRENT_TIMESTAMP
-        WHERE job_state = 'STOPPING'
+        WHERE state IN ('STOPPING', 'TERMINATING')
     </update>
 
     <delete id="deleteById">
-        DELETE FROM migration_task WHERE id = #{id}
+        DELETE FROM migration_tasks WHERE id = #{id}
     </delete>
 
     <select id="countByConnectionId" resultType="int">
         SELECT COUNT(*)
-        FROM migration_task
-        WHERE source_connection_id = #{connectionId}
-           OR target_connection_id = #{connectionId}
+        FROM migration_tasks
+        WHERE source_endpoint_id = #{connectionId}
+           OR target_endpoint_id = #{connectionId}
     </select>
 </mapper>

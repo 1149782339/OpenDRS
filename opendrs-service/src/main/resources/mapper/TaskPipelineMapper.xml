@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="io.opendrs.migration.mapper.TaskPipelineMapper">
+
+    <resultMap id="TaskPipelineMap" type="io.opendrs.migration.domain.TaskPipeline">
+        <id property="id" column="id"/>
+        <result property="taskId" column="task_id"/>
+        <result property="sourceEndpointId" column="source_endpoint_id"/>
+        <result property="targetEndpointId" column="target_endpoint_id"/>
+        <result property="captureOptions" column="capture_options"
+                typeHandler="io.opendrs.migration.mapper.type.JsonMapTypeHandler"/>
+        <result property="replayOptions" column="replay_options"
+                typeHandler="io.opendrs.migration.mapper.type.JsonMapTypeHandler"/>
+        <result property="createdAt" column="created_at"/>
+    </resultMap>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO task_pipelines (task_id, source_endpoint_id, target_endpoint_id, capture_options, replay_options)
+        VALUES (#{taskId}, #{sourceEndpointId}, #{targetEndpointId},
+                #{captureOptions, typeHandler=io.opendrs.migration.mapper.type.JsonMapTypeHandler},
+                #{replayOptions, typeHandler=io.opendrs.migration.mapper.type.JsonMapTypeHandler})
+    </insert>
+
+    <select id="findById" resultMap="TaskPipelineMap">
+        SELECT id, task_id, source_endpoint_id, target_endpoint_id, capture_options, replay_options, created_at
+        FROM task_pipelines
+        WHERE id = #{id}
+    </select>
+
+    <select id="findByTaskId" resultMap="TaskPipelineMap">
+        SELECT id, task_id, source_endpoint_id, target_endpoint_id, capture_options, replay_options, created_at
+        FROM task_pipelines
+        WHERE task_id = #{taskId}
+        ORDER BY id
+    </select>
+
+    <delete id="deleteByTaskId">
+        DELETE FROM task_pipelines WHERE task_id = #{taskId}
+    </delete>
+</mapper>

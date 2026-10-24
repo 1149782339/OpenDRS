@@ -1,0 +1,11 @@
+# Scrape config for the local dev stack. Host networking means the backend is
+# loopback from Prometheus's point of view, exactly like the un-containerised setup.
+global:
+  scrape_interval: 5s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: opendrs-backend
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["127.0.0.1:8080"]

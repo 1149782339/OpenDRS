@@ -3,14 +3,16 @@
         "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
 <mapper namespace="io.opendrs.migration.mapper.DebeziumOffsetMapper">
 
-    <select id="findByTaskId" resultType="io.opendrs.migration.domain.DebeziumOffset">
-        SELECT id, task_id AS taskId, offset_key AS offsetKey, offset_val AS offsetVal, updated_at AS updatedAt
-        FROM debezium_offset
-        WHERE task_id = #{taskId}
+    <select id="findByPipelineId" resultType="io.opendrs.migration.domain.DebeziumOffset">
+        SELECT id, pipeline_id AS pipelineId, offset_key AS offsetKey, offset_val AS offsetVal, updated_at AS updatedAt
+        FROM debezium_offsets
+        WHERE pipeline_id = #{pipelineId}
         ORDER BY id
     </select>
 
+    <!-- Task-level delete: offsets live on pipelines, so resolve the task's pipelines first. -->
     <delete id="deleteByTaskId">
-        DELETE FROM debezium_offset WHERE task_id = #{taskId}
+        DELETE FROM debezium_offsets
+        WHERE pipeline_id IN (SELECT id FROM task_pipelines WHERE task_id = #{taskId})
     </delete>
 </mapper>

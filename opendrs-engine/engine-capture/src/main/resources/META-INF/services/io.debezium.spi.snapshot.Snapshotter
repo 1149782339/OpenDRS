@@ -1,0 +1,6 @@
+# Debezium resolves custom snapshot modes through java.util.ServiceLoader.
+# This file must live in the module that owns the implementations (engine-capture), otherwise a
+# package rename silently leaves a dangling FQCN here and the Engine fails at startup with
+# "ServiceConfigurationError: Provider ... not found" — which no unit test would catch.
+io.opendrs.engine.capture.SchemaOnlySnapshotter
+io.opendrs.engine.capture.IncrementalSnapshotter

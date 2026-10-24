@@ -18,6 +18,8 @@ import io.opendrs.jdbc.JdbcConnection;
 import io.opendrs.jdbc.JdbcConnectionFactory;
 import io.opendrs.migration.domain.ConnectionInfo;
 import io.opendrs.migration.mapper.ConnectionInfoMapper;
+import io.opendrs.jdbc.JdbcException;
+import io.opendrs.jdbc.JdbcConnectionConfig;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -161,27 +163,29 @@ class ConnectionApiTest {
 
     @Test
     void deleteWhileReferencedByTaskReturns1006() throws Exception {
+        long sourceId = createConnection("conn-ref-task-source", oracleConnectionJson("secret-source"));
+        long targetId = createConnection("conn-ref-task-target", mysqlConnectionJson("secret-target"));
+
         mockMvc.perform(post(TASKS)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(taskBody("conn-ref-task")))
+                        .content(taskBody("conn-ref-task", sourceId, targetId)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(1000));
 
-        ConnectionInfo source = connectionInfoMapper.findByName("conn-ref-task-source");
-        assertThat(source).isNotNull();
+        assertThat(connectionInfoMapper.findById(sourceId)).isNotNull();
 
-        mockMvc.perform(delete(BASE + "/" + source.getId()))
+        mockMvc.perform(delete(BASE + "/" + sourceId))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(1006))
                 .andExpect(jsonPath("$.message").value(
-                        "Connection " + source.getId() + " is referenced by a migration task"));
-        assertThat(connectionInfoMapper.findById(source.getId())).isNotNull();
+                        "Connection " + sourceId + " is referenced by a migration task"));
+        assertThat(connectionInfoMapper.findById(sourceId)).isNotNull();
     }
 
     @Test
     void testAdHocSuccessAndFailure() throws Exception {
         JdbcConnection ok = Mockito.mock(JdbcConnection.class);
-        when(jdbcConnectionFactory.open(any(ConnectionInfo.class))).thenReturn(ok);
+        when(jdbcConnectionFactory.open(any(JdbcConnectionConfig.class))).thenReturn(ok);
 
         mockMvc.perform(post(BASE + "/test")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -194,8 +198,8 @@ class ConnectionApiTest {
         verify(ok).close();
 
         Mockito.reset(jdbcConnectionFactory);
-        when(jdbcConnectionFactory.open(any(ConnectionInfo.class)))
-                .thenThrow(AppException.of(ErrorCode.CONNECTION_TEST_FAILED, "refused"));
+        when(jdbcConnectionFactory.open(any(JdbcConnectionConfig.class)))
+                .thenThrow(new JdbcException("refused"));
 
         mockMvc.perform(post(BASE + "/test")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -210,25 +214,25 @@ class ConnectionApiTest {
         long id = createConnection("stored-test", oracleConnectionJson("stored-secret"));
 
         JdbcConnection ok = Mockito.mock(JdbcConnection.class);
-        when(jdbcConnectionFactory.open(any(ConnectionInfo.class))).thenReturn(ok);
+        when(jdbcConnectionFactory.open(any(JdbcConnectionConfig.class))).thenReturn(ok);
 
         mockMvc.perform(post(BASE + "/" + id + "/test"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(1000))
                 .andExpect(jsonPath("$.data.ok").value(true));
 
-        ArgumentCaptor<ConnectionInfo> captor = ArgumentCaptor.forClass(ConnectionInfo.class);
+        ArgumentCaptor<JdbcConnectionConfig> captor = ArgumentCaptor.forClass(JdbcConnectionConfig.class);
         verify(jdbcConnectionFactory).open(captor.capture());
-        ConnectionInfo passed = captor.getValue();
+        JdbcConnectionConfig passed = captor.getValue();
         assertThat(passed.getPassword()).isEqualTo("stored-secret");
         assertThat(passed.getHost()).isEqualTo("10.0.0.1");
-        assertThat(passed.getExtra()).containsEntry("pdb", "ORCLPDB1");
+        assertThat(passed.getExtras()).containsEntry("pdb", "ORCLPDB1");
         verify(ok).ping();
 
         Mockito.reset(jdbcConnectionFactory);
         JdbcConnection failing = Mockito.mock(JdbcConnection.class);
-        when(jdbcConnectionFactory.open(any(ConnectionInfo.class))).thenReturn(failing);
-        doThrow(AppException.of(ErrorCode.CONNECTION_TEST_FAILED, "auth failed")).when(failing).ping();
+        when(jdbcConnectionFactory.open(any(JdbcConnectionConfig.class))).thenReturn(failing);
+        doThrow(new JdbcException("auth failed")).when(failing).ping();
 
         mockMvc.perform(post(BASE + "/" + id + "/test"))
                 .andExpect(status().isOk())
@@ -309,34 +313,23 @@ class ConnectionApiTest {
                 """.formatted(password);
     }
 
-    private static String taskBody(String name) {
+    private static String taskBody(String name, long sourceId, long targetId) {
         return """
                 {
                   "name": "%s",
                   "mode": "FULL_ONLY",
-                  "source": {
-                    "type": "ORACLE",
-                    "host": "10.0.0.1",
-                    "port": 1521,
-                    "database": "ORCL",
-                    "username": "cdc",
-                    "password": "secret-source",
-                    "extra": { "pdb": "ORCLPDB1" }
-                  },
-                  "target": {
-                    "type": "MYSQL",
-                    "host": "10.0.0.2",
-                    "port": 3306,
-                    "database": "hr",
-                    "username": "drs",
-                    "password": "secret-target"
-                  },
-                  "tables": {
-                    "objects": [
-                      { "schema": "HR", "tables": ["EMPLOYEES"] }
-                    ]
+                  "sourceConnectionId": %d,
+                  "targetConnectionId": %d,
+                  "options": {
+                    "selection": {
+                      "mode": "TABLE",
+                      "schemas": [],
+                      "tables": [ { "schema": "HR", "table": "EMPLOYEES" } ],
+                      "excludeSchemas": [],
+                      "excludeTables": []
+                    }
                   }
                 }
-                """.formatted(name);
+                """.formatted(name, sourceId, targetId);
     }
 }

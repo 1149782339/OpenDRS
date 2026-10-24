@@ -1,0 +1,21 @@
+# The image only needs opendrs-service/target/*.jar. Everything else is dead weight
+# and, in the case of the database volumes, potentially gigabytes.
+.git
+.idea
+.workbuddy-ai
+outputs
+mysql_data
+mysql2_data
+pg_data
+
+opendrs-web/node_modules
+opendrs-web/dist
+
+**/target/classes
+**/target/test-classes
+**/target/generated-sources
+**/target/generated-test-sources
+**/target/maven-status
+**/target/surefire-reports
+**/target/failsafe-reports
+**/target/*.jar.original

@@ -9,10 +9,13 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import io.opendrs.migration.domain.ConnectionInfo;
-import io.opendrs.migration.domain.JobPhase;
-import io.opendrs.migration.domain.JobState;
+import io.opendrs.migration.domain.DbType;
+import io.opendrs.migration.domain.MigrationPhase;
+import io.opendrs.engine.core.TaskState;
 import io.opendrs.migration.mapper.ConnectionInfoMapper;
 import io.opendrs.migration.mapper.MigrationTaskMapper;
+import java.util.Map;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -43,6 +46,63 @@ class MigrationTaskApiTest {
     @Autowired
     private MigrationTaskMapper taskMapper;
 
+    /**
+     * Tasks reference registered data sources instead of carrying connection copies, so every
+     * create request needs two rows to point at. Both are inserted once and looked up by name
+     * afterwards, since the H2 schema is shared for the whole context.
+     */
+    private long sourceId;
+
+    private long targetId;
+
+    @BeforeEach
+    void ensureDataSources() {
+        sourceId = dataSource(
+                "hr-oracle-to-mysql-source",
+                DbType.ORACLE,
+                "10.0.0.1",
+                1521,
+                "ORCL",
+                "cdc",
+                "secret-source",
+                Map.of("pdb", "ORCLPDB1", "connectionType", "SERVICE"));
+        targetId = dataSource(
+                "hr-oracle-to-mysql-target",
+                DbType.MYSQL,
+                "10.0.0.2",
+                3306,
+                "hr",
+                "drs",
+                "secret-target",
+                Map.of("useSsl", false, "serverTimezone", "UTC"));
+    }
+
+    private long dataSource(
+            String name,
+            DbType type,
+            String host,
+            int port,
+            String database,
+            String username,
+            String password,
+            Map<String, Object> extra) {
+        ConnectionInfo existing = connectionInfoMapper.findByName(name);
+        if (existing != null) {
+            return existing.getId();
+        }
+        ConnectionInfo connection = new ConnectionInfo();
+        connection.setName(name);
+        connection.setType(type);
+        connection.setHost(host);
+        connection.setPort(port);
+        connection.setDbName(database);
+        connection.setUsername(username);
+        connection.setPassword(password);
+        connection.setExtra(extra);
+        connectionInfoMapper.insert(connection);
+        return connection.getId();
+    }
+
     @Test
     void createSuccessMasksPasswordAndSetsCreatedNullJobState() throws Exception {
         long id = createTask("hr-oracle-to-mysql", "FULL_AND_INCREMENTAL");
@@ -54,16 +114,19 @@ class MigrationTaskApiTest {
                 .andExpect(jsonPath("$.data.id").value(id))
                 .andExpect(jsonPath("$.data.name").value("hr-oracle-to-mysql"))
                 .andExpect(jsonPath("$.data.mode").value("FULL_AND_INCREMENTAL"))
-                .andExpect(jsonPath("$.data.jobPhase").value("CREATED"))
-                .andExpect(jsonPath("$.data.jobState").value(nullValue()))
+                .andExpect(jsonPath("$.data.phase").value("CREATED"))
+                .andExpect(jsonPath("$.data.state").value(nullValue()))
                 .andExpect(jsonPath("$.data.source.password").value("***"))
                 .andExpect(jsonPath("$.data.target.password").value("***"))
                 .andExpect(jsonPath("$.data.source.host").value("10.0.0.1"))
                 .andExpect(jsonPath("$.data.source.extra.pdb").value("ORCLPDB1"));
 
         var task = taskMapper.findById(id);
-        assertThat(task.getJobPhase()).isEqualTo(JobPhase.CREATED);
-        assertThat(task.getJobState()).isNull();
+        assertThat(task.getPhase()).isEqualTo(MigrationPhase.CREATED);
+        assertThat(task.getState()).isNull();
+        // The task points at the registered data sources; it does not own a copy of them.
+        assertThat(task.getSourceConnectionId()).isEqualTo(sourceId);
+        assertThat(task.getTargetConnectionId()).isEqualTo(targetId);
         ConnectionInfo source = connectionInfoMapper.findById(task.getSourceConnectionId());
         ConnectionInfo target = connectionInfoMapper.findById(task.getTargetConnectionId());
         assertThat(source.getName()).isEqualTo("hr-oracle-to-mysql-source");
@@ -77,22 +140,28 @@ class MigrationTaskApiTest {
                 {
                   "name": "conflict",
                   "mode": "FULL_ONLY",
-                  "source": %s,
-                  "target": %s,
-                  "tables": {
-                    "objects": [
-                      { "schema": "HR", "tables": ["EMPLOYEES"] },
-                      { "schema": "SCOTT", "tables": ["EMP"] }
-                    ],
-                    "mappings": {
-                      "schema": [
-                        { "source": "HR", "target": "hr" },
-                        { "source": "SCOTT", "target": "hr" }
-                      ]
+                  "sourceConnectionId": %d,
+                  "targetConnectionId": %d,
+                  "options": {
+                    "selection": {
+                      "mode": "TABLE",
+                      "schemas": [],
+                      "tables": [
+                        { "schema": "HR", "table": "EMPLOYEES" },
+                        { "schema": "SCOTT", "table": "EMP" }
+                      ],
+                      "excludeSchemas": [],
+                      "excludeTables": [],
+                      "mappings": {
+                        "schema": [
+                          { "source": "HR", "target": "hr" },
+                          { "source": "SCOTT", "target": "hr" }
+                        ]
+                      }
                     }
                   }
                 }
-                """.formatted(sourceJson(), targetJson());
+                """.formatted(sourceId, targetId);
 
         mockMvc.perform(post(BASE)
                         .contentType(MediaType.APPLICATION_JSON)
@@ -100,6 +169,63 @@ class MigrationTaskApiTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(1001))
                 .andExpect(jsonPath("$.message").value("Two schemas map to the same target schema: hr"));
+    }
+
+    @Test
+    void createWithPartialOptionsFillsDefaults() throws Exception {
+        String body = """
+                {
+                  "name": "partial-options",
+                  "mode": "FULL_AND_INCREMENTAL",
+                  "sourceConnectionId": %d,
+                  "targetConnectionId": %d,
+                  "options": {
+                    "topology": "ONE_WAY",
+                    "selection": { "mode": "ALL" },
+                    "full": { "exportConcurrency": 4 },
+                    "incremental": { "replayConcurrency": 2 }
+                  }
+                }
+                """.formatted(sourceId, targetId);
+
+        mockMvc.perform(post(BASE)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(1000))
+                .andExpect(jsonPath("$.data.options.full.exportConcurrency").value(4))
+                .andExpect(jsonPath("$.data.options.full.importConcurrency").value(8))
+                .andExpect(jsonPath("$.data.options.full.importMode").value("COPY"))
+                .andExpect(jsonPath("$.data.options.incremental.replayConcurrency").value(2))
+                .andExpect(jsonPath("$.data.options.incremental.conflictPolicy").value("OVERWRITE"));
+    }
+
+    @Test
+    void createWithUnknownDataSourceReturns1004() throws Exception {
+        String body = """
+                {
+                  "name": "unknown-source",
+                  "mode": "FULL_ONLY",
+                  "sourceConnectionId": 999999,
+                  "targetConnectionId": %d,
+                  "options": {
+                    "selection": {
+                      "mode": "TABLE",
+                      "schemas": [],
+                      "tables": [ { "schema": "HR", "table": "EMPLOYEES" } ],
+                      "excludeSchemas": [],
+                      "excludeTables": []
+                    }
+                  }
+                }
+                """.formatted(targetId);
+
+        mockMvc.perform(post(BASE)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(1004))
+                .andExpect(jsonPath("$.message").value("Source data source not found: 999999"));
     }
 
     @Test
@@ -117,25 +243,39 @@ class MigrationTaskApiTest {
         mockMvc.perform(post(BASE + "/" + id + "/start"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(1003))
-                .andExpect(jsonPath("$.message").value("Task " + id + " cannot be started from jobState null"));
+                .andExpect(jsonPath("$.message").value("Task " + id + " cannot be started from state null"));
+    }
+
+    @Test
+    void startFromPrecheckedIdleIsAllowed() throws Exception {
+        long id = createTask("start-prechecked-idle", "FULL_AND_INCREMENTAL");
+        taskMapper.updatePhaseState(id, MigrationPhase.PRECHECKED, null);
+
+        mockMvc.perform(post(BASE + "/" + id + "/start"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(1000))
+                .andExpect(jsonPath("$.data.phase").value("SCHEMA_MIGRATION"))
+                .andExpect(jsonPath("$.data.state").value("STARTING"));
     }
 
     @Test
     void stopWhileStartingGoesStoppedThenStartFromStopped() throws Exception {
         long id = createTask("stop-starting", "FULL_AND_INCREMENTAL");
-        taskMapper.updateJobControl(id, JobPhase.PRECHECKED, JobState.STARTING);
+        taskMapper.updatePhaseState(id, MigrationPhase.PRECHECKED, TaskState.STARTING);
 
         mockMvc.perform(post(BASE + "/" + id + "/stop"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(1000))
-                .andExpect(jsonPath("$.data.jobPhase").value("PRECHECKED"))
-                .andExpect(jsonPath("$.data.jobState").value("STOPPED"));
+                .andExpect(jsonPath("$.data.phase").value("PRECHECKED"))
+                .andExpect(jsonPath("$.data.state").value("STOPPED"));
 
         mockMvc.perform(post(BASE + "/" + id + "/start"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(1000))
-                .andExpect(jsonPath("$.data.jobPhase").value("PRECHECKED"))
-                .andExpect(jsonPath("$.data.jobState").value("STARTING"));
+                // Confirming the migration moves the pipeline into its structure step immediately,
+                // so the UI does not sit on PRECHECKED while the dispatcher is still picking it up.
+                .andExpect(jsonPath("$.data.phase").value("SCHEMA_MIGRATION"))
+                .andExpect(jsonPath("$.data.state").value("STARTING"));
     }
 
     @Test
@@ -145,7 +285,7 @@ class MigrationTaskApiTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(1003));
 
-        taskMapper.updateJobControl(id, JobPhase.PRECHECKING, JobState.FAILED);
+        taskMapper.updatePhaseState(id, MigrationPhase.PRECHECKING, TaskState.FAILED);
         mockMvc.perform(post(BASE + "/" + id + "/stop"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(1003));
@@ -154,12 +294,12 @@ class MigrationTaskApiTest {
     @Test
     void startWhileStartingOrRunningRejected() throws Exception {
         long id = createTask("double-start", "FULL_AND_INCREMENTAL");
-        taskMapper.updateJobControl(id, JobPhase.PRECHECKED, JobState.STARTING);
+        taskMapper.updatePhaseState(id, MigrationPhase.PRECHECKED, TaskState.STARTING);
         mockMvc.perform(post(BASE + "/" + id + "/start"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(1003));
 
-        taskMapper.updateJobControl(id, JobPhase.FULL, JobState.RUNNING);
+        taskMapper.updatePhaseState(id, MigrationPhase.FULL, TaskState.RUNNING);
         mockMvc.perform(post(BASE + "/" + id + "/start"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(1003));
@@ -168,31 +308,31 @@ class MigrationTaskApiTest {
     @Test
     void stopWhileStoppingAndStoppedIsIdempotent() throws Exception {
         long id = createTask("stop-idempotent", "FULL_AND_INCREMENTAL");
-        taskMapper.updateJobControl(id, JobPhase.INCREMENTAL, JobState.STOPPING);
+        taskMapper.updatePhaseState(id, MigrationPhase.INCREMENTAL, TaskState.STOPPING);
         mockMvc.perform(post(BASE + "/" + id + "/stop"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(1000))
-                .andExpect(jsonPath("$.data.jobState").value("STOPPING"));
+                .andExpect(jsonPath("$.data.state").value("STOPPING"));
 
-        taskMapper.updateJobControl(id, JobPhase.INCREMENTAL, JobState.STOPPED);
+        taskMapper.updatePhaseState(id, MigrationPhase.INCREMENTAL, TaskState.STOPPED);
         mockMvc.perform(post(BASE + "/" + id + "/stop"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(1000))
-                .andExpect(jsonPath("$.data.jobState").value("STOPPED"));
+                .andExpect(jsonPath("$.data.state").value("STOPPED"));
     }
 
     @Test
     void startFromFailedAfterRunIsAllowedButNotFromPrecheckFailed() throws Exception {
         long id = createTask("start-failed", "FULL_AND_INCREMENTAL");
-        taskMapper.updateJobControl(id, JobPhase.FULL, JobState.FAILED);
+        taskMapper.updatePhaseState(id, MigrationPhase.FULL, TaskState.FAILED);
         mockMvc.perform(post(BASE + "/" + id + "/start"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(1000))
-                .andExpect(jsonPath("$.data.jobPhase").value("FULL"))
-                .andExpect(jsonPath("$.data.jobState").value("STARTING"));
+                .andExpect(jsonPath("$.data.phase").value("FULL"))
+                .andExpect(jsonPath("$.data.state").value("STARTING"));
 
         long precheckFailed = createTask("start-precheck-failed", "FULL_AND_INCREMENTAL");
-        taskMapper.updateJobControl(precheckFailed, JobPhase.PRECHECKING, JobState.FAILED);
+        taskMapper.updatePhaseState(precheckFailed, MigrationPhase.PRECHECKING, TaskState.FAILED);
         mockMvc.perform(post(BASE + "/" + precheckFailed + "/start"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(1003));
@@ -201,35 +341,45 @@ class MigrationTaskApiTest {
     @Test
     void deleteWhileInFlightReturns1003() throws Exception {
         long starting = createTask("delete-starting", "FULL_AND_INCREMENTAL");
-        taskMapper.updateJobControl(starting, JobPhase.PRECHECKED, JobState.STARTING);
+        taskMapper.updatePhaseState(starting, MigrationPhase.PRECHECKED, TaskState.STARTING);
         mockMvc.perform(delete(BASE + "/" + starting))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(1003));
 
         long running = createTask("delete-running", "FULL_AND_INCREMENTAL");
-        taskMapper.updateJobControl(running, JobPhase.FULL, JobState.RUNNING);
+        taskMapper.updatePhaseState(running, MigrationPhase.FULL, TaskState.RUNNING);
         mockMvc.perform(delete(BASE + "/" + running))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(1003));
 
         long stopping = createTask("delete-stopping", "FULL_AND_INCREMENTAL");
-        taskMapper.updateJobControl(stopping, JobPhase.INCREMENTAL, JobState.STOPPING);
+        taskMapper.updatePhaseState(stopping, MigrationPhase.INCREMENTAL, TaskState.STOPPING);
         mockMvc.perform(delete(BASE + "/" + stopping))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(1003));
     }
 
     @Test
-    void deleteWhilePrecheckingReturns1003AndStoppedCanDelete() throws Exception {
+    void deleteRequiresTerminatedAndStoppedCannotDelete() throws Exception {
         long prechecking = createTask("prechecking-delete", "FULL_AND_INCREMENTAL");
-        taskMapper.updateJobControl(prechecking, JobPhase.PRECHECKING, null);
+        taskMapper.updatePhaseState(prechecking, MigrationPhase.PRECHECKING, null);
         mockMvc.perform(delete(BASE + "/" + prechecking))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(1003));
         assertThat(taskMapper.findById(prechecking)).isNotNull();
 
+        // 暂停(STOPPED)不是终态：必须「结束」落到 TERMINATED 后才能删除。
         long stopped = createTask("stopped-delete", "FULL_ONLY");
-        taskMapper.updateJobControl(stopped, JobPhase.PRECHECKED, JobState.STOPPED);
+        taskMapper.updatePhaseState(stopped, MigrationPhase.PRECHECKED, TaskState.STOPPED);
+        mockMvc.perform(delete(BASE + "/" + stopped))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(1003));
+        assertThat(taskMapper.findById(stopped)).isNotNull();
+
+        mockMvc.perform(post(BASE + "/" + stopped + "/terminate"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(1000))
+                .andExpect(jsonPath("$.data.state").value("TERMINATED"));
         mockMvc.perform(delete(BASE + "/" + stopped))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(1000))
@@ -240,22 +390,64 @@ class MigrationTaskApiTest {
     }
 
     @Test
-    void listAndStatusUseJobPhaseAndJobState() throws Exception {
+    void terminateWhileRunningMarksTerminating() throws Exception {
+        long id = createTask("terminate-running", "FULL_AND_INCREMENTAL");
+        taskMapper.updatePhaseState(id, MigrationPhase.INCREMENTAL, TaskState.RUNNING);
+        mockMvc.perform(post(BASE + "/" + id + "/terminate"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(1000))
+                .andExpect(jsonPath("$.data.state").value("TERMINATING"));
+
+        // TERMINATED 是终态：start 拒绝，重复 terminate 幂等。
+        taskMapper.updatePhaseState(id, MigrationPhase.INCREMENTAL, TaskState.TERMINATED);
+        mockMvc.perform(post(BASE + "/" + id + "/start"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(1003));
+        mockMvc.perform(post(BASE + "/" + id + "/terminate"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(1000))
+                .andExpect(jsonPath("$.data.state").value("TERMINATED"));
+    }
+
+    @Test
+    void terminateWhilePausedAndNeverStartedLandsImmediately() throws Exception {
+        long neverStarted = createTask("terminate-null", "FULL_AND_INCREMENTAL");
+        mockMvc.perform(post(BASE + "/" + neverStarted + "/terminate"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(1000))
+                .andExpect(jsonPath("$.data.state").value("TERMINATED"));
+
+        long paused = createTask("terminate-paused", "FULL_AND_INCREMENTAL");
+        taskMapper.updatePhaseState(paused, MigrationPhase.INCREMENTAL, TaskState.STOPPED);
+        mockMvc.perform(post(BASE + "/" + paused + "/terminate"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.state").value("TERMINATED"));
+
+        // 暂停中(STOPPING)点结束：升级为 TERMINATING，等线程收尾后落 TERMINATED。
+        long pausing = createTask("terminate-pausing", "FULL_AND_INCREMENTAL");
+        taskMapper.updatePhaseState(pausing, MigrationPhase.INCREMENTAL, TaskState.RUNNING);
+        taskMapper.markPausing(pausing);
+        mockMvc.perform(post(BASE + "/" + pausing + "/terminate"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.state").value("TERMINATING"));
+    }
+
+    @Test
+    void listAndStatusUseMigrationPhaseAndJobState() throws Exception {
         long id = createTask("lifecycle-list", "FULL_AND_INCREMENTAL");
 
         mockMvc.perform(get(BASE))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(1000))
-                .andExpect(jsonPath("$.data[?(@.id==" + id + ")].jobPhase").value("CREATED"))
+                .andExpect(jsonPath("$.data[?(@.id==" + id + ")].phase").value("CREATED"))
                 .andExpect(jsonPath("$.data[?(@.id==" + id + ")].source.type").value("ORACLE"));
 
         mockMvc.perform(get(BASE + "/" + id + "/status"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(1000))
-                .andExpect(jsonPath("$.data.jobPhase").value("CREATED"))
-                .andExpect(jsonPath("$.data.jobState").value(nullValue()))
-                .andExpect(jsonPath("$.data.progress.tablesTotal").value(0))
-                .andExpect(jsonPath("$.data.offset.scn").value(nullValue()));
+                .andExpect(jsonPath("$.data.phase").value("CREATED"))
+                .andExpect(jsonPath("$.data.state").value(nullValue()))
+                .andExpect(jsonPath("$.data.offset.captured").value(nullValue()));
     }
 
     private long createTask(String name, String mode) throws Exception {
@@ -269,71 +461,53 @@ class MigrationTaskApiTest {
         return root.path("data").path("id").asLong();
     }
 
-    private static String validCreateBody(String name, String mode) {
+    private String validCreateBody(String name, String mode) {
         return """
                 {
                   "name": "%s",
                   "mode": "%s",
-                  "source": %s,
-                  "target": %s,
-                  "tables": {
-                    "objects": [
-                      { "schema": "HR", "tables": ["EMPLOYEES", "DEPARTMENTS"] },
-                      { "schema": "SCOTT", "tables": ["EMP"] }
-                    ],
-                    "mappings": {
-                      "schema": [
-                        { "source": "SCOTT", "target": "scott" }
-                      ],
-                      "tables": [
-                        {
-                          "sourceSchema": "HR",
-                          "sourceTable": "EMPLOYEES",
-                          "targetSchema": "hr",
-                          "targetTable": "emp"
-                        }
-                      ]
-                    }
-                  },
+                  "sourceConnectionId": %d,
+                  "targetConnectionId": %d,
                   "options": {
-                    "fullDumpParallelism": 8,
-                    "batchSize": 1000
+                    "topology": "ONE_WAY",
+                    "selection": {
+                      "mode": "TABLE",
+                      "schemas": [],
+                      "tables": [
+                        { "schema": "HR", "table": "EMPLOYEES" },
+                        { "schema": "HR", "table": "DEPARTMENTS" },
+                        { "schema": "SCOTT", "table": "EMP" }
+                      ],
+                      "excludeSchemas": [],
+                      "excludeTables": [],
+                      "mappings": {
+                        "schema": [
+                          { "source": "SCOTT", "target": "scott" }
+                        ],
+                        "tables": [
+                          {
+                            "sourceSchema": "HR",
+                            "sourceTable": "EMPLOYEES",
+                            "targetSchema": "hr",
+                            "targetTable": "emp"
+                          }
+                        ]
+                      }
+                    },
+                    "full": {
+                      "objectTypes": ["SCHEMA", "DATA", "INDEX"],
+                      "exportConcurrency": 8,
+                      "importConcurrency": 8,
+                      "importMode": "COPY",
+                      "chunkSize": 520000,
+                      "charsetAdapt": "AUTO"
+                    },
+                    "incremental": {
+                      "replayConcurrency": 64,
+                      "conflictPolicy": "OVERWRITE"
+                    }
                   }
                 }
-                """.formatted(name, mode, sourceJson(), targetJson());
-    }
-
-    private static String sourceJson() {
-        return """
-                {
-                  "type": "ORACLE",
-                  "host": "10.0.0.1",
-                  "port": 1521,
-                  "database": "ORCL",
-                  "username": "cdc",
-                  "password": "secret-source",
-                  "extra": {
-                    "pdb": "ORCLPDB1",
-                    "connectionType": "SERVICE"
-                  }
-                }
-                """;
-    }
-
-    private static String targetJson() {
-        return """
-                {
-                  "type": "MYSQL",
-                  "host": "10.0.0.2",
-                  "port": 3306,
-                  "database": "hr",
-                  "username": "drs",
-                  "password": "secret-target",
-                  "extra": {
-                    "useSsl": false,
-                    "serverTimezone": "UTC"
-                  }
-                }
-                """;
+                """.formatted(name, mode, sourceId, targetId);
     }
 }

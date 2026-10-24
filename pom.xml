@@ -19,14 +19,16 @@
     <description>OpenDRS — open data replication service (v1 CDC path)</description>
 
     <modules>
-        <module>opendrs-sink</module>
+        <module>opendrs-common</module>
+        <module>opendrs-engine</module>
+        <module>opendrs-jdbc</module>
         <module>opendrs-service</module>
     </modules>
 
     <properties>
         <java.version>21</java.version>
         <mybatis-spring-boot.version>4.1.0</mybatis-spring-boot.version>
-        <debezium.version>3.6.1.Final</debezium.version>
+        <debezium.version>3.7.0.Final</debezium.version>
         <antlr.version>4.13.2</antlr.version>
         <kafka.version>3.9.1</kafka.version>
     </properties>

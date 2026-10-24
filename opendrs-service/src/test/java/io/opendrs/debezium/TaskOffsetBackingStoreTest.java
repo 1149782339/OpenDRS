@@ -1,16 +1,20 @@
 package io.opendrs.debezium;
 
+import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 
+import io.opendrs.migration.api.request.MigrationOptions;
 import io.opendrs.migration.domain.ConnectionInfo;
 import io.opendrs.migration.domain.DbType;
-import io.opendrs.migration.domain.JobPhase;
-import io.opendrs.migration.domain.JobState;
+import io.opendrs.migration.domain.MigrationPhase;
+import io.opendrs.engine.core.TaskState;
 import io.opendrs.migration.domain.MigrationMode;
 import io.opendrs.migration.domain.MigrationTask;
 import io.opendrs.migration.mapper.ConnectionInfoMapper;
 import io.opendrs.migration.mapper.DebeziumOffsetMapper;
 import io.opendrs.migration.mapper.MigrationTaskMapper;
+import io.opendrs.engine.capture.ByteBuffers;
+import io.opendrs.engine.capture.TaskOffsetBackingStore;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
@@ -39,18 +43,16 @@ class TaskOffsetBackingStoreTest {
     @Autowired
     private DebeziumOffsetMapper offsetMapper;
 
-    @BeforeEach
-    void registerDataSource() {
-        EngineDataSourceHolder.initialize(jdbcTemplate.getDataSource());
-    }
+    @Autowired
+    private io.opendrs.migration.mapper.TaskPipelineMapper pipelineMapper;
 
     @Test
-    void upsertIsScopedByTaskIdAndDoesNotDeleteOtherTasks() throws Exception {
-        long taskA = insertTask("offset-a");
-        long taskB = insertTask("offset-b");
+    void upsertIsScopedByPipelineAndDoesNotDeleteOtherPipelines() throws Exception {
+        long pipelineA = insertPipeline(insertTask("offset-a"));
+        long pipelineB = insertPipeline(insertTask("offset-b"));
 
-        TaskOffsetBackingStore storeA = newStore(taskA);
-        TaskOffsetBackingStore storeB = newStore(taskB);
+        TaskOffsetBackingStore storeA = newStore(pipelineA);
+        TaskOffsetBackingStore storeB = newStore(pipelineB);
         storeA.start();
         storeB.start();
         try {
@@ -64,8 +66,8 @@ class TaskOffsetBackingStoreTest {
             storeA.stop();
             storeB.stop();
 
-            TaskOffsetBackingStore reloadA = newStore(taskA);
-            TaskOffsetBackingStore reloadB = newStore(taskB);
+            TaskOffsetBackingStore reloadA = newStore(pipelineA);
+            TaskOffsetBackingStore reloadB = newStore(pipelineB);
             reloadA.start();
             reloadB.start();
             try {
@@ -90,16 +92,16 @@ class TaskOffsetBackingStoreTest {
             storeB.stop();
         }
 
-        assertThat(offsetMapper.findByTaskId(taskA)).hasSize(2);
-        assertThat(offsetMapper.findByTaskId(taskB)).hasSize(1);
-        Integer otherTaskRows = jdbcTemplate.queryForObject(
-                "SELECT COUNT(*) FROM debezium_offset WHERE task_id = ?", Integer.class, taskB);
-        assertThat(otherTaskRows).isEqualTo(1);
+        assertThat(offsetMapper.findByPipelineId(pipelineA)).hasSize(2);
+        assertThat(offsetMapper.findByPipelineId(pipelineB)).hasSize(1);
+        Integer otherPipelineRows = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM debezium_offsets WHERE pipeline_id = ?", Integer.class, pipelineB);
+        assertThat(otherPipelineRows).isEqualTo(1);
     }
 
-    private TaskOffsetBackingStore newStore(long taskId) {
-        TaskOffsetBackingStore store = new TaskOffsetBackingStore();
-        store.configure(Map.of(TaskOffsetBackingStore.TASK_ID_CONFIG, String.valueOf(taskId)));
+    private TaskOffsetBackingStore newStore(long pipelineId) {
+        TaskOffsetBackingStore store = new TaskOffsetBackingStore().withDataSource(jdbcTemplate.getDataSource());
+        store.configure(Map.of(TaskOffsetBackingStore.PIPELINE_ID_CONFIG, String.valueOf(pipelineId)));
         return store;
     }
 
@@ -109,16 +111,33 @@ class TaskOffsetBackingStoreTest {
         connectionMapper.insert(source);
         connectionMapper.insert(target);
         MigrationTask task = new MigrationTask();
+        task.setPublicId(UUID.randomUUID().toString());
         task.setName(name);
         task.setMode(MigrationMode.FULL_AND_INCREMENTAL);
-        task.setJobPhase(JobPhase.CREATED);
+        task.setPhase(MigrationPhase.CREATED);
         task.setSourceConnectionId(source.getId());
         task.setTargetConnectionId(target.getId());
-        task.setTablesJson(new io.opendrs.migration.api.request.TableSelection(
-                List.of(new io.opendrs.migration.api.request.SchemaObject("hr", List.of("emp"), null, null)),
+        task.setOptionsJson(new MigrationOptions(
+                MigrationOptions.Topology.ONE_WAY,
+                MigrationOptions.Selection.ofTables(
+                        List.of(new io.opendrs.migration.api.request.SelectedTable("hr", "emp"))),
+                MigrationOptions.FullSettings.defaults(),
+                MigrationOptions.IncrementalSettings.defaults(),
                 null));
         taskMapper.insert(task);
         return task.getId();
+    }
+
+    private long insertPipeline(long taskId) {
+        MigrationTask task = taskMapper.findById(taskId);
+        io.opendrs.migration.domain.TaskPipeline pipeline = new io.opendrs.migration.domain.TaskPipeline();
+        pipeline.setTaskId(taskId);
+        pipeline.setSourceEndpointId(task.getSourceConnectionId());
+        pipeline.setTargetEndpointId(task.getTargetConnectionId());
+        pipeline.setCaptureOptions(Map.of());
+        pipeline.setReplayOptions(Map.of());
+        pipelineMapper.insert(pipeline);
+        return pipeline.getId();
     }
 
     private static ConnectionInfo connection(String name) {

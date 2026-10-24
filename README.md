@@ -1,393 +1,202 @@
 # OpenDRS
 
-Open data replication service (DRS). This repository is a **Maven multi-module** project:
+Open data replication service（开源数据复制服务）。通过 Web 界面完成 **MySQL → PostgreSQL** 的全量 + 增量迁移，以及 **MySQL ↔ MySQL 双向同步**。增量基于嵌入式 Debezium 读取 binlog，目标端按事务回放。
 
-- `opendrs-sink` — JDBC applier, PostgreSQL target dialect, MySQL→PostgreSQL ANTLR DDL converter (no Spring, no Kafka Connect plugin).
-- `opendrs-service` — Spring Boot app (`io.opendrs.OpenDRSApplication`). Incremental CDC applies Debezium events onto PostgreSQL through the sink.
-- `opendrs-web` — Vue 3 admin UI (Vite; **not** a Maven module).
+## 功能
 
-The service persists migration tasks with MyBatis, validates table mappings, runs a **synchronous precheck**, drives a **start/stop** coordinator via `job_phase` + `job_state`, and runs **one Debezium Engine** per job (schema + data snapshot, then streaming apply through the sink). There is no separate FULL dump round.
+| 能力 | 说明 |
+|---|---|
+| 全量迁移 | 初始快照逐行复制，无需单独的导出/导入回合 |
+| 增量迁移 | binlog CDC，快照完成后自动接续，任务持续运行 |
+| 结构迁移 | 单向任务自动在目标库建表（MySQL DDL → PostgreSQL）；双向任务要求两端表已存在 |
+| 预检查 | 异步执行：连接、版本、权限、binlog/GTID 参数、主键、目标实例状态、表存在性等，逐项通过/告警/阻断 |
+| 双向同步 | 两个方向各自全量+增量；GTID 打标 + 对端过滤防止回环 |
+| 任务监控 | 目标库回放 TPS、同步时延、事务执行/提交耗时（Prometheus 指标 + ECharts 展示） |
+| 任务状态机 | 启动 / 暂停（仅增量）/ 恢复 / 重启 / 结束 / 删除，非法操作置灰 |
 
-## Requirements
+## 快速开始
 
-- Java 21
-- Maven 3.8+
-- MySQL 8 (service metadata store only)
-
-## Stack
-
-- Spring Boot 4.1.1 / Spring Web MVC / Validation
-- **MyBatis** (`mybatis-spring-boot-starter` 4.1.0) — not JPA/Hibernate
-- Flyway for DDL
-- Jackson camelCase JSON
-- Embedded Debezium **3.6.1.Final** (`AsyncEmbeddedEngine` via `DebeziumEngine.create`; MySQL connector 3.6.1 — not 3.7 beta)
-
-Package / Maven groupId: `io.opendrs`.
-
-## Run locally
-
-Start the metadata database:
+要求：Docker（或 Podman）+ Docker Compose、JDK 21、Maven 3.8+、Node.js 18+。
 
 ```bash
-docker compose up -d
+# 一键构建并启动全部服务（后端 jar + 前端 bundle + compose 重建）
+sh deploy/dev.sh
 ```
 
-Default MySQL credentials match the application defaults (`opendrs` / `opendrs`, database `opendrs` on port `3306`).
+启动完成后访问 **http://localhost**（nginx 反代 `/api` 到后端）。`dev.sh` 末尾会自动探测 `http://127.0.0.1/api/v1/migration/connections` 直到就绪。
 
-Then:
+compose 栈包含：
+
+| 服务 | 端口 | 说明 |
+|---|---|---|
+| frontend (nginx) | 80 | Web UI + API 反代 |
+| backend | 8080 | Spring Boot 应用（host 网络） |
+| mysql | 3306 | 演示源库 + 服务元数据库（root/123456，库 `opendrs`） |
+| mysql2 | 3307 | 双向同步演示对端（root/123456，库 `bidir_test`） |
+| postgres | 5432 | 演示目标库（opendrs/opendrs，库 `opendrs`） |
+| prometheus | 9090 | 回放指标采集 |
+
+## 使用流程
+
+### 1. 准备数据源
+
+**数据源管理 → 新增数据源**，填写主机、端口、数据库、用户名、密码。
+
+- MySQL 8 非 SSL 连接需在「高级配置」中加 `"allowPublicKeyRetrieval": true`（caching_sha2_password 公钥检索）。
+- 建议先点「测试连接」。
+
+![数据源管理](docs/images/connections.png)
+
+### 2. 新建任务
+
+**任务管理 → 新建任务**，五步向导：
+
+1. **基本信息** — 任务名称、迁移模式（全量+增量 / 仅全量）
+2. **设置同步** — 源/目标数据源、同步拓扑（单向 / 双向）、同步对象（整库 / 按表）
+3. **高级设置** — 导出/导入并发数、回放并发数、冲突策略等
+4. **预检查** — 异步执行，结果逐项刷新；阻断项必须解决
+5. **任务确认** — 确认后任务进入「未启动」
+
+![向导：基本信息](docs/images/task-create-basic.png)
+
+![向导：设置同步](docs/images/task-create-sync.png)
+
+表级迁移可展开库、勾选具体表（左侧未选、右侧已选）：
+
+![向导：表级迁移](docs/images/task-create-tables.png)
+
+库级迁移按整库勾选：
+
+![向导：库级迁移](docs/images/task-create-schema.png)
+
+两端均为 MySQL 时可选「双向同步」：
+
+![向导：双向同步](docs/images/task-create-bidir.png)
+
+![向导：预检查](docs/images/task-create-precheck.png)
+
+预检查通过后确认任务信息并启动：
+
+![向导：任务确认](docs/images/task-create-confirm.png)
+
+### 3. 启动与运维
+
+任务列表按状态提供操作（不可用的置灰）：
+
+![任务列表](docs/images/task-list.png)
+
+| 状态 | 可用操作 |
+|---|---|
+| 未启动 | 启动、结束 |
+| 运行中 | 暂停（仅增量阶段）、结束 |
+| 已暂停 | 恢复、结束 |
+| 失败 | 重启、结束 |
+| 已结束 | 删除 |
+
+- **暂停**：停止 CDC 但保留断点，恢复后从原位置继续。
+- **结束**：释放任务资源；结束后只能删除。
+
+### 4. 观察任务
+
+任务详情页三个页签：
+
+- **基本信息** — 任务/实例信息 + 迁移进度（源位点、抓取位点、回放位点、回放时延；双向任务分正向/反向两块）
+
+![任务详情（双向任务的正/反向同步进度）](docs/images/task-detail.png)
+
+- **迁移日志** — 引擎与任务日志，可按级别筛选
+- **任务监控** — 目标库回放 TPS（count/s）、数据同步时延（s）、事务平均执行/提交耗时
+
+![任务监控](docs/images/task-monitor.png)
+
+## 支持的同步方式
+
+### 单向同步：MySQL → PostgreSQL
+
+最常用的迁移场景：存量数据全量搬迁，之后持续跟随 binlog 增量回放。
+
+前提（预检查会逐项校验）：
+
+- 源库 binlog 开启，格式 `binlog_format=ROW`、`binlog_row_image=FULL`，保留时长充足（默认要求 ≥ 3 天）
+- 所选表均为 InnoDB 引擎，且**均有主键**（增量回放按主键定位行）
+- 源用户具备 SELECT、RELOAD、REPLICATION SLAVE、REPLICATION CLIENT、SHOW DATABASES 权限
+- 目标 PostgreSQL 实例可连接、状态正常
+- 迁移模式支持「全量+增量」与「仅全量」；全量阶段自动在目标库建表（MySQL DDL 自动转换为 PostgreSQL）
+
+### 双向同步：MySQL ↔ MySQL
+
+两个方向各自独立同步（均为全量+增量），适合双 region 各写本地、数据互备的场景。
+
+前提（预检查会逐项校验）：
+
+- 两端均为 MySQL，GTID 开启（`gtid_mode=ON`、`enforce_gtid-consistency=ON`）
+- 两端 `server_id` / `server_uuid` 必须不同
+- 两端用户均具备 CDC 权限（SELECT、REPLICATION SLAVE、REPLICATION CLIENT、SHOW DATABASES 等）
+- **两端表结构已存在**（双向不做结构迁移）
+- 同步模式必须为「全量+增量」
+
+防回环原理：sink 回放事务时通过 `SET SESSION gtid_next` 把源端 GTID（增量）或任务级合成 GTID 命名空间（全量批次）写入目标 binlog；对端捕获按 GTID UUID 丢弃来自 peer 的事务。当前版本假设各自 region 只写本 region 的数据，不做跨 region 冲突检测。
+
+## API 概览
+
+统一前缀 `/api/v1/migration`，响应包 `{code, message, data}`（1000 成功）。示例：
 
 ```bash
-mvn -pl opendrs-service -am spring-boot:run
+# 列出数据源
+curl http://localhost/api/v1/migration/connections
+
+# 新建数据源
+curl -X POST http://localhost/api/v1/migration/connections \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"my-mysql","connection":{"type":"MYSQL","host":"127.0.0.1","port":3306,
+       "database":"demo","username":"root","password":"123456",
+       "extra":{"allowPublicKeyRetrieval":true}}}'
+
+# 任务生命周期
+curl -X POST http://localhost/api/v1/migration/tasks/{id}/precheck
+curl -X POST http://localhost/api/v1/migration/tasks/{id}/start
+curl -X POST http://localhost/api/v1/migration/tasks/{id}/stop      # 暂停
+curl -X POST http://localhost/api/v1/migration/tasks/{id}/start     # 恢复（已暂停时）
+curl -X POST http://localhost/api/v1/migration/tasks/{id}/terminate # 结束
+curl -X DELETE http://localhost/api/v1/migration/tasks/{id}         # 删除（须已结束）
+
+# 状态与观测
+curl http://localhost/api/v1/migration/tasks/{id}/status
+curl http://localhost/api/v1/migration/tasks/{id}/precheck
+curl 'http://localhost/api/v1/migration/tasks/{id}/logs?page=1&size=50'
 ```
 
-The service listens on `http://localhost:8080`.
-
-Admin UI (dev server proxies `/api` to port `8080`):
+## 本地开发
 
 ```bash
-cd opendrs-web && npm i && npm run dev
+# 后端：编译 / 测试 / 打包
+mvn compile
+mvn test                      # 88 个单测；两个 *IT 需要本机 Docker，无 Docker 自动跳过
+mvn -DskipTests package
+
+# 前端：热更新开发（代理 /api 到 :8080）
+cd opendrs-web && npm run dev     # http://localhost:5173
+
+# 修改后重新部署（等价于 dev.sh 的构建部分）
+mvn -q -DskipTests package && (cd opendrs-web && npm run build) \
+  && docker-compose -f docker-compose.yml -f docker-compose.app.yml up -d --build
 ```
 
-### Environment variables
+## 架构速览
 
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `OPENDRS_PORT` | `8080` | HTTP port |
-| `OPENDRS_DB_HOST` | `localhost` | Metadata MySQL host |
-| `OPENDRS_DB_PORT` | `3306` | Metadata MySQL port |
-| `OPENDRS_DB_NAME` | `opendrs` | Metadata database |
-| `OPENDRS_DB_USER` | `opendrs` | Metadata user |
-| `OPENDRS_DB_PASSWORD` | `opendrs` | Metadata password |
+Maven 多模块，`io.opendrs`：
 
-Flyway creates:
+- `opendrs-engine` — 无框架引擎层，对外只有 `MigrationEngine` 四个方法（`supportsPrecheck` / `migrateSchema` / `migrateData` / `precheck`），句柄立即返回、阻塞跑在引擎自己的守护线程池：
+  - `engine-capture` — 嵌入式 Debezium（MySQL binlog），offset / schema history 持久化在任务元数据库
+  - `engine-replay` — JDBC 事务回放，PostgreSQL / MySQL 目标方言
+  - `engine-precheck` — 规则化预检查（按 源→目标 类型匹配 profile）
+  - `engine-core` — 编排与表选择/映射
+- `opendrs-service` — Spring Boot：任务状态机（`job_phase` 阶段 × `job_state` 状态）、异步预检、任务调度、监控指标、MyBatis + Flyway
+- `opendrs-web` — Vue 3 + Element Plus + ECharts（非 Maven 模块，`npm run build` 产出由 nginx 挂载）
+- `opendrs-jdbc` / `opendrs-common` — 连接与方言基础设施、共享元数据类型
 
-- `connection_info` — source/target credentials (passwords live only here)
-- `migration_task` — task config + progress + FKs to connections
-- `debezium_offset` — Debezium `OffsetBackingStore` (`TaskOffsetBackingStore`, upsert by `task_id` + `offset_key`)
-- `debezium_schema_history` — Debezium 3.x `SchemaHistory` (`TaskSchemaHistory`, append by `task_id` + `record_seq`)
+## License
 
-Create still accepts nested `source` / `target` objects. The service inserts `connection_info` rows named `{taskName}-source` / `{taskName}-target` (including optional `extra`) and stores their ids on the task.
+[Apache License 2.0](LICENSE)。
 
-Independent connections can also be created, tested, and deleted under `/api/v1/migration/connections`. Create does **not** auto-test JDBC.
-
-## API contract
-
-Every HTTP body is:
-
-```json
-{
-  "code": 1000,
-  "message": "success",
-  "data": {}
-}
-```
-
-- Success: `code` is `1000`, `message` is `"success"`.
-- Business failures (`1001`–`1006`): **HTTP 200**, `code` is the business code, `message` is the error text.
-- System failures (`1500` DB, `1501` internal): **HTTP 500**, same envelope. SQL and stack traces are never returned.
-
-| Code | Meaning | HTTP |
-| --- | --- | --- |
-| 1000 | SUCCESS | 200 |
-| 1001 | PARAM_INVALID | 200 |
-| 1002 | TASK_NOT_FOUND | 200 |
-| 1003 | TASK_CONFLICT | 200 |
-| 1004 | CONNECTION_NOT_FOUND | 200 |
-| 1005 | CONNECTION_TEST_FAILED | 200 |
-| 1006 | CONNECTION_IN_USE | 200 |
-| 1500 | DB_ERROR | 500 |
-| 1501 | INTERNAL_ERROR | 500 |
-
-JSON is camelCase. Passwords are persisted on `connection_info` but always returned as `***`. Public ids are **BIGINT** (auto-increment). Task `name` and connection `name` are unique.
-
-### Connection `extra`
-
-Optional JSON object on request `ConnectionInfo`, persisted as `connection_info.extra_json`. Unknown keys are stored as-is. Do not put `database.server.id` here (that belongs in task options).
-
-| Engine | Key | Notes |
-| --- | --- | --- |
-| Oracle | `pdb` | After connect: `ALTER SESSION SET CONTAINER`. Not part of the JDBC URL. |
-| Oracle | `connectionType` | `SERVICE` (default) or `SID`. `database` is that value. |
-| MySQL | `useSsl` | Mapped to JDBC `useSSL`. |
-| MySQL | `serverTimezone` | JDBC `serverTimezone`. |
-
-`JdbcUrlBuilder` URLs:
-
-- MySQL: `jdbc:mysql://host:port/db` plus `useSSL` / `serverTimezone` query params from extra
-- Oracle SERVICE: `jdbc:oracle:thin:@//host:port/service`
-- Oracle SID: `jdbc:oracle:thin:@host:port:sid`
-
-### Connection endpoints
-
-| Method | Path | Notes |
-| --- | --- | --- |
-| `POST` | `/api/v1/migration/connections` | Persist only. Duplicate `name` → `1001`. No JDBC ping. |
-| `GET` | `/api/v1/migration/connections` | List saved connections. Password is always `***`. |
-| `DELETE` | `/api/v1/migration/connections/{id}` | Missing → `1004`. Referenced by a task → `1006`. |
-| `POST` | `/api/v1/migration/connections/test` | Body is request `ConnectionInfo`. Ping only, no persist. Fail → `1005`. |
-| `POST` | `/api/v1/migration/connections/{id}/test` | Ping the stored row (real password). Fail → `1005`. |
-
-Create request wraps `@NotBlank name` + `@Valid ConnectionInfo`:
-
-```http
-POST /api/v1/migration/connections
-Content-Type: application/json
-```
-
-```json
-{
-  "name": "oracle-hr",
-  "connection": {
-    "type": "ORACLE",
-    "host": "10.0.0.1",
-    "port": 1521,
-    "database": "ORCL",
-    "username": "cdc",
-    "password": "secret",
-    "extra": {
-      "pdb": "ORCLPDB1",
-      "connectionType": "SERVICE"
-    }
-  }
-}
-```
-
-Create response `data` includes `id`, `name`, `type`, `host`, `port`, `database`, `username`, `password` (`***`), `extra`, `createdAt`, `updatedAt`.
-
-Test success `data`: `{ "ok": true, "latencyMs": 12 }`.
-
-### Task endpoints
-
-| Method | Path | Notes |
-| --- | --- | --- |
-| `POST` | `/api/v1/migration/tasks` | Persist config + connections. `jobPhase=CREATED`, `jobState=null`. Does **not** auto-precheck. |
-| `GET` | `/api/v1/migration/tasks` | Summaries: id, name, mode, jobPhase, jobState, source.type, target.type, createdAt |
-| `GET` | `/api/v1/migration/tasks/{id}` | Detail VO (`jobPhase` + `jobState`) |
-| `GET` | `/api/v1/migration/tasks/{id}/status` | jobPhase + jobState + progress + placeholder offset |
-| `POST` | `/api/v1/migration/tasks/{id}/precheck` | Sync. Phase `CREATED`→`PRECHECKING`→`PRECHECKED`. Success also sets `jobState=STARTING` (auto-start). Fail: phase stays `PRECHECKING`, `jobState=FAILED`. HTTP 200 / `code` 1000 even when `data.ok=false`. |
-| `POST` | `/api/v1/migration/tasks/{id}/start` | CAS `jobState` `STOPPED`/`FAILED` → `STARTING` (phase unchanged). Reject `null` / `STARTING` / `RUNNING` / `STOPPING` (`1003`). Dispatcher attaches the thread. |
-| `POST` | `/api/v1/migration/tasks/{id}/stop` | `STARTING`→`STOPPED` (no `STOPPING`). `RUNNING`→`STOPPING` then the thread goes `STOPPED`. `STOPPING`/`STOPPED` idempotent. `FAILED`/`null` → `1003`. |
-| `DELETE` | `/api/v1/migration/tasks/{id}` | `1003` if `jobState` is `STARTING`/`RUNNING`/`STOPPING` (or in-flight `PRECHECKING`). |
-
-### Create example
-
-```http
-POST /api/v1/migration/tasks
-Content-Type: application/json
-```
-
-```json
-{
-  "name": "hr-oracle-to-mysql",
-  "mode": "FULL_AND_INCREMENTAL",
-  "source": {
-    "type": "ORACLE",
-    "host": "10.0.0.1",
-    "port": 1521,
-    "database": "ORCL",
-    "username": "cdc",
-    "password": "***",
-    "extra": {
-      "pdb": "ORCLPDB1",
-      "connectionType": "SERVICE"
-    }
-  },
-  "target": {
-    "type": "MYSQL",
-    "host": "10.0.0.2",
-    "port": 3306,
-    "database": "hr",
-    "username": "drs",
-    "password": "***",
-    "extra": {
-      "useSsl": false,
-      "serverTimezone": "UTC"
-    }
-  },
-  "tables": {
-    "objects": [
-      { "schema": "HR", "tables": ["EMPLOYEES", "DEPARTMENTS"] },
-      { "schema": "SCOTT", "tables": ["EMP"] }
-    ],
-    "mappings": {
-      "schema": [
-        { "source": "SCOTT", "target": "scott" }
-      ],
-      "tables": [
-        {
-          "sourceSchema": "HR",
-          "sourceTable": "EMPLOYEES",
-          "targetSchema": "hr",
-          "targetTable": "emp"
-        }
-      ]
-    }
-  },
-  "options": {
-    "fullDumpParallelism": 8,
-    "batchSize": 1000,
-    "databaseServerId": 85744
-  }
-}
-```
-
-`mode`: `FULL_ONLY` / `INCREMENTAL_ONLY` / `FULL_AND_INCREMENTAL`.  
-`source.type` / `target.type` (v1): `ORACLE` / `MYSQL`.
-
-Each `objects` item needs `schema` and either `allTables=true` or a non-empty `tables` list. `excludeTables` is stored as-is. Duplicate `schema` values in `objects` are rejected (`1001`). There is no `naming` / `LOWER` / `UPPER` field. If `mappings` is omitted, target names equal source names.
-
-### Mapping resolution
-
-1. Table mapping wins for that table.
-2. Else schema mapping + original table name.
-3. Else original `schema.table`.
-
-Examples: `SCOTT.EMP` + schema `SCOTT→scott` → `scott.EMP`; `HR.EMPLOYEES` + table map → `hr.emp`; `HR.DEPARTMENTS` with no map → `HR.DEPARTMENTS`.
-
-Create is rejected with `1001 PARAM_INVALID` when:
-
-1. `mappings.schema`: duplicate source, or two sources map to the same target.
-2. `mappings.tables`: duplicate `(sourceSchema, sourceTable)`, or two sources map to the same `(targetSchema, targetTable)`.
-3. Cross-layer: schema map says `HR → hr` but a table in `HR` has `targetSchema != hr`. Same `targetSchema` with a renamed table is allowed.
-4. Every mapped schema/table must be in `objects`. Explicit `tables` lists must include the mapped table; `allTables` only needs the schema. A mapped table listed in `excludeTables` is a conflict.
-
-### Precheck
-
-`POST /api/v1/migration/tasks/{id}/precheck` is synchronous (`MigrationPrecheckService`, not a `TaskJob` thread). No request body.
-
-Allowed when `jobState` is not in-flight (`STARTING`/`RUNNING`/`STOPPING`) and `jobPhase` is `CREATED` / `PRECHECKING` / `PRECHECKED`. Else `1003`. Missing task: `1002`. Missing `DbPreCheck` for the source or target type: `1001`.
-
-Flow:
-
-1. CAS phase → `PRECHECKING`, `jobState` → `null`.
-2. Expand `tables.objects` (`allTables` / `tables` / `excludeTables`, including globs like `TMP_*`) to `List<Table>` **before** dialect precheck. `listTables` only applies exact `TableRef` excludes.
-3. Source: `MysqlPreCheck.precheckSource` (via `DbPreChecks`). Target: `PostgresPreCheck.precheckTarget` on mapped target `TableRef`s (`MappingValidator` rules; unmapped names stay).
-4. All `CheckResult.ok` → `jobPhase=PRECHECKED`, `jobState=STARTING` (auto-start; dispatcher picks it up). `error_message` cleared.
-5. Any fail → phase stays `PRECHECKING`, `jobState=FAILED`. **Still** envelope `code=1000`. Do **not** set `STARTING` on failure. CDC/binlog/connect failures are `CheckResult`s, not `1001` / `1005`.
-
-Example success:
-
-```json
-{
-  "code": 1000,
-  "message": "success",
-  "data": {
-    "ok": true,
-    "jobPhase": "PRECHECKED",
-    "jobState": "STARTING",
-    "results": [
-      {
-        "ok": true,
-        "name": "schema_exists",
-        "message": "Schema exists: hr",
-        "table": { "schema": "hr", "table": "emp" }
-      },
-      {
-        "ok": true,
-        "name": "log_bin",
-        "message": "log_bin is ON",
-        "table": null
-      },
-      {
-        "ok": true,
-        "name": "table_absent",
-        "message": "Target table does not exist: hr.emp",
-        "table": { "schema": "hr", "table": "emp" }
-      }
-    ]
-  }
-}
-```
-
-Failed checks (still `code` 1000):
-
-```json
-{
-  "code": 1000,
-  "message": "success",
-  "data": {
-    "ok": false,
-    "jobPhase": "PRECHECKING",
-    "jobState": "FAILED",
-    "results": [
-      {
-        "ok": false,
-        "name": "log_bin",
-        "message": "log_bin is not ON",
-        "table": null
-      }
-    ]
-  }
-}
-```
-
-### Job phase and job state
-
-Two columns on `migration_task` (Flyway V2):
-
-| Column | Values |
-| --- | --- |
-| `job_phase` | `CREATED` \| `PRECHECKING` \| `PRECHECKED` \| `SCHEMA_SNAPSHOT` \| `FULL` \| `INCREMENTAL` |
-| `job_state` | `NULL` \| `STARTING` \| `RUNNING` \| `STOPPING` \| `STOPPED` \| `FAILED` |
-
-```
-phase:  CREATED → PRECHECKING → PRECHECKED → SCHEMA_SNAPSHOT → INCREMENTAL
-state:  null    → (null / FAILED) → STARTING → RUNNING → STOPPING → STOPPED
-                                    ↘ FAILED
-```
-
-- **Dispatcher** (`@Scheduled` ~2s, single JVM): `SELECT` rows with `job_state IN (STARTING, RUNNING)` that have no live `TaskJobRegistry` entry → `putIfAbsent` then submit the coordinator. Re-reads after register: if `STOPPED`, does not start. Never spawns for `STOPPING`/`STOPPED`/`FAILED`/`NULL`.
-- **Boot**: any `STOPPING` → `STOPPED` (do not resume those). `RUNNING` with no live thread is respawned by the dispatcher (resume stub).
-- **Thread after attach**: `STARTING`→`RUNNING`. Then **one Engine**:
-  1. If `job_phase=PRECHECKED`, CAS `SCHEMA_SNAPSHOT`. If `FULL` (legacy stored row), CAS `INCREMENTAL` so the job is not stuck. `CREATED`/`PRECHECKING` do not start an Engine.
-  2. **Capture** — a single `DebeziumEngine` (`snapshot.mode=initial`: schema yes / data yes / then stream). Same `SinkApplyChangeConsumer` for DDL, snapshot rows (`op=r`), and incremental `c/u/d`. Offset + schema history go to the metadata tables. When Debezium reports Initial Snapshot `COMPLETED`, CAS `job_phase=INCREMENTAL` and **keep the Engine running**. Stop only on user STOP / failure. Blocking initial snapshot vs binlog TTL is deferred.
-  3. Resume from `INCREMENTAL` (or `SCHEMA_SNAPSHOT` mid-snapshot) starts the same one Engine; `initial` skips a completed snapshot when an offset already exists.
-- **Start** (`STOPPED`/`FAILED` → `STARTING`, phase unchanged so resume stays on `SCHEMA_SNAPSHOT`/`INCREMENTAL`). Reject `null` (not prechecked), `STARTING`, `RUNNING`, `STOPPING`. Precheck-failed (`PRECHECKING`+`FAILED`) cannot start.
-- **Stop**: `STARTING`→`STOPPED` directly. `RUNNING`→`STOPPING` + `job.requestStop()` which **stops the running Engine**. Thread then `STOPPED` and `registry.remove`. `STOPPING`/`STOPPED` idempotent. `FAILED`/`null` → `1003`.
-- **Delete**: `1003` if `jobState` is `STARTING`/`RUNNING`/`STOPPING`, or phase `PRECHECKING` with `jobState` null.
-
-`database.server.id` comes from task `options.databaseServerId` (`options_json`), not connection `extra`. Connection fields map through `DbDialect.debeziumSourceFields` (`database.hostname`, port, user, password, db) plus `JdbcUrlBuilder` extra (`useSsl` → `database.ssl.mode`). Official `JdbcOffsetBackingStore` is not used (it `DELETE FROM` the whole offset table).
-
-### Status shape
-
-```json
-{
-  "id": 1,
-  "jobPhase": "FULL",
-  "jobState": "RUNNING",
-  "progress": {
-    "tablesTotal": 0,
-    "tablesDone": 0,
-    "rowsDone": 0,
-    "lagMs": null
-  },
-  "offset": { "scn": null, "gtid": null },
-  "error": null
-}
-```
-
-## Tests
-
-```bash
-mvn -q test
-```
-
-From the reactor root this runs `opendrs-sink` then `opendrs-service`.
-
-Uses in-memory H2 (MySQL compatibility mode) with a Flyway schema that still names tables `debezium_offset` / `debezium_schema_history`. Connection test APIs are mocked in CI (`JdbcConnectionFactory`); no live Oracle/MySQL is required. TaskJob CDC phases are covered with a **fake Engine**; offset/history stores run against H2.
-
-`MysqlBinlogCdcIT` is a **Testcontainers** MySQL 8.0 binlog test (not the metadata `docker-compose`). It is included in `mvn test` (`*IT` via Surefire). When Docker is available it starts `mysql:8.0` with ROW/FULL binlog, runs **one** production capture Engine, asserts a snapshot `SourceRecord` (`op=r`) for a row that existed before Engine start, then a CDC record for a JDBC insert. When Docker is missing, JUnit `@EnabledIfDockerAvailable` / `@Testcontainers(disabledWithoutDocker = true)` skips it.
-
-`MysqlToPostgresCdcIT` starts MySQL 8 + PostgreSQL. One Engine must snapshot the pre-existing seed row onto Postgres, then apply a later MySQL INSERT. Also skipped without Docker.
-
-## Out of scope (this batch)
-
-- Parallel SELECT/INSERT dump / table slicing
-- Incremental-snapshot signaling (blocking initial snapshot vs binlog TTL is deferred)
-- Oracle source connector / OffsetCapture SQL
-- Quartz
-- Connection update
-- Column mapping
-- Kafka Connect cluster (embedded Engine only)
-- Auth / Spring Security
-- naming LOWER/UPPER
+CDC 嵌入 [Debezium](https://debezium.io)（Apache 2.0）。第三方归属见 [NOTICE](NOTICE)。

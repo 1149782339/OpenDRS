@@ -3,7 +3,9 @@
         "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
 <mapper namespace="io.opendrs.migration.mapper.DebeziumSchemaHistoryMapper">
 
+    <!-- Task-level delete: history rows live on pipelines, so resolve the task's pipelines first. -->
     <delete id="deleteByTaskId">
-        DELETE FROM debezium_schema_history WHERE task_id = #{taskId}
+        DELETE FROM debezium_schema_histories
+        WHERE pipeline_id IN (SELECT id FROM task_pipelines WHERE task_id = #{taskId})
     </delete>
 </mapper>

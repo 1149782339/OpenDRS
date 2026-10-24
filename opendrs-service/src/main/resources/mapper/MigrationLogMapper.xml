@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="io.opendrs.migration.mapper.MigrationLogMapper">
+
+    <resultMap id="MigrationLogMap" type="io.opendrs.migration.domain.MigrationLog">
+        <id property="id" column="id"/>
+        <result property="taskId" column="task_id"/>
+        <result property="loggedAt" column="logged_at"/>
+        <result property="level" column="level"/>
+        <result property="message" column="message"/>
+    </resultMap>
+
+    <insert id="insertBatch">
+        INSERT INTO migration_logs (task_id, logged_at, level, message)
+        VALUES
+        <foreach collection="logs" item="log" separator=",">
+            (#{log.taskId}, #{log.loggedAt}, #{log.level}, #{log.message})
+        </foreach>
+    </insert>
+
+    <select id="findPage" resultMap="MigrationLogMap">
+        SELECT id, task_id, logged_at, level, message
+        FROM migration_logs
+        WHERE task_id = #{taskId}
+        <if test="level != null">
+            AND level = #{level}
+        </if>
+        ORDER BY id
+        LIMIT #{limit} OFFSET #{offset}
+    </select>
+
+    <select id="count" resultType="long">
+        SELECT COUNT(*)
+        FROM migration_logs
+        WHERE task_id = #{taskId}
+        <if test="level != null">
+            AND level = #{level}
+        </if>
+    </select>
+
+    <delete id="deleteByTaskId">
+        DELETE FROM migration_logs WHERE task_id = #{taskId}
+    </delete>
+</mapper>

@@ -1,146 +1,542 @@
 <script setup lang="ts">
 import { apiErrorMessage } from '@/api/http'
-import { precheckTask, startTask, stopTask } from '@/api/task'
-import { useTaskStatusStore } from '@/stores/taskStatus'
-import { isActiveJobState, type MigrationPrecheckResponse } from '@/types/api'
+import { getTask, getTaskStatus, listTaskLogs } from '@/api/task'
+import {
+  type ConnectionInfo,
+  type MigrationLogItem,
+  type MigrationLogLevel,
+  type MigrationOffset,
+  type MigrationStatusResponse,
+  type MigrationTaskResponse,
+} from '@/types/api'
+import { formatDateTime, formatLogTime } from '@/utils/datetime'
+import { DASH, DB_LABELS, isLiveTask, MODE_LABELS, PHASE_LABELS, stateOf } from '@/utils/taskStatus'
+import { ArrowLeft, Loading } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import { computed, onMounted, onUnmounted, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import TaskMonitor from '@/components/TaskMonitor.vue'
 
 const route = useRoute()
 const router = useRouter()
-const store = useTaskStatusStore()
 
 const taskId = computed(() => Number(route.params.id))
-const task = computed(() => store.task)
-const status = computed(() => store.status)
-const polling = computed(() => isActiveJobState(status.value?.jobState))
+const task = ref<MigrationTaskResponse | null>(null)
+const status = ref<MigrationStatusResponse | null>(null)
+const loading = ref(false)
 
-function notifyPrecheck(result: MigrationPrecheckResponse) {
-  if (result.ok) {
-    ElMessage.success(`预检查通过，任务已自动启动（jobState=${result.jobState}）`)
-    return
-  }
-  const failed = result.results?.filter((item) => !item.ok).map((item) => item.message) ?? []
-  ElMessage.warning(failed.length > 0 ? `预检查未通过：${failed.join('；')}` : '预检查未通过')
+type DetailTab = 'info' | 'logs' | 'monitor'
+const activeTab = ref<DetailTab>('info')
+/** 日志懒加载：第一次进入「迁移日志」页签才拉数据，之后切走再切回保留已加载内容。 */
+const logsVisited = ref(false)
+
+/** 后端每页固定给 20 条；超过一页才出翻页按钮。 */
+const PAGE_SIZE = 20
+const LEVELS: MigrationLogLevel[] = ['INFO', 'WARNING', 'ERROR']
+
+const logs = ref<MigrationLogItem[]>([])
+const logTotal = ref(0)
+const page = ref(1)
+/** 空串代表「全部级别」：el-select 把 null 当作未选择，会退回 placeholder。 */
+const level = ref<MigrationLogLevel | ''>('')
+const logLoading = ref(false)
+
+/** 任务状态：优先用 /status 轮询（含 暂停中/结束中），没轮到时退回任务详情。 */
+const stateView = computed(() => {
+  if (status.value) return stateOf(status.value)
+  if (task.value) return stateOf(task.value)
+  return { tone: 'none' as const, label: '' }
+})
+const tone = computed(() => stateView.value.tone)
+const stateLabel = computed(() => stateView.value.label)
+/** 迁移进度：位点与回放时延来自 /status 接口，随轮询刷新。 */
+const offset = computed(() => status.value?.offset ?? null)
+const lagText = computed(() => {
+  const lagMs = status.value?.progress.lagMs
+  if (lagMs == null) return DASH
+  return lagMs >= 10_000 ? `${(lagMs / 1000).toFixed(0)} s` : `${(lagMs / 1000).toFixed(1)} s`
+})
+
+/**
+ * 同步进度的一个方向块。双向同步任务拆成「正向同步进度」「反向同步进度」两块，各自有位点；
+ * 单向任务只有一块、不显示标题。回放时延目前只有正向一份（/status 的 lagMs）。
+ */
+interface ProgressBlock {
+  title: string | null
+  offset: MigrationOffset | null
+  lag: string | null
 }
 
-async function load() {
+const progressBlocks = computed<ProgressBlock[]>(() => {
+  const forward: ProgressBlock = {
+    title: null,
+    offset: offset.value,
+    lag: lagText.value,
+  }
+  const reverse = status.value?.reverse ?? null
+  if (!reverse) return [forward]
+  return [
+    { title: '正向同步进度', offset: forward.offset, lag: forward.lag },
+    { title: '反向同步进度', offset: reverse, lag: null },
+  ]
+})
+/** 迁移阶段独立成栏，任何状态都显示：失败时一眼看出死在结构/全量/增量哪一步。 */
+const phaseLabel = computed(() => (task.value ? PHASE_LABELS[task.value.phase] : ''))
+const lastPage = computed(() => Math.max(1, Math.ceil(logTotal.value / PAGE_SIZE)))
+const showPager = computed(() => logTotal.value > PAGE_SIZE)
+
+let pollTimer: ReturnType<typeof setInterval> | null = null
+
+function hostPort(connection: ConnectionInfo | null | undefined): string {
+  if (!connection) return DASH
+  return `${connection.host}:${connection.port}`
+}
+
+async function loadTask(silent = false) {
+  if (!silent) loading.value = true
   try {
-    await store.load(taskId.value)
+    task.value = await getTask(taskId.value)
   } catch (error) {
-    ElMessage.error(apiErrorMessage(error))
+    if (!silent) ElMessage.error(apiErrorMessage(error))
+  } finally {
+    if (!silent) loading.value = false
+    syncPolling()
   }
 }
 
-async function onPrecheck() {
+/** 位点/时延随任务轮询静默刷新，拉失败不打断页面（任务接口是主数据源）。 */
+async function loadStatus() {
   try {
-    const result = await precheckTask(taskId.value)
-    notifyPrecheck(result)
-    await store.load(taskId.value)
-  } catch (error) {
-    ElMessage.error(apiErrorMessage(error))
+    status.value = await getTaskStatus(taskId.value)
+  } catch {
+    // 静默：进度块显示旧值或破折号
   }
 }
 
-async function onStart() {
+/**
+ * 取一页日志。若用户正停在最后一页，新写入的行会把页码往后推一格，
+ * 这里自动跟到新的最后一页，免得「日志一直在写但屏幕不动」。
+ * 首次加载（还不知道总数）不跟，否则会直接从第 1 页跳到最后一页。
+ */
+async function loadLogs(target = page.value, silent = false) {
+  const wasLast = logTotal.value > 0 && target >= lastPage.value
+  if (!silent) logLoading.value = true
   try {
-    const next = await startTask(taskId.value)
-    ElMessage.success(`已启动（jobState=${next.jobState}）`)
-    await store.load(taskId.value)
+    const result = await listTaskLogs(taskId.value, {
+      level: level.value === '' ? null : level.value,
+      page: target,
+      size: PAGE_SIZE,
+    })
+    logTotal.value = result.total
+    const maxPage = Math.max(1, Math.ceil(result.total / PAGE_SIZE))
+    if (wasLast && maxPage > target) {
+      await loadLogs(maxPage, silent)
+      return
+    }
+    page.value = Math.min(target, maxPage)
+    logs.value = result.items
   } catch (error) {
-    ElMessage.error(apiErrorMessage(error))
+    if (!silent) ElMessage.error(apiErrorMessage(error))
+  } finally {
+    if (!silent) logLoading.value = false
   }
 }
 
-async function onStop() {
-  try {
-    const next = await stopTask(taskId.value)
-    ElMessage.success(`已请求停止（jobState=${next.jobState}）`)
-    await store.load(taskId.value)
-  } catch (error) {
-    ElMessage.error(apiErrorMessage(error))
+async function refreshAll(silent = false) {
+  await loadTask(silent)
+  await loadStatus()
+  if (activeTab.value === 'logs' && logsVisited.value) {
+    await loadLogs(page.value, silent)
   }
+}
+
+/** 任务在动就 3s 刷一次状态和当前页日志；结束之后停掉，页面不再自己动。 */
+function syncPolling() {
+  const live = task.value != null && isLiveTask(task.value)
+  if (live && pollTimer == null) {
+    pollTimer = setInterval(() => {
+      void refreshAll(true)
+    }, 3000)
+  } else if (!live && pollTimer != null) {
+    clearInterval(pollTimer)
+    pollTimer = null
+  }
+}
+
+function onLevelChange() {
+  page.value = 1
+  void loadLogs(1)
+}
+
+function onPageChange(next: number) {
+  void loadLogs(next)
 }
 
 watch(taskId, () => {
   if (!Number.isNaN(taskId.value)) {
-    void load()
+    page.value = 1
+    level.value = ''
+    logsVisited.value = false
+    activeTab.value = 'info'
+    void refreshAll()
+  }
+})
+
+watch(activeTab, (tab) => {
+  if (tab === 'logs' && !logsVisited.value) {
+    logsVisited.value = true
+    void loadLogs(1)
   }
 })
 
 onMounted(() => {
-  void load()
+  void refreshAll()
 })
 
 onUnmounted(() => {
-  store.reset()
+  if (pollTimer != null) {
+    clearInterval(pollTimer)
+    pollTimer = null
+  }
 })
 </script>
 
 <template>
-  <div v-loading="store.loading">
-    <div class="page-toolbar">
-      <h2>任务详情 #{{ taskId }}</h2>
-      <div>
-        <el-button @click="router.push('/tasks')">返回列表</el-button>
-        <el-button @click="load">刷新</el-button>
-        <el-button type="primary" @click="onPrecheck">预检查</el-button>
-        <el-button type="success" @click="onStart">启动</el-button>
-        <el-button type="warning" @click="onStop">停止</el-button>
-      </div>
+  <div v-loading="loading" class="detail">
+    <div class="back-row">
+      <span class="back" @click="router.push('/tasks')">
+        <el-icon><ArrowLeft /></el-icon>
+        <span>任务列表</span>
+      </span>
     </div>
 
-    <el-alert
-      v-if="polling"
-      title="任务运行中，每 2 秒轮询一次状态"
-      type="info"
-      :closable="false"
-      show-icon
-      class="status-alert"
-    />
+    <el-tabs v-model="activeTab" class="detail-tabs">
+      <el-tab-pane label="基本信息" name="info">
+        <template v-if="task">
+          <section class="block">
+            <h3>任务信息</h3>
+            <div class="kv">
+              <div class="k">任务名称</div>
+              <div class="v">{{ task.name }}</div>
+              <div class="k">任务ID</div>
+              <div class="v mono" :title="task.publicId">{{ task.publicId }}</div>
 
-    <el-descriptions v-if="task" title="配置" :column="2" border class="block">
-      <el-descriptions-item label="名称">{{ task.name }}</el-descriptions-item>
-      <el-descriptions-item label="模式">{{ task.mode }}</el-descriptions-item>
-      <el-descriptions-item label="阶段">{{ task.jobPhase }}</el-descriptions-item>
-      <el-descriptions-item label="状态">{{ task.jobState ?? '—' }}</el-descriptions-item>
-      <el-descriptions-item label="源">
-        {{ task.source.type }} {{ task.source.host }}:{{ task.source.port }}/{{ task.source.database }}
-      </el-descriptions-item>
-      <el-descriptions-item label="目标">
-        {{ task.target.type }} {{ task.target.host }}:{{ task.target.port }}/{{ task.target.database }}
-      </el-descriptions-item>
-    </el-descriptions>
+              <div class="k">任务创建时间</div>
+              <div class="v">{{ formatDateTime(task.createdAt) }}</div>
+              <div class="k">迁移模式</div>
+              <div class="v">{{ MODE_LABELS[task.mode] ?? task.mode }}</div>
 
-    <el-descriptions v-if="status" title="运行状态" :column="2" border class="block">
-      <el-descriptions-item label="jobPhase">{{ status.jobPhase }}</el-descriptions-item>
-      <el-descriptions-item label="jobState">{{ status.jobState ?? '—' }}</el-descriptions-item>
-      <el-descriptions-item label="tablesTotal">{{ status.progress?.tablesTotal }}</el-descriptions-item>
-      <el-descriptions-item label="tablesDone">{{ status.progress?.tablesDone }}</el-descriptions-item>
-      <el-descriptions-item label="rowsDone">{{ status.progress?.rowsDone }}</el-descriptions-item>
-      <el-descriptions-item label="lagMs">{{ status.progress?.lagMs ?? '—' }}</el-descriptions-item>
-      <el-descriptions-item label="gtid">{{ status.offset?.gtid ?? '—' }}</el-descriptions-item>
-      <el-descriptions-item label="scn">{{ status.offset?.scn ?? '—' }}</el-descriptions-item>
-      <el-descriptions-item label="error" :span="2">
-        <span :class="{ error: status.error }">{{ status.error ?? '—' }}</span>
-      </el-descriptions-item>
-    </el-descriptions>
+              <div class="k">任务状态</div>
+              <div class="v">
+                <span v-if="stateLabel" class="status-text" :class="`status-${tone}`">
+                  <el-icon v-if="tone === 'running'" class="is-loading"><Loading /></el-icon>
+                  <span>{{ stateLabel }}</span>
+                </span>
+                <span v-else>{{ DASH }}</span>
+              </div>
+              <div class="k">迁移阶段</div>
+              <div class="v"><span class="phase-tag">{{ phaseLabel }}</span></div>
+            </div>
+          </section>
 
-    <el-card v-if="task" header="表选择 / 选项" class="block">
-      <pre class="json-block">{{ JSON.stringify({ tables: task.tables, options: task.options }, null, 2) }}</pre>
-    </el-card>
+          <section class="block">
+            <h3>迁移实例信息</h3>
+            <div class="kv">
+              <div class="k">源库引擎</div>
+              <div class="v">{{ DB_LABELS[task.source.type] ?? task.source.type }}</div>
+              <div class="k">IP地址</div>
+              <div class="v mono">{{ hostPort(task.source) }}</div>
+
+              <div class="k">目标库引擎</div>
+              <div class="v">{{ DB_LABELS[task.target.type] ?? task.target.type }}</div>
+              <div class="k">IP地址</div>
+              <div class="v mono">{{ hostPort(task.target) }}</div>
+            </div>
+          </section>
+
+          <section class="block">
+            <h3>迁移进度</h3>
+            <template v-for="(block, index) in progressBlocks" :key="index">
+              <h4 v-if="block.title" class="direction-title">{{ block.title }}</h4>
+              <div class="kv">
+                <div class="k">更新时间</div>
+                <div class="v kv-wide">{{ block.offset?.updatedAt ?? DASH }}</div>
+                <div class="k">源位点</div>
+                <div class="v mono">{{ block.offset?.source ?? DASH }}</div>
+                <div class="k">抓取位点</div>
+                <div class="v mono">{{ block.offset?.captured ?? DASH }}</div>
+                <div class="k">回放位点</div>
+                <div class="v mono">{{ block.offset?.applied ?? DASH }}</div>
+                <div class="k">回放时延</div>
+                <div class="v">{{ block.lag ?? DASH }}</div>
+              </div>
+            </template>
+          </section>
+        </template>
+        <el-empty v-else-if="!loading" description="任务不存在或已删除" />
+      </el-tab-pane>
+
+      <el-tab-pane label="迁移日志" name="logs">
+        <section class="block">
+          <div class="log-head">
+            <h3>迁移日志</h3>
+            <div class="log-tools">
+              <el-select
+                v-model="level"
+                size="small"
+                class="level-select"
+                placeholder="全部级别"
+                @change="onLevelChange"
+              >
+                <el-option label="全部级别" value="" />
+                <el-option v-for="item in LEVELS" :key="item" :label="item" :value="item" />
+              </el-select>
+              <el-button size="small" :loading="logLoading" @click="loadLogs()">刷新</el-button>
+            </div>
+          </div>
+
+          <el-table v-loading="logLoading" :data="logs" size="small" class="log-table" empty-text="暂无日志">
+            <el-table-column label="时间" width="176">
+              <template #default="{ row }">
+                <span class="mono time">{{ formatLogTime(row.loggedAt) }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="级别" width="92">
+              <template #default="{ row }">
+                <span class="lv" :class="`lv-${row.level.toLowerCase()}`">{{ row.level }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="message" label="描述" min-width="320" show-overflow-tooltip />
+          </el-table>
+
+          <div class="log-foot">
+            <span class="total">共 {{ logTotal }} 条</span>
+            <el-pagination
+              v-if="showPager"
+              :current-page="page"
+              :page-size="PAGE_SIZE"
+              :total="logTotal"
+              layout="prev, pager, next"
+              background
+              @current-change="onPageChange"
+            />
+          </div>
+        </section>
+      </el-tab-pane>
+
+      <el-tab-pane label="任务监控" name="monitor" lazy>
+        <section class="block">
+          <TaskMonitor v-if="task" :task-id="taskId" />
+          <el-empty v-else-if="!loading" description="任务不存在或已删除" />
+        </section>
+      </el-tab-pane>
+    </el-tabs>
   </div>
 </template>
 
 <style scoped>
+.back-row {
+  padding-bottom: 6px;
+}
+
+.back {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
+  cursor: pointer;
+}
+
+.back:hover {
+  color: var(--el-color-primary);
+}
+
+/* 页签内容直接接在页签栏下面，不再套一层卡片间距；选中的页签才有下划线。 */
+.detail-tabs :deep(.el-tabs__header) {
+  margin-bottom: 0;
+}
+
+.detail-tabs :deep(.el-tabs__nav-wrap::after) {
+  height: 1px;
+  background: var(--el-border-color-light);
+}
+
+.detail-tabs :deep(.el-tabs__item) {
+  font-size: 14px;
+}
+
+.detail-tabs :deep(.el-tabs__content) {
+  padding-top: 2px;
+}
+
 .block {
-  margin-bottom: 16px;
+  margin-top: 22px;
+  background: #fff;
+  border-radius: 8px;
+  padding: 18px 20px;
 }
-.status-alert {
-  margin-bottom: 16px;
+
+/* 分组标题：面板里唯一的结构入口，必须明显强于下面的键值行。
+   15px/600 + 最深色，与 13px 的 direction-title 拉开一级。 */
+.block h3 {
+  margin: 0 0 10px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+  letter-spacing: 0.01em;
 }
-.error {
-  color: #f56c6c;
+
+.direction-title {
+  margin: 14px 0 2px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--el-text-color-regular);
+}
+
+.direction-title:first-of-type {
+  margin-top: 2px;
+}
+
+.kv {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr) 96px minmax(0, 1fr);
+  column-gap: 24px;
+}
+
+.kv > div {
+  padding: 9px 0;
+  min-width: 0;
+  font-size: 13px;
+}
+
+.k {
+  color: var(--el-text-color-secondary);
+}
+
+.kv-wide {
+  grid-column: 2 / 5;
+}
+
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+
+.status-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-weight: 500;
+}
+
+.status-running {
+  background: var(--el-color-success-light-9);
+  color: var(--el-color-success);
+  padding: 0 7px;
+  border-radius: 9px;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.status-done {
+  background: var(--el-color-primary-light-9);
+  color: var(--el-color-primary);
+  padding: 0 7px;
+  border-radius: 9px;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.status-failed {
+  background: var(--el-color-danger-light-9);
+  color: var(--el-color-danger);
+  padding: 0 7px;
+  border-radius: 9px;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.status-none {
+  color: var(--el-text-color-secondary);
+}
+
+/* 与日志级别 .lv-info 同款：迁移阶段是关键信息，用浅蓝胶囊提醒目。 */
+.phase-tag {
+  display: inline-block;
+  padding: 0 7px;
+  border-radius: 9px;
+  font-size: 12px;
+  line-height: 18px;
+  background: var(--el-color-primary-light-9);
+  color: var(--el-color-primary);
+}
+
+.log-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.log-head h3 {
+  margin: 0;
+}
+
+.log-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.level-select {
+  width: 118px;
+}
+
+.log-table :deep(.el-table__cell) {
+  padding: 7px 0;
+}
+
+.time {
+  color: var(--el-text-color-secondary);
+}
+
+.lv {
+  display: inline-block;
+  padding: 0 7px;
+  border-radius: 9px;
+  font-size: 11px;
+  line-height: 17px;
+}
+
+.lv-info {
+  background: var(--el-color-primary-light-9);
+  color: var(--el-color-primary);
+}
+
+.lv-warning {
+  background: var(--el-color-warning-light-9);
+  color: var(--el-color-warning);
+}
+
+.lv-error {
+  background: var(--el-color-danger-light-9);
+  color: var(--el-color-danger);
+}
+
+.log-foot {
+  display: flex;
+  align-items: center;
+  padding-top: 12px;
+}
+
+.total {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.log-foot .el-pagination {
+  margin-left: auto;
 }
 </style>

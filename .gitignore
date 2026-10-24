@@ -48,3 +48,18 @@ logs/
 # Frontend
 opendrs-web/node_modules/
 opendrs-web/dist/
+
+# Local container data (docker-compose bind mounts)
+mysql_data/
+mysql2_data/
+pg_data/
+
+# Local assistant state, ad-hoc verification artifacts, and a stray "NUL"
+# created by a Windows-style redirect in Git Bash (reserved device name, cannot
+# be unlinked from this shell - delete it from Explorer if you want it gone).
+.workbuddy-ai/
+outputs/
+NUL
+
+# cdc-load tool: keep the runnable jar (driver jar stays ignored, fetched from maven)
+!tools/cdc-load/dist/cdc-load-tool.jar

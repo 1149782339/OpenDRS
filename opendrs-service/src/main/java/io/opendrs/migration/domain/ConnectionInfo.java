@@ -1,5 +1,7 @@
 package io.opendrs.migration.domain;
 
+import io.opendrs.common.metadata.DatabaseType;
+import io.opendrs.jdbc.JdbcConnectionConfig;
 import java.time.Instant;
 import java.util.Map;
 
@@ -103,5 +105,30 @@ public class ConnectionInfo {
 
     public void setUpdatedAt(Instant updatedAt) {
         this.updatedAt = updatedAt;
+    }
+
+    /** Migration-facing enum to the neutral {@link DatabaseType} shared with mechanism modules. */
+    public DatabaseType toDatabaseType() {
+        return switch (type) {
+            case MYSQL -> DatabaseType.MYSQL;
+            case ORACLE -> DatabaseType.ORACLE;
+            case POSTGRESQL -> DatabaseType.POSTGRESQL;
+        };
+    }
+
+    /**
+     * Boundary projection: stored connection row to the neutral {@code opendrs-jdbc} descriptor.
+     * Every {@code JdbcConnectionFactory.open} call in the service goes through this.
+     */
+    public JdbcConnectionConfig toJdbcConfig() {
+        return JdbcConnectionConfig.builder()
+                .type(toDatabaseType())
+                .host(host)
+                .port(port == null ? 0 : port)
+                .database(dbName)
+                .username(username)
+                .password(password)
+                .extras(extra)
+                .build();
     }
 }
