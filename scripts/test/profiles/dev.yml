@@ -11,14 +11,14 @@ env:
       host: "127.0.0.1"
       port: 3406
       user: "e2e"
-      password: "${MYSQL1_PASSWORD}"
+      password: "123456"
       database: "e2e_source"
       root_password: "123456"
     postgres1:
       host: "127.0.0.1"
       port: 5432
       user: "opendrs"
-      password: "${PG1_PASSWORD}"
+      password: "123456"
       database: "e2e_target"
 
 config:

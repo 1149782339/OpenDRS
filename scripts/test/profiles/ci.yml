@@ -1,6 +1,7 @@
 # CI profile: the full suite. Stages run in the listed order; cases inside a
-# stage run in parallel (capped by config.max_parallel). Every ${VAR} is expanded
-# from the process environment — unset variables fail fast at fixture setup.
+# stage run in parallel (capped by config.max_parallel). Passwords are hardcoded
+# on purpose — these are disposable local/CI containers. ${VAR} expansion is
+# still supported for when a profile needs real secrets.
 
 env:
   endpoint:
@@ -12,14 +13,14 @@ env:
       host: "127.0.0.1"
       port: 3406
       user: "e2e"
-      password: "${MYSQL1_PASSWORD}"
+      password: "123456"
       database: "e2e_source"
       root_password: "123456"
     postgres1:           # migration target
       host: "127.0.0.1"
       port: 5432
       user: "opendrs"
-      password: "${PG1_PASSWORD}"
+      password: "123456"
       database: "e2e_target"
 
 config:
