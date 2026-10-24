@@ -67,14 +67,24 @@ class Env:
         return self.raw.get("datasources", {})
 
 
-@pytest.fixture(scope="session")
-def env(request: pytest.FixtureRequest) -> Env:
+def _load_profile(request: pytest.FixtureRequest) -> dict:
     profile_path = request.config.getoption("--profile")
     with open(profile_path, encoding="utf-8") as handle:
-        profile = yaml.safe_load(handle)
+        return yaml.safe_load(handle)
+
+
+@pytest.fixture(scope="session")
+def env(request: pytest.FixtureRequest) -> Env:
+    profile = _load_profile(request)
     if "env" not in profile:
-        raise RuntimeError(f"profile {profile_path} has no env section")
+        raise RuntimeError("profile has no env section")
     return Env(_expand(profile["env"]))
+
+
+@pytest.fixture(scope="session")
+def fw_config(request: pytest.FixtureRequest) -> dict:
+    """framework 调度配置（max_parallel、case_timeout_sec 等），用例可取超时上限。"""
+    return _load_profile(request).get("config", {})
 
 
 @dataclasses.dataclass
