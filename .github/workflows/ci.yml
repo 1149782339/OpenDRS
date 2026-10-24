@@ -47,3 +47,57 @@ jobs:
 
       - name: Type-check and build
         run: npm run build
+
+  e2e:
+    name: E2E (app stack smoke)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: opendrs-web/package-lock.json
+
+      # Host-side build, containers only run it (mirrors deploy/dev.sh's approach).
+      - name: Build backend jar
+        run: mvn -q -B -DskipTests package
+
+      - name: Build frontend bundle
+        run: cd opendrs-web && npm ci && npm run build
+
+      # Application stack only (backend + frontend + prometheus + metadata MySQL).
+      # Migration data sources in scripts/test/docker-compose.yml are intentionally
+      # not started in this phase.
+      - name: Start application stack
+        run: docker compose up -d --wait
+
+      - name: Wait for API through nginx
+        run: |
+          for i in $(seq 1 90); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 \
+              http://127.0.0.1/api/v1/migration/connections || true)
+            [ "$code" = "200" ] && exit 0
+            sleep 1
+          done
+          docker compose logs --tail 60 backend
+          exit 1
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Run e2e smoke
+        working-directory: scripts/test
+        run: uv run e2e_smoke.py
+
+      - name: Teardown
+        if: always()
+        run: docker compose down -v

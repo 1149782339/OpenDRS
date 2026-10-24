@@ -179,7 +179,7 @@ cd opendrs-web && npm run dev     # http://localhost:5173
 
 # 修改后重新部署（等价于 dev.sh 的构建部分）
 mvn -q -DskipTests package && (cd opendrs-web && npm run build) \
-  && docker-compose -f docker-compose.yml -f docker-compose.app.yml up -d --build
+  && docker compose up -d --build
 ```
 
 ## 架构速览

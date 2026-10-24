@@ -1,0 +1,52 @@
+# Migration data sources for e2e: binlog-enabled source MySQL + PostgreSQL target.
+# NOT part of the application stack — start them only when a run needs real data:
+#
+#   docker compose -f docker-compose.yml -f scripts/test/docker-compose.yml up -d --wait
+#
+# This file must come AFTER the root docker-compose.yml on the command line so
+# relative volume paths still resolve against the repository root.
+services:
+  mysql-source:
+    image: docker.m.daocloud.io/library/mysql:8.0
+    container_name: opendrs-mysql-source
+    environment:
+      MYSQL_ROOT_PASSWORD: "123456"
+      MYSQL_ROOT_HOST: "%"
+      MYSQL_DATABASE: e2e_source
+      MYSQL_USER: e2e
+      MYSQL_PASSWORD: "123456"
+    network_mode: host
+    command:
+      - --log-bin=mysql-bin
+      - --binlog-format=ROW
+      - --server-id=1
+      - --gtid-mode=ON
+      - --enforce-gtid-consistency=ON
+      - --port=3406
+      - --mysqlx-port=34060
+      - --bind-address=0.0.0.0
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - ./mysql_source_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-P3406", "-ue2e", "-p123456"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  postgres:
+    image: docker.m.daocloud.io/library/postgres:17
+    container_name: opendrs-postgres
+    environment:
+      POSTGRES_USER: opendrs
+      POSTGRES_PASSWORD: "123456"
+      POSTGRES_DB: e2e_target
+    network_mode: host
+    volumes:
+      - ./pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U opendrs -d e2e_target"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
