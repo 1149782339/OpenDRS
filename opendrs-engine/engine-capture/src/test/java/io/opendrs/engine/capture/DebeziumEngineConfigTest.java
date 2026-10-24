@@ -112,6 +112,27 @@ class DebeziumEngineConfigTest {
                 .hasMessageContaining("databaseServerId");
     }
 
+    @Test
+    void snapshotThreadSettingsArePassedThrough() {
+        EngineSpec spec = new EngineSpec(
+                7L, 7L, mysql(), tables(), 85744L, null, TableSelection.all(),
+                io.opendrs.engine.replay.metrics.ReplayMetrics.NONE, null,
+                io.opendrs.engine.replay.metrics.ReplayDirection.FORWARD,
+                null, null, 8, 4);
+        Properties props = DebeziumEngineConfig.capture(spec);
+
+        assertThat(props.getProperty("snapshot.max.threads")).isEqualTo("8");
+        assertThat(props.getProperty("snapshot.max.threads.multiplier")).isEqualTo("4");
+    }
+
+    @Test
+    void snapshotThreadSettingsAbsentKeepConnectorDefaults() {
+        Properties props = DebeziumEngineConfig.capture(spec(7L, TableSelection.all()));
+
+        assertThat(props.getProperty("snapshot.max.threads")).isNull();
+        assertThat(props.getProperty("snapshot.max.threads.multiplier")).isNull();
+    }
+
     private static EngineSpec spec(long taskId, TableSelection selection) {
         return new EngineSpec(taskId, mysql(), tables(), 85744L, null, selection);
     }

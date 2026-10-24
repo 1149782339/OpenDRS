@@ -499,7 +499,7 @@ class MigrationTaskApiTest {
                       "exportConcurrency": 8,
                       "importConcurrency": 8,
                       "importMode": "COPY",
-                      "chunkSize": 520000,
+                      "chunkMultiplier": 4,
                       "charsetAdapt": "AUTO"
                     },
                     "incremental": {

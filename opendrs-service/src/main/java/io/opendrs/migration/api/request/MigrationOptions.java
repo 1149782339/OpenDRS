@@ -1,6 +1,8 @@
 package io.opendrs.migration.api.request;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import java.util.List;
 import java.util.UUID;
@@ -16,6 +18,7 @@ import java.util.UUID;
  * <p>Every field is nullable on the wire on purpose: create() runs {@link #withDefaults()} before
  * validating and persisting, so a client may send only the piece it cares about.
  */
+@JsonIgnoreProperties(ignoreUnknown = true)
 public record MigrationOptions(
         Topology topology,
         @Valid Selection selection,
@@ -130,13 +133,14 @@ public record MigrationOptions(
         }
     }
 
-    /** Full-load behaviour. {@code chunkSize} replaces the old {@code batchSize}. */
+    /** Full-load behaviour. {@code chunkMultiplier} feeds Debezium's {@code snapshot.max.threads.multiplier}. */
     public record FullSettings(
             List<FullObjectType> objectTypes,
             @Min(1) Integer exportConcurrency,
             @Min(1) Integer importConcurrency,
             ImportMode importMode,
-            @Min(1) Long chunkSize,
+            /** Debezium snapshot threads multiplier: 实际分片数 ≈ 并发线程数 × 分片倍率。 */
+            @Min(1) @Max(10) Integer chunkMultiplier,
             CharsetAdapt charsetAdapt
     ) {
         public static FullSettings defaults() {
@@ -145,7 +149,7 @@ public record MigrationOptions(
                     8,
                     8,
                     ImportMode.COPY,
-                    520000L,
+                    4,
                     CharsetAdapt.AUTO);
         }
 
@@ -156,7 +160,7 @@ public record MigrationOptions(
                     exportConcurrency != null ? exportConcurrency : d.exportConcurrency(),
                     importConcurrency != null ? importConcurrency : d.importConcurrency(),
                     importMode != null ? importMode : d.importMode(),
-                    chunkSize != null ? chunkSize : d.chunkSize(),
+                    chunkMultiplier != null ? chunkMultiplier : d.chunkMultiplier(),
                     charsetAdapt != null ? charsetAdapt : d.charsetAdapt());
         }
     }

@@ -165,7 +165,9 @@ public class DefaultMigrationEngine implements MigrationEngine {
                 param.gtidLoop(),
                 param.direction(),
                 param.txApplierConcurrency(),
-                param.tableApplierConcurrency());
+                param.tableApplierConcurrency(),
+                param.snapshotThreads(),
+                param.snapshotThreadsMultiplier());
         return cdcEngineFactory.create(spec, onSnapshot, listener, param.lagListener());
     }
 

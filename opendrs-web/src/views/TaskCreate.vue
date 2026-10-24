@@ -1131,9 +1131,9 @@ onUnmounted(() => {
               <el-icon class="ops-help" tabindex="0"><QuestionFilled /></el-icon>
             </el-tooltip>
           </el-form-item>
-          <el-form-item label="分片记录数" required>
-            <el-input-number v-model="store.form.chunkSize" :min="1000" :step="10000" class="field field-narrow" />
-            <el-tooltip content="每一片的记录数，决定单次提交的批量大小。" placement="top" effect="dark">
+          <el-form-item label="分片倍率" required>
+            <el-input-number v-model="store.form.chunkMultiplier" :min="1" :max="10" class="field field-narrow" />
+            <el-tooltip content="实际分片数 ≈ 并发线程数 × 分片倍率" placement="top" effect="dark">
               <el-icon class="ops-help" tabindex="0"><QuestionFilled /></el-icon>
             </el-tooltip>
           </el-form-item>

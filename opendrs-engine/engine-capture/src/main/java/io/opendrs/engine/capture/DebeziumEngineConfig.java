@@ -56,6 +56,15 @@ public final class DebeziumEngineConfig {
         props.setProperty("snapshot.mode", SNAPSHOT_MODE_INITIAL);
         props.setProperty("notification.enabled.channels", NOTIFICATION_CHANNEL_SINK);
         props.setProperty("notification.sink.topic.name", notificationTopic(spec.pipelineId()));
+        // Parallel snapshot read: threads × multiplier ≈ the number of chunks Debezium splits
+        // the table set into. Null keeps the connector defaults (serial snapshot).
+        if (spec.snapshotThreads() != null) {
+            props.setProperty("snapshot.max.threads", String.valueOf(spec.snapshotThreads()));
+        }
+        if (spec.snapshotThreadsMultiplier() != null) {
+            props.setProperty(
+                    "snapshot.max.threads.multiplier", String.valueOf(spec.snapshotThreadsMultiplier()));
+        }
         return props;
     }
 
@@ -214,7 +223,19 @@ public final class DebeziumEngineConfig {
              * Worker count of the full-load table applier; null keeps the sink's default. The
              * service wires {@code options.full.importConcurrency}.
              */
-            Integer tableApplierConcurrency) {
+            Integer tableApplierConcurrency,
+            /**
+             * Thread count of the Debezium snapshot reader, wired to
+             * {@code snapshot.max.threads}; null keeps the connector default (serial snapshot).
+             * The service wires {@code options.full.exportConcurrency}.
+             */
+            Integer snapshotThreads,
+            /**
+             * Debezium {@code snapshot.max.threads.multiplier}: snapshot chunks per thread, so
+             * 实际分片数 ≈ 并发线程数 × 分片倍率. The service wires
+             * {@code options.full.chunkMultiplier}. Null keeps the connector default.
+             */
+            Integer snapshotThreadsMultiplier) {
 
         public EngineSpec {
             direction = direction == null ? ReplayDirection.FORWARD : direction;
@@ -223,7 +244,7 @@ public final class DebeziumEngineConfig {
         /** Compact form for callers without a persisted pipeline; the task id stands in as pipeline id. */
         public EngineSpec(long taskId, JdbcConnectionConfig source, List<Table> tables, Long databaseServerId) {
             this(taskId, taskId, source, tables, databaseServerId, null, null,
-                    ReplayMetrics.NONE, null, ReplayDirection.FORWARD, null, null);
+                    ReplayMetrics.NONE, null, ReplayDirection.FORWARD, null, null, null, null);
         }
 
         public EngineSpec(
@@ -234,7 +255,7 @@ public final class DebeziumEngineConfig {
                 JdbcConnectionConfig target,
                 TableSelection tableSelection) {
             this(taskId, taskId, source, tables, databaseServerId, target, tableSelection,
-                    ReplayMetrics.NONE, null, ReplayDirection.FORWARD, null, null);
+                    ReplayMetrics.NONE, null, ReplayDirection.FORWARD, null, null, null, null);
         }
 
         public EngineSpec(
@@ -246,7 +267,7 @@ public final class DebeziumEngineConfig {
                 TableSelection tableSelection,
                 ReplayMetrics metrics) {
             this(taskId, taskId, source, tables, databaseServerId, target, tableSelection,
-                    metrics, null, ReplayDirection.FORWARD, null, null);
+                    metrics, null, ReplayDirection.FORWARD, null, null, null, null);
         }
 
         public EngineSpec(
@@ -259,7 +280,7 @@ public final class DebeziumEngineConfig {
                 TableSelection tableSelection,
                 ReplayMetrics metrics) {
             this(taskId, pipelineId, source, tables, databaseServerId, target, tableSelection,
-                    metrics, null, ReplayDirection.FORWARD, null, null);
+                    metrics, null, ReplayDirection.FORWARD, null, null, null, null);
         }
 
         public EngineSpec(
@@ -273,7 +294,7 @@ public final class DebeziumEngineConfig {
                 ReplayMetrics metrics,
                 GtidLoopConfig gtidLoop) {
             this(taskId, pipelineId, source, tables, databaseServerId, target, tableSelection,
-                    metrics, gtidLoop, ReplayDirection.FORWARD, null, null);
+                    metrics, gtidLoop, ReplayDirection.FORWARD, null, null, null, null);
         }
     }
 }

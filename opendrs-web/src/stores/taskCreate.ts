@@ -30,7 +30,8 @@ export const useTaskCreateStore = defineStore('taskCreate', () => {
     exportConcurrency: 8,
     importConcurrency: 8,
     importMode: 'COPY' as 'COPY' | 'INSERT',
-    chunkSize: 520000,
+    /** 全量分片倍率：实际分片数 ≈ 导出并发 × 分片倍率（Debezium snapshot.max.threads.multiplier）。 */
+    chunkMultiplier: 4,
     /** 结构迁移字符集适配：自动适配字符集长度 / 保持原库字符长度。 */
     charsetAdapt: 'AUTO' as 'AUTO' | 'KEEP',
     replayConcurrency: 64,
@@ -69,7 +70,7 @@ export const useTaskCreateStore = defineStore('taskCreate', () => {
         exportConcurrency: form.exportConcurrency,
         importConcurrency: form.importConcurrency,
         importMode: form.importMode,
-        chunkSize: form.chunkSize,
+        chunkMultiplier: form.chunkMultiplier,
         charsetAdapt: form.charsetAdapt,
       },
       incremental: {
@@ -95,7 +96,7 @@ export const useTaskCreateStore = defineStore('taskCreate', () => {
     form.exportConcurrency = 8
     form.importConcurrency = 8
     form.importMode = 'COPY'
-    form.chunkSize = 520000
+    form.chunkMultiplier = 4
     form.charsetAdapt = 'AUTO'
     form.replayConcurrency = 64
     form.conflictPolicy = 'OVERWRITE'

@@ -57,7 +57,19 @@ public record DataMigrationParam(
          * {@code options.full.importConcurrency} here. Null lets the sink fall back to its
          * own default.
          */
-        Integer tableApplierConcurrency)
+        Integer tableApplierConcurrency,
+        /**
+         * Thread count of the Debezium snapshot reader; the service wires
+         * {@code options.full.exportConcurrency}. Null keeps the connector default (serial
+         * snapshot).
+         */
+        Integer snapshotThreads,
+        /**
+         * Debezium {@code snapshot.max.threads.multiplier}: snapshot chunks per thread, so
+         * 实际分片数 ≈ 并发线程数 × 分片倍率. The service wires
+         * {@code options.full.chunkMultiplier}. Null keeps the connector default.
+         */
+        Integer snapshotThreadsMultiplier)
         implements MigrationParam {
 
     public DataMigrationParam {
@@ -81,7 +93,7 @@ public record DataMigrationParam(
         return new DataMigrationParam(
                 taskId, source, target, selection, databaseServerId,
                 phaseListener, logListener, lagListener, null, null, ReplayDirection.FORWARD,
-                null, null);
+                null, null, null, null);
     }
 
     public static Builder builder() {
@@ -103,6 +115,8 @@ public record DataMigrationParam(
         private ReplayDirection direction;
         private Integer txApplierConcurrency;
         private Integer tableApplierConcurrency;
+        private Integer snapshotThreads;
+        private Integer snapshotThreadsMultiplier;
 
         private Builder() {
         }
@@ -194,6 +208,18 @@ public record DataMigrationParam(
             return this;
         }
 
+        /** Debezium snapshot reader thread count; null keeps the connector default. */
+        public Builder snapshotThreads(Integer snapshotThreads) {
+            this.snapshotThreads = snapshotThreads;
+            return this;
+        }
+
+        /** Debezium {@code snapshot.max.threads.multiplier}; null keeps the connector default. */
+        public Builder snapshotThreadsMultiplier(Integer snapshotThreadsMultiplier) {
+            this.snapshotThreadsMultiplier = snapshotThreadsMultiplier;
+            return this;
+        }
+
         public DataMigrationParam build() {
             return new DataMigrationParam(
                     taskId,
@@ -208,7 +234,9 @@ public record DataMigrationParam(
                     gtidLoop,
                     direction,
                     txApplierConcurrency,
-                    tableApplierConcurrency);
+                    tableApplierConcurrency,
+                    snapshotThreads,
+                    snapshotThreadsMultiplier);
         }
     }
 }

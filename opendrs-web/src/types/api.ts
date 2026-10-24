@@ -110,7 +110,7 @@ export interface FullSettings {
   exportConcurrency: number
   importConcurrency: number
   importMode: ImportMode
-  chunkSize: number
+  chunkMultiplier: number
   charsetAdapt: CharsetAdapt
 }
 

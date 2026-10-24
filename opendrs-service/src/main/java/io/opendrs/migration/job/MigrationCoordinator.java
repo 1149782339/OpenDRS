@@ -372,6 +372,10 @@ public class MigrationCoordinator implements Runnable {
                 ? options.incremental().replayConcurrency() : null;
         Integer tableApplierConcurrency = options != null && options.full() != null
                 ? options.full().importConcurrency() : null;
+        Integer snapshotThreads = options != null && options.full() != null
+                ? options.full().exportConcurrency() : null;
+        Integer snapshotThreadsMultiplier = options != null && options.full() != null
+                ? options.full().chunkMultiplier() : null;
         return DataMigrationParam.builder()
                 .taskId(taskId)
                 .pipelineId(pipeline.getId())
@@ -386,6 +390,8 @@ public class MigrationCoordinator implements Runnable {
                         : io.opendrs.engine.replay.metrics.ReplayDirection.REVERSE)
                 .txApplierConcurrency(txApplierConcurrency)
                 .tableApplierConcurrency(tableApplierConcurrency)
+                .snapshotThreads(snapshotThreads)
+                .snapshotThreadsMultiplier(snapshotThreadsMultiplier)
                 .phaseListener(phase -> onTaskPhase(phase, pipeline))
                 .logListener(logListener)
                 .lagListener(lagListenerFactory.apply(pipeline.getId()))
