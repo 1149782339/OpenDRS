@@ -3,7 +3,20 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore:
+      # Local tooling and docs: no code or tests change, a full CI run is pure waste.
+      # Frontend sources stay INCLUDED — the frontend build job is the only check
+      # opendrs-web currently has.
+      - 'deploy/**'
+      - 'scripts/**'
+      - '*.md'
+      - '**/*.md'
   pull_request:
+    paths-ignore:
+      - 'deploy/**'
+      - 'scripts/**'
+      - '*.md'
+      - '**/*.md'
 
 jobs:
   backend:
