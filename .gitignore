@@ -65,3 +65,6 @@ NUL
 
 # cdc-load tool: keep the runnable jar (driver jar stays ignored, fetched from maven)
 !tools/cdc-load/dist/cdc-load-tool.jar
+
+# Test framework reports
+scripts/test/reports/

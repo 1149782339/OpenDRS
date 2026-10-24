@@ -1,0 +1,39 @@
+# CI profile: the full suite. Stages run in the listed order; cases inside a
+# stage run in parallel (capped by config.max_parallel). Every ${VAR} is expanded
+# from the process environment — unset variables fail fast at fixture setup.
+
+env:
+  endpoint:
+    url: "http://127.0.0.1"
+    user: admin          # reserved for when the backend grows auth
+    password: "123456"
+  datasources:
+    mysql1:              # migration source (binlog ROW + GTID)
+      host: "127.0.0.1"
+      port: 3406
+      user: "e2e"
+      password: "${MYSQL1_PASSWORD}"
+      database: "e2e_source"
+      root_password: "123456"
+    postgres1:           # migration target
+      host: "127.0.0.1"
+      port: 5432
+      user: "opendrs"
+      password: "${PG1_PASSWORD}"
+      database: "e2e_target"
+
+config:
+  max_parallel: 4        # per-stage xdist workers; keep low — parallel cases are
+                         # harder to analyse and CI CPUs are capped
+  case_timeout_sec: 900  # per-case wall clock; the runner has no other global guard
+
+testcases:
+  - name: reg_datasource
+  - name: mysql2pg
+    tests:
+      - mysql2pg_full
+      - mysql2pg_full_inc
+  - name: mysql2pg_bi
+    tests:
+      - mysql2pg_full_fi
+      - mysql2pg_full_inc_fi

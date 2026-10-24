@@ -1,0 +1,31 @@
+# Dev profile: the few cases worth running before pushing. Same env shape as
+# ci.yml; only the testcase list is trimmed.
+
+env:
+  endpoint:
+    url: "http://127.0.0.1"
+    user: admin
+    password: "123456"
+  datasources:
+    mysql1:
+      host: "127.0.0.1"
+      port: 3406
+      user: "e2e"
+      password: "${MYSQL1_PASSWORD}"
+      database: "e2e_source"
+      root_password: "123456"
+    postgres1:
+      host: "127.0.0.1"
+      port: 5432
+      user: "opendrs"
+      password: "${PG1_PASSWORD}"
+      database: "e2e_target"
+
+config:
+  max_parallel: 2
+  case_timeout_sec: 900
+
+testcases:
+  - name: mysql2pg
+    tests:
+      - mysql2pg_full_inc
