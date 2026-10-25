@@ -1,8 +1,12 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { Link, List } from '@element-plus/icons-vue'
+import en from 'element-plus/es/locale/lang/en'
+import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import LocaleSwitcher from '@/components/LocaleSwitcher.vue'
+import { i18n } from '@/i18n'
+import { refreshTitle } from '@/router'
 
 const route = useRoute()
 const active = computed(() => {
@@ -11,10 +15,26 @@ const active = computed(() => {
   }
   return '/connections'
 })
+
+/** 顶栏标题：路由 meta 里的 i18n key，翻译后展示。 */
+const pageTitle = computed(() => {
+  const key = route.meta.titleKey
+  return key ? i18n.global.t(key) : i18n.global.t('nav.console')
+})
+
+/** Element Plus 组件语言跟当前界面语言走。 */
+const epLocale = computed(() => (i18n.global.locale.value.startsWith('zh') ? zhCn : en))
+
+// 语言切换时同步浏览器标签页标题（afterEach 只在路由跳转时触发）
+watch(
+  () => i18n.global.locale.value,
+  () => refreshTitle(),
+)
 </script>
 
 <template>
-  <el-container class="app-shell">
+  <el-config-provider :locale="epLocale">
+    <el-container class="app-shell">
     <el-aside width="208px" class="app-aside">
       <div class="logo">OpenDRS</div>
       <el-menu
@@ -26,24 +46,25 @@ const active = computed(() => {
       >
         <el-menu-item index="/connections">
           <el-icon><Link /></el-icon>
-          <span>数据源</span>
+          <span>{{ $t('nav.connections') }}</span>
         </el-menu-item>
         <el-menu-item index="/tasks">
           <el-icon><List /></el-icon>
-          <span>任务</span>
+          <span>{{ $t('nav.tasks') }}</span>
         </el-menu-item>
       </el-menu>
     </el-aside>
     <el-container>
       <el-header class="app-header">
-        <span class="app-title">{{ (route.meta.title as string) || '管理台' }}</span>
+        <span class="app-title">{{ pageTitle }}</span>
         <LocaleSwitcher />
       </el-header>
       <el-main class="app-main">
         <router-view />
       </el-main>
     </el-container>
-  </el-container>
+    </el-container>
+  </el-config-provider>
 </template>
 
 <style>

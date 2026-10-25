@@ -1,7 +1,8 @@
 package io.opendrs.migration.service;
 
-import io.opendrs.common.error.AppException;
 import io.opendrs.common.error.ErrorCode;
+import io.opendrs.common.error.ExceptionFactory;
+import io.opendrs.common.i18n.ErrorMessage;
 import io.opendrs.common.log.MigrationLogLevel;
 import io.opendrs.common.metadata.DatabaseType;
 import io.opendrs.engine.core.MigrationEngine;
@@ -88,10 +89,9 @@ public class MigrationPrecheckService {
             return false;
         }
         if (!canPrecheck(task)) {
-            throw AppException.of(
+            throw ExceptionFactory.create(
                     ErrorCode.TASK_CONFLICT,
-                    "Task " + id + " cannot be prechecked from phase " + task.getPhase()
-                            + " state " + task.getState());
+                    ErrorMessage.TASK_CANNOT_PRECHECK_FROM, id, task.getPhase(), task.getState());
         }
         ConnectionInfo source = requireConnection(task.getSourceConnectionId());
         ConnectionInfo target = requireConnection(task.getTargetConnectionId());
@@ -102,10 +102,9 @@ public class MigrationPrecheckService {
             if (isAlreadyPrechecking(latest)) {
                 return false;
             }
-            throw AppException.of(
+            throw ExceptionFactory.create(
                     ErrorCode.TASK_CONFLICT,
-                    "Task " + id + " cannot be prechecked from phase " + latest.getPhase()
-                            + " state " + latest.getState());
+                    ErrorMessage.TASK_CANNOT_PRECHECK_FROM, id, latest.getPhase(), latest.getState());
         }
         taskMapper.updatePrecheckResults(id, PrecheckResults.empty());
         logService.log(id, MigrationLogLevel.INFO, "precheck started");
@@ -167,7 +166,7 @@ public class MigrationPrecheckService {
         } catch (InterruptedException ex) {
             handle.requestStop();
             Thread.currentThread().interrupt();
-            throw AppException.of(ErrorCode.INTERNAL_ERROR, "Precheck interrupted");
+            throw ExceptionFactory.create(ErrorCode.INTERNAL_ERROR, ErrorMessage.PRECHECK_INTERRUPTED);
         }
         Throwable failure = handle.failure();
         if (failure != null) {
@@ -176,7 +175,7 @@ public class MigrationPrecheckService {
         PrecheckResults accumulated = handle.results();
 
         if (accumulated == null) {
-            throw AppException.of(ErrorCode.INTERNAL_ERROR, "Precheck produced no results");
+            throw ExceptionFactory.create(ErrorCode.INTERNAL_ERROR, ErrorMessage.PRECHECK_NO_RESULTS);
         }
         // Name the failing checks first, then the verdict: a summary that says "2 failed" without
         // saying which two is not worth a log line.
@@ -194,10 +193,10 @@ public class MigrationPrecheckService {
             int updated = taskMapper.completePrecheckSuccess(id);
             if (updated == 0) {
                 MigrationTask current = requireTask(id);
-                throw AppException.of(
+                throw ExceptionFactory.create(
                         ErrorCode.TASK_CONFLICT,
-                        "Task " + id + " cannot complete precheck from phase " + current.getPhase()
-                                + " state " + current.getState());
+                        ErrorMessage.TASK_COMPLETE_PRECHECK_CONFLICT,
+                        id, current.getPhase(), current.getState());
             }
             logService.log(id, MigrationLogLevel.INFO, "precheck passed: "
                     + accumulated.items().size() + " item(s), " + failed.size()
@@ -228,7 +227,8 @@ public class MigrationPrecheckService {
     private static RuntimeException translate(Throwable failure) {
         for (Throwable current = failure; current != null; current = current.getCause()) {
             if (current instanceof MappingException mapping) {
-                return AppException.of(ErrorCode.PARAM_INVALID, mapping.getMessage());
+                return ExceptionFactory.create(
+                        ErrorCode.PARAM_INVALID, ErrorMessage.TASK_MAPPING_INVALID, mapping.getMessage());
             }
             if (current.getCause() == current) {
                 break;
@@ -250,9 +250,9 @@ public class MigrationPrecheckService {
 
     private void requirePreCheckSupport(DatabaseType source, DatabaseType target) {
         if (!engine.supportsPrecheck(source, target)) {
-            throw AppException.of(
+            throw ExceptionFactory.create(
                     ErrorCode.PARAM_INVALID,
-                    "No precheck registered for " + source + " → " + target);
+                    ErrorMessage.PRECHECK_NOT_SUPPORTED, source, target);
         }
     }
 
@@ -275,7 +275,7 @@ public class MigrationPrecheckService {
     private MigrationTask requireTask(Long id) {
         MigrationTask task = taskMapper.findById(id);
         if (task == null) {
-            throw AppException.of(ErrorCode.TASK_NOT_FOUND, "Task not found: " + id);
+            throw ExceptionFactory.create(ErrorCode.TASK_NOT_FOUND, ErrorMessage.TASK_NOT_FOUND, id);
         }
         return task;
     }
@@ -283,7 +283,7 @@ public class MigrationPrecheckService {
     private ConnectionInfo requireConnection(Long id) {
         ConnectionInfo connection = connectionMapper.findById(id);
         if (connection == null) {
-            throw AppException.of(ErrorCode.INTERNAL_ERROR, "Connection not found: " + id);
+            throw ExceptionFactory.create(ErrorCode.INTERNAL_ERROR, ErrorMessage.CONNECTION_NOT_FOUND, id);
         }
         return connection;
     }

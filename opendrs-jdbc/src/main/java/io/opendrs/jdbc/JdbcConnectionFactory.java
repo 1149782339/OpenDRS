@@ -46,16 +46,19 @@ public class JdbcConnectionFactory {
         }
     }
 
+    // 消息只带「类型 主机:端口 — 详情」：语义前缀（如 "Connection test failed:"）由上层
+    // i18n 模板补，同一个异常还会被 listReplicas / server_uuid / 预检查等场景复用，
+    // 在这里写死测试语义会造成 "Connection test failed: Connection test failed: ..." 式冗余。
     private static JdbcException wrap(SQLException ex, JdbcConnectionConfig config) {
         return new JdbcException(
-                "Connection test failed: " + config.getType() + " " + config.getHost() + ":" + config.getPort()
+                config.getType() + " " + config.getHost() + ":" + config.getPort()
                         + " — " + sanitize(ex.getMessage()),
                 ex);
     }
 
     private static JdbcException wrap(RuntimeException ex, JdbcConnectionConfig config) {
         return new JdbcException(
-                "Connection test failed: " + config.getType() + " " + config.getHost() + ":" + config.getPort()
+                config.getType() + " " + config.getHost() + ":" + config.getPort()
                         + " — " + sanitize(ex.getMessage()),
                 ex);
     }
@@ -163,7 +166,7 @@ public class JdbcConnectionFactory {
 
         private JdbcException wrapSql(SQLException ex) {
             return new JdbcException(
-                    "Connection test failed: " + type + " — " + sanitize(ex.getMessage()), ex);
+                    type + " — " + sanitize(ex.getMessage()), ex);
         }
     }
 }

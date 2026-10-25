@@ -39,8 +39,10 @@ import {
 } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 
+const { t } = useI18n()
 const router = useRouter()
 const route = useRoute()
 const store = useTaskCreateStore()
@@ -57,23 +59,19 @@ let pollTimer: ReturnType<typeof setInterval> | null = null
 /** 从任务列表点进来的续跑模式：任务已经创建，只是回到预检查 / 任务确认这一步。 */
 const resumeMode = ref(false)
 const resuming = ref(false)
-const pageTitle = computed(() => (resumeMode.value ? '继续任务' : '新建迁移任务'))
+const pageTitle = computed(() => (resumeMode.value ? t('wizard.resumeTitle') : t('wizard.newTitle')))
 
-const steps = [
-  { title: '基本信息' },
-  { title: '设置同步' },
-  { title: '高级设置' },
-  { title: '预检查' },
-  { title: '任务确认' },
-]
+const steps = computed(() => [
+  { title: t('wizard.steps.basic') },
+  { title: t('wizard.steps.sync') },
+  { title: t('wizard.steps.advanced') },
+  { title: t('wizard.steps.precheck') },
+  { title: t('wizard.steps.confirm') },
+])
 
-const GROUP_LABELS: Record<CheckGroup, string> = {
-  PARAMETER: '数据库参数检查',
-  INSTANCE: '目标实例状态检查',
-  PERMISSION: '数据库用户权限检查',
-  VERSION: '数据库版本检查',
-  NETWORK: '网络状态',
-  OBJECT: '数据库对象检查',
+/** 预检查分组名与后端 CheckGroup 枚举同名，key 对应语言包 wizard.precheck.group.*。 */
+function groupLabel(code: CheckGroup): string {
+  return t(`wizard.precheck.group.${code}`)
 }
 
 const running = computed(() => isPrecheckRunning(precheck.value))
@@ -89,7 +87,7 @@ const groups = computed(() => {
     if (bucket) bucket.push(item)
     else byGroup.set(item.group, [item])
   }
-  return [...byGroup.entries()].map(([code, list]) => ({ code, label: GROUP_LABELS[code] ?? code, items: list }))
+  return [...byGroup.entries()].map(([code, list]) => ({ code, label: groupLabel(code), items: list }))
 })
 
 /** 清单还没下发（任务刚提交、引擎还没开始建计划）时的占位。 */
@@ -179,8 +177,7 @@ interface TreeRow {
   indeterminate: boolean
 }
 
-const OBJECT_MODE_HINT =
-  '全部迁移：源实例整个照搬，不用选库表。表级迁移：挑具体的表，勾库等于勾该库全部表。库级迁移：按库整库迁移，不细分到表。'
+const objectModeHint = computed(() => t('wizard.sync.objectsHelp'))
 
 const objectMode = ref<ObjectMode>('ALL')
 const catalog = ref<CatalogSchema[]>([])
@@ -289,7 +286,7 @@ const leftRows = computed<TreeRow[]>(() => {
         key: `loading:${node.name}`,
         kind: 'loading',
         schema: node.name,
-        label: '正在读取表…',
+        label: t('wizard.sync.loadingTables'),
         badge: '',
         expandable: false,
         expanded: false,
@@ -347,7 +344,7 @@ const rightRows = computed<TreeRow[]>(() => {
         key: `loading:${entry.schema}`,
         kind: 'loading',
         schema: entry.schema,
-        label: '正在读取表…',
+        label: t('wizard.sync.loadingTables'),
         badge: '',
         expandable: false,
         expanded: false,
@@ -569,18 +566,22 @@ const nextType = computed<'danger' | 'primary' | 'default'>(() => {
   return store.step === 4 ? 'danger' : 'primary'
 })
 
-const nextLabel = computed(() => (store.step === 4 ? '启动迁移' : '下一步'))
+const nextLabel = computed(() => (store.step === 4 ? t('wizard.start') : t('wizard.next')))
 
 /** 进入预检查后任务已经创建，不允许再回退改配置。 */
 const canBack = computed(() => store.step === 1 || store.step === 2)
 
-const topologyLabel = computed(() => (store.form.syncTopology === 'BIDIRECTIONAL' ? '双向同步' : '单向同步'))
+const topologyLabel = computed(() =>
+  store.form.syncTopology === 'BIDIRECTIONAL'
+    ? t('wizard.confirm.topologyBidirectional')
+    : t('wizard.confirm.topologyOneWay'),
+)
 
 const modeLabel = computed(() => {
   const mode = createdTask.value?.mode ?? 'FULL_AND_INCREMENTAL'
-  if (mode === 'FULL_ONLY') return '全量迁移'
-  if (mode === 'INCREMENTAL_ONLY') return '增量迁移'
-  return '全量迁移+增量迁移'
+  if (mode === 'FULL_ONLY') return t('wizard.confirm.modeFull')
+  if (mode === 'INCREMENTAL_ONLY') return t('wizard.confirm.modeIncremental')
+  return t('wizard.confirm.modeFullInc')
 })
 
 function addressOf(
@@ -624,17 +625,17 @@ function stopPolling() {
 
 function validateSync(): string | null {
   if (objectMode.value === 'SCHEMA' && store.form.schemas.length === 0) {
-    return '请至少选择一个库'
+    return t('wizard.msg.needSchema')
   }
   if (objectMode.value === 'TABLE' && store.form.tables.length === 0) {
-    return '请至少选择一张表'
+    return t('wizard.msg.needTable')
   }
   return null
 }
 
 function buildRequest(): CreateMigrationTaskRequest {
   if (!canNextBasic.value || store.form.sourceConnectionId == null || store.form.targetConnectionId == null) {
-    throw new Error('请填写任务名称并选择源数据源和目标数据源')
+    throw new Error(t('wizard.msg.needBasic'))
   }
   return {
     name: store.form.name.trim(),
@@ -706,7 +707,7 @@ async function onNext() {
   if (creating.value || startingPrecheck.value || starting.value) return
   if (store.step === 0) {
     if (!canNextBasic.value) {
-      ElMessage.warning('请填写任务名称并选择源数据源和目标数据源')
+      ElMessage.warning(t('wizard.msg.needBasic'))
       return
     }
     store.step = 1
@@ -740,7 +741,7 @@ async function onNext() {
   }
   if (store.step === 3) {
     if (!passed.value) {
-      ElMessage.warning('预检查未通过，请先处理失败项并重新校验')
+      ElMessage.warning(t('wizard.msg.needPrecheck'))
       return
     }
     store.step = 4
@@ -753,13 +754,13 @@ async function onNext() {
 async function onStartMigration() {
   const id = store.taskId
   if (id == null) {
-    ElMessage.warning('任务尚未创建')
+    ElMessage.warning(t('wizard.msg.taskNotCreated'))
     return
   }
   starting.value = true
   try {
     const next = await startTask(id)
-    ElMessage.success(`迁移已启动（${next.state ?? next.phase}）`)
+    ElMessage.success(t('wizard.msg.migrationStarted', { state: next.state ?? next.phase }))
     await router.push(`/tasks/${id}`)
   } catch (error) {
     ElMessage.error(apiErrorMessage(error))
@@ -797,16 +798,16 @@ interface RowStatus {
  */
 function statusOf(item: PrecheckItem): RowStatus {
   if (item.state === 'PENDING' || item.state === 'RUNNING') {
-    return { tone: 'running', label: '正在检查', inspectable: false }
+    return { tone: 'running', label: t('wizard.precheck.itemStatus.checking'), inspectable: false }
   }
-  if (item.state === 'BLOCKED') return { tone: 'muted', label: '阻塞', inspectable: true }
-  if (item.state === 'ERROR') return { tone: 'fail', label: '检查异常', inspectable: true }
-  if (item.verdict === 'PASS') return { tone: 'ok', label: '通过', inspectable: false }
-  if (item.verdict === 'NOT_APPLICABLE') return { tone: 'muted', label: '跳过', inspectable: false }
-  if (item.verdict === 'UNKNOWN') return { tone: 'warn', label: '未知', inspectable: true }
+  if (item.state === 'BLOCKED') return { tone: 'muted', label: t('wizard.precheck.itemStatus.blocked'), inspectable: true }
+  if (item.state === 'ERROR') return { tone: 'fail', label: t('wizard.precheck.itemStatus.error'), inspectable: true }
+  if (item.verdict === 'PASS') return { tone: 'ok', label: t('wizard.precheck.itemStatus.pass'), inspectable: false }
+  if (item.verdict === 'NOT_APPLICABLE') return { tone: 'muted', label: t('wizard.precheck.itemStatus.skip'), inspectable: false }
+  if (item.verdict === 'UNKNOWN') return { tone: 'warn', label: t('wizard.precheck.itemStatus.unknown'), inspectable: true }
   return item.severity === 'BLOCKER'
-    ? { tone: 'fail', label: '不通过', inspectable: true }
-    : { tone: 'warn', label: '请确认', inspectable: true }
+    ? { tone: 'fail', label: t('wizard.precheck.itemStatus.fail'), inspectable: true }
+    : { tone: 'warn', label: t('wizard.precheck.itemStatus.warn'), inspectable: true }
 }
 
 const detailItem = ref<PrecheckItem | null>(null)
@@ -879,7 +880,7 @@ onUnmounted(() => {
   <div class="wizard">
     <div class="page-toolbar">
       <h2>{{ pageTitle }}</h2>
-      <el-button @click="router.push('/tasks')">返回列表</el-button>
+      <el-button @click="router.push('/tasks')">{{ t('wizard.backToList') }}</el-button>
     </div>
 
     <el-steps :active="store.step" finish-status="success" align-center class="steps">
@@ -890,38 +891,38 @@ onUnmounted(() => {
       <div v-show="store.step === 0" class="step-pane">
         <div class="pane-head">
           <div>
-            <h3 class="pane-title">基本信息</h3>
-            <p class="pane-note">选择已录入的数据源；连接测试请到「数据源」页面完成。</p>
+            <h3 class="pane-title">{{ t('wizard.steps.basic') }}</h3>
+            <p class="pane-note">{{ t('wizard.basic.note') }}</p>
           </div>
           <div class="pane-actions">
-            <el-button :loading="loadingConnections" @click="loadConnections">刷新数据源</el-button>
-            <el-button tag="a" href="/connections" target="_blank" rel="noopener noreferrer">管理数据源</el-button>
+            <el-button :loading="loadingConnections" @click="loadConnections">{{ t('wizard.basic.refreshConnections') }}</el-button>
+            <el-button tag="a" href="/connections" target="_blank" rel="noopener noreferrer">{{ t('wizard.basic.manageConnections') }}</el-button>
           </div>
         </div>
         <el-alert
           v-if="connectionsError"
-          :title="`数据源加载失败：${connectionsError}`"
+          :title="t('wizard.basic.loadFailed', { msg: connectionsError })"
           type="error"
           :closable="false"
           show-icon
           class="data-source-error"
         />
         <el-form :label-width="'var(--ops-label-w)'" label-position="left" class="ops-form">
-          <el-form-item label="任务名称" required>
+          <el-form-item :label="t('wizard.basic.taskName')" required>
             <el-input
               v-model="store.form.name"
               maxlength="128"
               show-word-limit
-              placeholder="请输入任务名称"
+              :placeholder="t('wizard.basic.taskNamePlaceholder')"
               class="field"
             />
-            <el-tooltip content="任务的显示名称，创建后可在任务列表里按它查找。" placement="top" effect="dark">
+            <el-tooltip :content="t('wizard.basic.taskNameHelp')" placement="top" effect="dark">
               <el-icon class="ops-help" tabindex="0"><QuestionFilled /></el-icon>
             </el-tooltip>
           </el-form-item>
           <SavedDataSourceSelect
             v-model="store.form.sourceConnectionId"
-            title="源数据源"
+            title-key="connection.source"
             input-id="source-data-source"
             :database-types="['MYSQL']"
             database-label="MySQL"
@@ -930,7 +931,7 @@ onUnmounted(() => {
           />
           <SavedDataSourceSelect
             v-model="store.form.targetConnectionId"
-            title="目标数据源"
+            title-key="connection.target"
             input-id="target-data-source"
             :database-types="['POSTGRESQL', 'MYSQL']"
             database-label="PostgreSQL / MySQL"
@@ -943,65 +944,65 @@ onUnmounted(() => {
       <div v-show="store.step === 1" class="step-pane">
         <div class="pane-head">
           <div>
-            <h3 class="pane-title">同步设置</h3>
-            <p class="pane-note">确定迁移方向与范围；迁移对象决定后续全量与增量的抓取口径。</p>
+            <h3 class="pane-title">{{ t('wizard.steps.sync') }}</h3>
+            <p class="pane-note">{{ t('wizard.sync.note') }}</p>
           </div>
         </div>
         <el-form :label-width="'var(--ops-label-w)'" label-position="left" class="ops-form">
-          <el-form-item label="同步模式" required>
+          <el-form-item :label="t('wizard.sync.mode')" required>
             <el-radio-group v-model="store.form.syncMode">
-              <el-radio-button value="FULL_ONLY">全量</el-radio-button>
-              <el-radio-button value="INCREMENTAL_ONLY">增量</el-radio-button>
-              <el-radio-button value="FULL_AND_INCREMENTAL">全量+增量</el-radio-button>
+              <el-radio-button value="FULL_ONLY">{{ t('wizard.sync.modeFull') }}</el-radio-button>
+              <el-radio-button value="INCREMENTAL_ONLY">{{ t('wizard.sync.modeIncremental') }}</el-radio-button>
+              <el-radio-button value="FULL_AND_INCREMENTAL">{{ t('wizard.sync.modeFullIncremental') }}</el-radio-button>
             </el-radio-group>
             <el-tooltip
-              content="全量：快照拷完全部数据后任务结束；增量：只抓结构，从任务启动时刻起同步变更；全量+增量：先全量再持续增量。"
+              :content="t('wizard.sync.modeHelp')"
               placement="top"
               effect="dark"
             >
               <el-icon class="ops-help" tabindex="0"><QuestionFilled /></el-icon>
             </el-tooltip>
           </el-form-item>
-          <el-form-item label="同步拓扑" required>
+          <el-form-item :label="t('wizard.sync.topology')" required>
             <el-radio-group v-model="store.form.syncTopology">
-              <el-radio-button value="ONE_WAY">单向同步</el-radio-button>
+              <el-radio-button value="ONE_WAY">{{ t('wizard.sync.oneWay') }}</el-radio-button>
               <el-tooltip
                 :disabled="bidirectionalAllowed"
                 :content="
                   bidirectionalAllowed
-                    ? '双向同步仅支持 MySQL ↔ MySQL'
+                    ? t('wizard.sync.bidirectionalDisabledMysql')
                     : store.form.syncMode !== 'FULL_AND_INCREMENTAL'
-                      ? '双向同步要求同步模式为全量+增量'
-                      : '双向同步仅支持 MySQL ↔ MySQL'
+                      ? t('wizard.sync.bidirectionalDisabledMode')
+                      : t('wizard.sync.bidirectionalDisabledMysql')
                 "
                 placement="top"
               >
                 <el-radio-button
                   value="BIDIRECTIONAL"
                   :disabled="!bidirectionalAllowed || store.form.syncMode !== 'FULL_AND_INCREMENTAL'"
-                  >双向同步</el-radio-button
+                  >{{ t('wizard.sync.bidirectional') }}</el-radio-button
                 >
               </el-tooltip>
             </el-radio-group>
             <el-tooltip
-              content="双向同步两端均为 MySQL，不做结构迁移；预检查会逐项校验前提条件。"
+              :content="t('wizard.sync.bidirectionalHelp')"
               placement="top"
               effect="dark"
             >
               <el-icon class="ops-help" tabindex="0"><QuestionFilled /></el-icon>
             </el-tooltip>
             <p v-if="store.form.syncTopology === 'BIDIRECTIONAL'" class="topology-hint">
-              两端均为 MySQL，不迁移表结构。
+              {{ t('wizard.sync.topologyHint') }}
             </p>
           </el-form-item>
-          <el-form-item label="迁移对象" required>
+          <el-form-item :label="t('wizard.sync.objects')" required>
             <div class="object-mode">
               <el-radio-group v-model="objectMode" @change="onModeChange">
-                <el-radio-button value="ALL">全部迁移</el-radio-button>
-                <el-radio-button value="TABLE">表级迁移</el-radio-button>
-                <el-radio-button value="SCHEMA">库级迁移</el-radio-button>
+                <el-radio-button value="ALL">{{ t('wizard.sync.all') }}</el-radio-button>
+                <el-radio-button value="TABLE">{{ t('wizard.sync.table') }}</el-radio-button>
+                <el-radio-button value="SCHEMA">{{ t('wizard.sync.schema') }}</el-radio-button>
               </el-radio-group>
-              <el-tooltip :content="OBJECT_MODE_HINT" placement="top" effect="dark">
+              <el-tooltip :content="objectModeHint" placement="top" effect="dark">
                 <el-icon class="ops-help" tabindex="0"><QuestionFilled /></el-icon>
               </el-tooltip>
             </div>
@@ -1009,33 +1010,33 @@ onUnmounted(() => {
 
           <div v-if="objectMode !== 'ALL'" class="transfer">
             <p class="transfer-tip">
-              左边未选、右边已选，勾选后点中间箭头移动。<span class="danger">源库有变更时点右上方刷新。</span>
+              {{ t('wizard.sync.transferTip') }}<span class="danger">{{ t('wizard.sync.transferTipDanger') }}</span>
             </p>
 
             <div class="transfer-body">
               <section class="transfer-panel">
                 <header class="transfer-head">
-                  <el-tooltip :content="objectMode === 'TABLE' ? '按表挑选，勾选库等于勾选该库全部表' : '按库整库迁移，不细分到表'" placement="top">
+                  <el-tooltip :content="objectMode === 'TABLE' ? t('wizard.sync.tableModeHelp') : t('wizard.sync.schemaModeHelp')" placement="top">
                     <el-icon class="head-help"><QuestionFilled /></el-icon>
                   </el-tooltip>
-                  <el-button size="small" @click="leftChecked = checkAll(leftRows, leftChecked)">全选</el-button>
+                  <el-button size="small" @click="leftChecked = checkAll(leftRows, leftChecked)">{{ t('common.all') }}</el-button>
                   <el-icon
                     class="head-refresh"
                     :class="{ 'is-loading': catalogLoading }"
-                    title="刷新"
+                    :title="t('wizard.sync.refresh')"
                     @click="loadCatalog(true)"
                   >
                     <Refresh />
                   </el-icon>
                 </header>
-                <el-input v-model="leftKeyword" size="small" placeholder="对展开的库进行搜索" :prefix-icon="Search" clearable />
+                <el-input v-model="leftKeyword" size="small" :placeholder="t('wizard.sync.searchExpanded')" :prefix-icon="Search" clearable />
                 <div class="tree">
                   <div v-if="catalogLoading" class="tree-state">
                     <el-icon class="is-loading tree-spinner"><Loading /></el-icon>
-                    <span>正在读取库表…</span>
+                    <span>{{ t('wizard.sync.loadingCatalog') }}</span>
                   </div>
                   <div v-else-if="catalogError" class="tree-state error">{{ catalogError }}</div>
-                  <div v-else-if="leftRows.length === 0" class="tree-state">没有可迁移的对象</div>
+                  <div v-else-if="leftRows.length === 0" class="tree-state">{{ t('wizard.sync.noObjects') }}</div>
                   <template v-else>
                     <div
                       v-for="row in leftRows"
@@ -1076,11 +1077,11 @@ onUnmounted(() => {
 
               <section class="transfer-panel">
                 <header class="transfer-head">
-                  <el-button size="small" @click="rightChecked = checkAll(rightRows, rightChecked)">全选</el-button>
+                  <el-button size="small" @click="rightChecked = checkAll(rightRows, rightChecked)">{{ t('common.all') }}</el-button>
                 </header>
-                <el-input v-model="rightKeyword" size="small" placeholder="对展开的库进行搜索" :prefix-icon="Search" clearable />
+                <el-input v-model="rightKeyword" size="small" :placeholder="t('wizard.sync.searchExpanded')" :prefix-icon="Search" clearable />
                 <div class="tree">
-                  <div v-if="rightRows.length === 0" class="tree-state">还没有选择对象</div>
+                  <div v-if="rightRows.length === 0" class="tree-state">{{ t('wizard.sync.noSelection') }}</div>
                   <template v-else>
                     <div
                       v-for="row in rightRows"
@@ -1118,74 +1119,74 @@ onUnmounted(() => {
       <div v-show="store.step === 2" class="step-pane">
         <div class="pane-head">
           <div>
-            <h3 class="pane-title">高级设置</h3>
-            <p class="pane-note">全量与增量的抓取策略；不确定时保持默认即可。</p>
+            <h3 class="pane-title">{{ t('wizard.steps.advanced') }}</h3>
+            <p class="pane-note">{{ t('wizard.advanced.note') }}</p>
           </div>
         </div>
 
-        <h4 class="sub-title">全量设置</h4>
+        <h4 class="sub-title">{{ t('wizard.advanced.fullTitle') }}</h4>
         <el-form :label-width="'var(--ops-label-w)'" label-position="left" class="ops-form">
-          <el-form-item label="同步对象" required>
-            <el-checkbox v-model="store.form.fullSyncSchema">同步表结构（包含主键和唯一键）</el-checkbox>
-            <el-checkbox v-model="store.form.fullSyncData">同步数据</el-checkbox>
-            <el-checkbox v-model="store.form.fullSyncIndex">同步普通索引</el-checkbox>
-            <el-tooltip content="全量迁移时从源端导出的对象范围。" placement="top" effect="dark">
+          <el-form-item :label="t('wizard.advanced.syncObjects')" required>
+            <el-checkbox v-model="store.form.fullSyncSchema">{{ t('wizard.advanced.syncSchema') }}</el-checkbox>
+            <el-checkbox v-model="store.form.fullSyncData">{{ t('wizard.advanced.syncData') }}</el-checkbox>
+            <el-checkbox v-model="store.form.fullSyncIndex">{{ t('wizard.advanced.syncIndex') }}</el-checkbox>
+            <el-tooltip :content="t('wizard.advanced.objectsHelp')" placement="top" effect="dark">
               <el-icon class="ops-help" tabindex="0"><QuestionFilled /></el-icon>
             </el-tooltip>
           </el-form-item>
-          <el-form-item label="导出并发" required>
+          <el-form-item :label="t('wizard.advanced.exportConcurrency')" required>
             <el-input-number v-model="store.form.exportConcurrency" :min="1" :max="64" class="field field-narrow" />
-            <el-tooltip content="从源端读库的并发线程数，网络带宽充足时可调高。" placement="top" effect="dark">
+            <el-tooltip :content="t('wizard.advanced.exportConcurrencyHelp')" placement="top" effect="dark">
               <el-icon class="ops-help" tabindex="0"><QuestionFilled /></el-icon>
             </el-tooltip>
           </el-form-item>
-          <el-form-item label="导入并发" required>
+          <el-form-item :label="t('wizard.advanced.importConcurrency')" required>
             <el-input-number v-model="store.form.importConcurrency" :min="1" :max="64" class="field field-narrow" />
-            <el-tooltip content="向目标端写库的并发线程数，受目标库写入能力限制。" placement="top" effect="dark">
+            <el-tooltip :content="t('wizard.advanced.importConcurrencyHelp')" placement="top" effect="dark">
               <el-icon class="ops-help" tabindex="0"><QuestionFilled /></el-icon>
             </el-tooltip>
           </el-form-item>
-          <el-form-item label="导入模式" required>
+          <el-form-item :label="t('wizard.advanced.importMode')" required>
             <el-radio-group v-model="store.form.importMode">
               <el-radio-button value="COPY">COPY</el-radio-button>
               <el-radio-button value="INSERT">INSERT</el-radio-button>
             </el-radio-group>
-            <el-tooltip content="COPY 走 PostgreSQL 的二进制拷贝通道，最快；INSERT 兼容所有场景。" placement="top" effect="dark">
+            <el-tooltip :content="t('wizard.advanced.importModeHelp')" placement="top" effect="dark">
               <el-icon class="ops-help" tabindex="0"><QuestionFilled /></el-icon>
             </el-tooltip>
           </el-form-item>
-          <el-form-item label="分片倍率" required>
+          <el-form-item :label="t('wizard.advanced.chunkMultiplier')" required>
             <el-input-number v-model="store.form.chunkMultiplier" :min="1" :max="10" class="field field-narrow" />
-            <el-tooltip content="实际分片数 ≈ 并发线程数 × 分片倍率" placement="top" effect="dark">
+            <el-tooltip :content="t('wizard.advanced.chunkMultiplierHelp')" placement="top" effect="dark">
               <el-icon class="ops-help" tabindex="0"><QuestionFilled /></el-icon>
             </el-tooltip>
           </el-form-item>
-          <el-form-item label="字符集适配" required>
+          <el-form-item :label="t('wizard.advanced.charsetAdapt')" required>
             <el-radio-group v-model="store.form.charsetAdapt">
-              <el-radio-button value="AUTO">自动适配字符集长度</el-radio-button>
-              <el-radio-button value="KEEP">保持原库字符长度</el-radio-button>
+              <el-radio-button value="AUTO">{{ t('wizard.advanced.charsetAdaptAuto') }}</el-radio-button>
+              <el-radio-button value="KEEP">{{ t('wizard.advanced.charsetAdaptKeep') }}</el-radio-button>
             </el-radio-group>
-            <el-tooltip content="结构迁移时如何处理目标端的字符类型长度：自动拉齐到源端长度，或保持目标端定义。" placement="top" effect="dark">
+            <el-tooltip :content="t('wizard.advanced.charsetAdaptHelp')" placement="top" effect="dark">
               <el-icon class="ops-help" tabindex="0"><QuestionFilled /></el-icon>
             </el-tooltip>
           </el-form-item>
         </el-form>
 
-        <h4 class="sub-title">增量回放设置</h4>
+        <h4 class="sub-title">{{ t('wizard.advanced.replayTitle') }}</h4>
         <el-form :label-width="'var(--ops-label-w)'" label-position="left" class="ops-form">
-          <el-form-item label="回放并发" required>
+          <el-form-item :label="t('wizard.advanced.replayConcurrency')" required>
             <el-input-number v-model="store.form.replayConcurrency" :min="1" :max="128" class="field field-narrow" />
-            <el-tooltip content="增量阶段回放 binlog 的并发线程数。" placement="top" effect="dark">
+            <el-tooltip :content="t('wizard.advanced.replayConcurrencyHelp')" placement="top" effect="dark">
               <el-icon class="ops-help" tabindex="0"><QuestionFilled /></el-icon>
             </el-tooltip>
           </el-form-item>
-          <el-form-item label="冲突策略" required>
+          <el-form-item :label="t('wizard.advanced.conflictPolicy')" required>
             <el-radio-group v-model="store.form.conflictPolicy">
-              <el-radio-button value="OVERWRITE">覆盖</el-radio-button>
-              <el-radio-button value="ERROR">报错</el-radio-button>
-              <el-radio-button value="IGNORE">忽略</el-radio-button>
+              <el-radio-button value="OVERWRITE">{{ t('wizard.advanced.conflictOverwrite') }}</el-radio-button>
+              <el-radio-button value="ERROR">{{ t('wizard.advanced.conflictError') }}</el-radio-button>
+              <el-radio-button value="IGNORE">{{ t('wizard.advanced.conflictIgnore') }}</el-radio-button>
             </el-radio-group>
-            <el-tooltip content="源端与目标端同一主键冲突时的处理方式。" placement="top" effect="dark">
+            <el-tooltip :content="t('wizard.advanced.conflictHelp')" placement="top" effect="dark">
               <el-icon class="ops-help" tabindex="0"><QuestionFilled /></el-icon>
             </el-tooltip>
           </el-form-item>
@@ -1195,45 +1196,45 @@ onUnmounted(() => {
       <div v-show="store.step === 3" class="step-pane precheck-pane">
         <div class="pane-head">
           <div>
-            <h3 class="pane-title">预检查</h3>
-            <p class="pane-note">逐项核对源端与目标端的迁移前提条件。</p>
+            <h3 class="pane-title">{{ t('wizard.steps.precheck') }}</h3>
+            <p class="pane-note">{{ t('wizard.precheck.note') }}</p>
           </div>
         </div>
         <el-descriptions :column="2" border size="small" class="summary">
-          <el-descriptions-item label="任务 ID">{{ createdTask?.publicId ?? '—' }}</el-descriptions-item>
-          <el-descriptions-item label="任务名称">{{ createdTask?.name ?? store.form.name }}</el-descriptions-item>
-          <el-descriptions-item label="源数据源">
+          <el-descriptions-item :label="t('wizard.precheck.taskId')">{{ createdTask?.publicId ?? '—' }}</el-descriptions-item>
+          <el-descriptions-item :label="t('wizard.basic.taskName')">{{ createdTask?.name ?? store.form.name }}</el-descriptions-item>
+          <el-descriptions-item :label="t('wizard.precheck.source')">
             {{ selectedSource ? `${selectedSource.name}（${sourceAddress}）` : sourceAddress }}
           </el-descriptions-item>
-          <el-descriptions-item label="目标数据源">
+          <el-descriptions-item :label="t('wizard.precheck.target')">
             {{ selectedTarget ? `${selectedTarget.name}（${targetAddress}）` : targetAddress }}
           </el-descriptions-item>
-          <el-descriptions-item label="创建时间" :span="2">{{ formatDateTime(createdTask?.createdAt) }}</el-descriptions-item>
+          <el-descriptions-item :label="t('wizard.precheck.createdAt')" :span="2">{{ formatDateTime(createdTask?.createdAt) }}</el-descriptions-item>
         </el-descriptions>
 
         <div class="rate-block">
           <div class="recheck-row">
             <el-button :disabled="!canRecheck" :loading="startingPrecheck" @click="onRecheck">
-              重新校验
+              {{ t('wizard.precheck.recheck') }}
             </el-button>
           </div>
-          <div class="rate-label">预检查通过率</div>
+          <div class="rate-label">{{ t('wizard.precheck.passRate') }}</div>
           <el-progress
             :percentage="passRate"
             :color="passed ? '#67c23a' : finished ? '#f56c6c' : '#409eff'"
           />
           <p class="tip">
             <template v-if="passed && warningCount > 0">
-              有 {{ warningCount }} 项需要确认，确认无误后可进入任务确认。
+              {{ t('wizard.precheck.tipWarning', { n: warningCount }) }}
             </template>
-            <template v-else-if="passed">全部检查已通过，可以进入任务确认。</template>
-            <template v-else>全部通过后才能进入任务确认并启动迁移。</template>
+            <template v-else-if="passed">{{ t('wizard.precheck.tipPassed') }}</template>
+            <template v-else>{{ t('wizard.precheck.tipBlocked') }}</template>
           </p>
         </div>
 
         <div v-if="preparing" class="check-preparing">
           <el-icon class="is-loading"><Loading /></el-icon>
-          <span>正在准备检查项…</span>
+          <span>{{ t('wizard.precheck.preparing') }}</span>
         </div>
 
         <section v-for="group in groups" :key="group.code" class="check-group">
@@ -1255,7 +1256,7 @@ onUnmounted(() => {
               <el-icon v-else-if="statusOf(item).tone === 'warn'" class="icon-warn"><WarningFilled /></el-icon>
               <el-icon v-else class="icon-muted"><Remove /></el-icon>
               <span class="check-status">{{ statusOf(item).label }}</span>
-              <span v-if="statusOf(item).inspectable" class="check-detail">查看详情</span>
+              <span v-if="statusOf(item).inspectable" class="check-detail">{{ t('wizard.precheck.detailLink') }}</span>
             </span>
           </div>
         </section>
@@ -1263,8 +1264,8 @@ onUnmounted(() => {
         <el-alert
           v-if="passed"
           :title="warningCount > 0
-            ? `预检查已通过，有 ${warningCount} 项需要确认，请点击下一步进入任务确认`
-            : '预检查已通过，请点击下一步进入任务确认'"
+            ? t('wizard.precheck.alertPassedWithWarning', { n: warningCount })
+            : t('wizard.precheck.alertPassed')"
           type="success"
           :closable="false"
           show-icon
@@ -1272,46 +1273,46 @@ onUnmounted(() => {
         />
         <el-alert
           v-else-if="finished && !passed"
-          title="预检查未通过，请根据失败项处理后重新校验"
+          :title="t('wizard.precheck.alertFailed')"
           type="error"
           :closable="false"
           show-icon
           class="done-alert"
         />
 
-        <el-dialog v-model="detailVisible" :title="detailItem?.title ?? '检查详情'" width="560px">
+        <el-dialog v-model="detailVisible" :title="detailItem?.title ?? t('wizard.precheck.detailTitle')" width="560px">
           <div v-if="detailItem" class="detail-body">
             <div class="detail-row">
-              <span class="detail-label">检查结果</span>
+              <span class="detail-label">{{ t('wizard.precheck.result') }}</span>
               <span class="detail-value" :class="`text-${statusOf(detailItem).tone}`">
                 {{ statusOf(detailItem).label }}
               </span>
             </div>
             <div v-if="detailItem.message" class="detail-row">
-              <span class="detail-label">原因</span>
+              <span class="detail-label">{{ t('wizard.precheck.reason') }}</span>
               <span class="detail-value">{{ detailItem.message }}</span>
             </div>
             <div v-if="detailItem.actual" class="detail-row">
-              <span class="detail-label">实际值</span>
+              <span class="detail-label">{{ t('wizard.precheck.actual') }}</span>
               <span class="detail-value mono">{{ detailItem.actual }}</span>
             </div>
             <div v-if="detailItem.expected" class="detail-row">
-              <span class="detail-label">期望值</span>
+              <span class="detail-label">{{ t('wizard.precheck.expected') }}</span>
               <span class="detail-value mono">{{ detailItem.expected }}</span>
             </div>
             <div v-if="detailItem.advice" class="detail-row">
-              <span class="detail-label">处理建议</span>
+              <span class="detail-label">{{ t('wizard.precheck.advice') }}</span>
               <span class="detail-value">{{ detailItem.advice }}</span>
             </div>
             <div v-if="detailItem.details.length > 0" class="detail-row">
-              <span class="detail-label">明细（{{ detailItem.details.length }}）</span>
+              <span class="detail-label">{{ t('wizard.precheck.details', { n: detailItem.details.length }) }}</span>
               <ul class="detail-list">
                 <li v-for="(line, index) in detailItem.details" :key="index" class="mono">{{ line }}</li>
               </ul>
             </div>
           </div>
           <template #footer>
-            <el-button @click="detailVisible = false">关闭</el-button>
+            <el-button @click="detailVisible = false">{{ t('common.close') }}</el-button>
           </template>
         </el-dialog>
       </div>
@@ -1319,22 +1320,22 @@ onUnmounted(() => {
       <div v-show="store.step === 4" class="step-pane confirm-pane">
         <div class="pane-head">
           <div>
-            <h3 class="pane-title">任务确认</h3>
-            <p class="pane-note">确认下方信息无误后启动迁移。</p>
+            <h3 class="pane-title">{{ t('wizard.steps.confirm') }}</h3>
+            <p class="pane-note">{{ t('wizard.confirm.note') }}</p>
           </div>
         </div>
         <el-descriptions :column="2" border size="small" class="summary">
-          <el-descriptions-item label="任务 ID">{{ createdTask?.publicId ?? '—' }}</el-descriptions-item>
-          <el-descriptions-item label="名称">{{ createdTask?.name ?? store.form.name }}</el-descriptions-item>
-          <el-descriptions-item label="源库地址">{{ sourceAddress }}</el-descriptions-item>
-          <el-descriptions-item label="目标库地址">{{ targetAddress }}</el-descriptions-item>
-          <el-descriptions-item label="迁移类型">{{ modeLabel }}</el-descriptions-item>
-          <el-descriptions-item label="同步拓扑">{{ topologyLabel }}</el-descriptions-item>
-          <el-descriptions-item label="创建时间">{{ formatDateTime(createdTask?.createdAt) }}</el-descriptions-item>
+          <el-descriptions-item :label="t('wizard.precheck.taskId')">{{ createdTask?.publicId ?? '—' }}</el-descriptions-item>
+          <el-descriptions-item :label="t('wizard.confirm.name')">{{ createdTask?.name ?? store.form.name }}</el-descriptions-item>
+          <el-descriptions-item :label="t('wizard.confirm.sourceAddr')">{{ sourceAddress }}</el-descriptions-item>
+          <el-descriptions-item :label="t('wizard.confirm.targetAddr')">{{ targetAddress }}</el-descriptions-item>
+          <el-descriptions-item :label="t('wizard.confirm.mode')">{{ modeLabel }}</el-descriptions-item>
+          <el-descriptions-item :label="t('wizard.confirm.topology')">{{ topologyLabel }}</el-descriptions-item>
+          <el-descriptions-item :label="t('wizard.precheck.createdAt')">{{ formatDateTime(createdTask?.createdAt) }}</el-descriptions-item>
         </el-descriptions>
 
         <el-alert
-          title="确认无误后点击「启动迁移」：先创建目标表结构，再做全量数据迁移，最后进入增量同步。"
+          :title="t('wizard.confirm.alert')"
           type="info"
           :closable="false"
           show-icon
@@ -1344,7 +1345,7 @@ onUnmounted(() => {
 
       <template #footer>
         <div class="wizard-footer">
-          <el-button :disabled="!canBack || creating" @click="onBack">上一步</el-button>
+          <el-button :disabled="!canBack || creating" @click="onBack">{{ t('wizard.prev') }}</el-button>
           <el-button
             :type="nextType"
             :loading="creating || starting"

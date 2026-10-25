@@ -17,6 +17,8 @@ import io.opendrs.migration.mapper.MigrationTaskMapper;
 import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.context.i18n.LocaleContextHolder;
+import java.util.Locale;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
@@ -55,8 +57,16 @@ class MigrationTaskApiTest {
 
     private long targetId;
 
+    @org.junit.jupiter.api.AfterEach
+    void resetLocale() {
+        LocaleContextHolder.resetLocaleContext();
+    }
+
     @BeforeEach
     void ensureDataSources() {
+        // MockMvc (Spring 7 TestDispatcherServlet) ignores the LocaleResolver, so message
+        // assertions pin the thread locale directly; the header alone is not enough here.
+        LocaleContextHolder.setLocale(Locale.ENGLISH);
         sourceId = dataSource(
                 "hr-oracle-to-mysql-source",
                 DbType.ORACLE,
@@ -164,11 +174,13 @@ class MigrationTaskApiTest {
                 """.formatted(sourceId, targetId);
 
         mockMvc.perform(post(BASE)
+                        .header("Accept-Language", "en")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(1001))
-                .andExpect(jsonPath("$.message").value("Two schemas map to the same target schema: hr"));
+                .andExpect(jsonPath("$.message")
+                        .value("Invalid table mapping: Two schemas map to the same target schema: hr"));
     }
 
     @Test
@@ -221,6 +233,7 @@ class MigrationTaskApiTest {
                 """.formatted(targetId);
 
         mockMvc.perform(post(BASE)
+                        .header("Accept-Language", "en")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
                 .andExpect(status().isOk())
@@ -230,7 +243,8 @@ class MigrationTaskApiTest {
 
     @Test
     void getMissingTaskReturns1002() throws Exception {
-        mockMvc.perform(get(BASE + "/999999"))
+        mockMvc.perform(get(BASE + "/999999")
+                        .header("Accept-Language", "en"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(1002))
                 .andExpect(jsonPath("$.message").value("Task not found: 999999"));
@@ -240,7 +254,8 @@ class MigrationTaskApiTest {
     void startFromCreatedNullIsRejected() throws Exception {
         long id = createTask("start-created", "FULL_AND_INCREMENTAL");
 
-        mockMvc.perform(post(BASE + "/" + id + "/start"))
+        mockMvc.perform(post(BASE + "/" + id + "/start")
+                        .header("Accept-Language", "en"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(1003))
                 .andExpect(jsonPath("$.message").value("Task " + id + " cannot be started from state null"));

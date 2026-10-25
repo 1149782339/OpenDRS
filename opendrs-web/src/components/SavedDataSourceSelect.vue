@@ -2,10 +2,14 @@
 import type { ConnectionResponse, DbType } from '@/types/api'
 import { QuestionFilled } from '@element-plus/icons-vue'
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const props = defineProps<{
   modelValue: number | undefined
-  title: string
+  /** 字段标题的 i18n key（如 connection.source），语言切换时自动重译。 */
+  titleKey: string
   inputId: string
   /** 该下拉框允许选择的数据库类型（如目标端允许 PostgreSQL 与 MySQL，供双向同步使用）。 */
   databaseTypes: DbType[]
@@ -21,6 +25,7 @@ const emit = defineEmits<{
 
 const options = computed(() => props.connections.filter((item) => props.databaseTypes.includes(item.type)))
 const selected = computed(() => options.value.find((item) => item.id === props.modelValue))
+const titleText = computed(() => t(props.titleKey))
 
 function optionLabel(item: ConnectionResponse): string {
   return `${item.name} (${item.host}:${item.port}/${item.database})`
@@ -28,18 +33,18 @@ function optionLabel(item: ConnectionResponse): string {
 </script>
 
 <template>
-  <el-form-item :label="title" :for="inputId" required>
+  <el-form-item :label="titleText" :for="inputId" required>
     <el-select
       :id="inputId"
       :model-value="modelValue"
-      :aria-label="title"
+      :aria-label="titleText"
       filterable
       clearable
       :loading="loading"
       :disabled="loading"
-      :placeholder="`请选择已录入的${title}`"
-      :no-data-text="`暂无已录入的 ${databaseLabel} 数据源`"
-      no-match-text="未找到匹配的数据源"
+      :placeholder="t('savedDs.placeholder', { title: titleText })"
+      :no-data-text="t('savedDs.noData', { label: databaseLabel })"
+      :no-match-text="t('savedDs.noMatch')"
       class="data-source-select field"
       @update:model-value="emit('update:modelValue', typeof $event === 'number' ? $event : undefined)"
     >
@@ -54,17 +59,17 @@ function optionLabel(item: ConnectionResponse): string {
         <span class="option-address">{{ item.host }}:{{ item.port }}/{{ item.database }}</span>
       </el-option>
     </el-select>
-    <el-tooltip :content="`可按名称、主机或数据库搜索，仅显示 ${databaseLabel} 数据源。`" placement="top" effect="dark">
+    <el-tooltip :content="t('savedDs.help', { label: databaseLabel })" placement="top" effect="dark">
       <el-icon class="ops-help" tabindex="0"><QuestionFilled /></el-icon>
     </el-tooltip>
     <!-- 选中后才出现的连接确认：压成一行，不在字段之间开一段灰块 -->
     <dl v-if="selected" class="connection-meta">
-      <div><dt>主机</dt><dd>{{ selected.host }}:{{ selected.port }}</dd></div>
-      <div><dt>数据库</dt><dd>{{ selected.database }}</dd></div>
-      <div><dt>用户</dt><dd>{{ selected.username }}</dd></div>
+      <div><dt>{{ t('common.host') }}</dt><dd>{{ selected.host }}:{{ selected.port }}</dd></div>
+      <div><dt>{{ t('common.database') }}</dt><dd>{{ selected.database }}</dd></div>
+      <div><dt>{{ t('common.user') }}</dt><dd>{{ selected.username }}</dd></div>
     </dl>
     <p v-else-if="!loading && options.length === 0" class="empty-hint">
-      还没有 {{ databaseLabel }} 数据源，请到「数据源」页面录入后刷新。
+      {{ t('savedDs.emptyHint', { label: databaseLabel, page: t('nav.connections') }) }}
     </p>
   </el-form-item>
 </template>

@@ -1,4 +1,5 @@
 import axios, { type AxiosRequestConfig } from 'axios'
+import { i18n } from '@/i18n'
 
 const SUCCESS_CODE = 1000
 
@@ -23,6 +24,12 @@ const client = axios.create({
   timeout: 60_000,
 })
 
+// 语言跟全局 i18n 走：后端按 Accept-Language 返回对应语言的 message
+client.interceptors.request.use((config) => {
+  config.headers.set('Accept-Language', i18n.global.locale.value)
+  return config
+})
+
 client.interceptors.response.use(
   (response) => {
     const body = response.data as ApiEnvelope<unknown>
@@ -30,7 +37,9 @@ client.interceptors.response.use(
       if (body.code === SUCCESS_CODE) {
         return { ...response, data: body.data }
       }
-      const error = new Error(body.message || '请求失败') as Error & { code?: number }
+      const error = new Error(body.message || i18n.global.t('http.requestFailed')) as Error & {
+        code?: number
+      }
       error.code = body.code
       return Promise.reject(error)
     }
@@ -39,9 +48,13 @@ client.interceptors.response.use(
   (error: unknown) => {
     if (axios.isAxiosError(error)) {
       const payload = error.response?.data
-      return Promise.reject(new Error(envelopeMessage(payload, error.message || '网络错误')))
+      return Promise.reject(
+        new Error(envelopeMessage(payload, error.message || i18n.global.t('http.networkError'))),
+      )
     }
-    return Promise.reject(error instanceof Error ? error : new Error('网络错误'))
+    return Promise.reject(
+      error instanceof Error ? error : new Error(i18n.global.t('http.networkError')),
+    )
   },
 )
 
@@ -49,7 +62,7 @@ export function apiErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message) {
     return error.message
   }
-  return '请求失败'
+  return i18n.global.t('http.requestFailed')
 }
 
 /** 业务错误码（1001–1006），拦截器挂在 Error 上；非业务错误返回 null。 */

@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { DEFAULT_PORTS, type ConnectionInfo, type DbType } from '@/types/api'
-import { DB_LABELS } from '@/utils/taskStatus'
+import { dbLabel } from '@/utils/taskStatus'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const props = withDefaults(
   defineProps<{
@@ -12,7 +15,7 @@ const props = withDefaults(
     showType?: boolean
     showExtra?: boolean
   }>(),
-  { extraText: '', passwordPlaceholder: '请输入密码', lockType: false, showType: true, showExtra: true },
+  { extraText: '', passwordPlaceholder: undefined, lockType: false, showType: true, showExtra: true },
 )
 
 const emit = defineEmits<{
@@ -41,20 +44,20 @@ function onTypeChange(type: DbType) {
 </script>
 
 <template>
-  <el-form-item v-if="showType" label="类型" required>
+  <el-form-item v-if="showType" :label="t('common.type')" required>
     <el-select
       :model-value="connection.type"
       :disabled="lockType"
       style="width: 100%"
       @change="onTypeChange"
     >
-      <el-option v-for="item in types" :key="item" :label="DB_LABELS[item]" :value="item" />
+      <el-option v-for="item in types" :key="item" :label="dbLabel(item)" :value="item" />
     </el-select>
   </el-form-item>
-  <el-form-item label="主机" required>
+  <el-form-item :label="t('common.host')" required>
     <el-input :model-value="connection.host" @update:model-value="patch({ host: $event })" />
   </el-form-item>
-  <el-form-item label="端口" required>
+  <el-form-item :label="t('common.port')" required>
     <el-input-number
       :model-value="connection.port"
       :min="1"
@@ -64,28 +67,28 @@ function onTypeChange(type: DbType) {
       @update:model-value="patch({ port: Number($event || 0) })"
     />
   </el-form-item>
-  <el-form-item label="数据库" required>
+  <el-form-item :label="t('common.database')" required>
     <el-input :model-value="connection.database" @update:model-value="patch({ database: $event })" />
   </el-form-item>
-  <el-form-item label="用户名" required>
+  <el-form-item :label="t('common.username')" required>
     <el-input :model-value="connection.username" @update:model-value="patch({ username: $event })" />
   </el-form-item>
-  <el-form-item label="密码" required>
+  <el-form-item :label="t('common.password')" required>
     <el-input
       :model-value="connection.password"
       type="password"
       show-password
       autocomplete="new-password"
-      :placeholder="passwordPlaceholder"
+      :placeholder="passwordPlaceholder ?? t('connection.passwordPlaceholder')"
       @update:model-value="patch({ password: $event })"
     />
   </el-form-item>
-  <el-form-item v-if="showExtra" label="额外参数 JSON">
+  <el-form-item v-if="showExtra" :label="t('connection.extraJson')">
     <el-input
       :model-value="extraText"
       type="textarea"
       :rows="4"
-      placeholder='可选，例如 {"useSsl": false, "serverTimezone": "UTC"}'
+      :placeholder="t('connection.extraPlaceholder')"
       @update:model-value="emit('update:extraText', $event)"
     />
   </el-form-item>

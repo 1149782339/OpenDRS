@@ -1,7 +1,8 @@
 package io.opendrs.migration.service;
 
-import io.opendrs.common.error.AppException;
 import io.opendrs.common.error.ErrorCode;
+import io.opendrs.common.error.ExceptionFactory;
+import io.opendrs.common.i18n.ErrorMessage;
 import io.opendrs.common.log.MigrationLogLevel;
 import io.opendrs.common.log.MigrationLogListener;
 import io.opendrs.migration.api.response.MigrationLogItem;
@@ -98,7 +99,7 @@ public class MigrationLogService {
      */
     public MigrationLogPage page(Long taskId, MigrationLogLevel level, int page, int size) {
         if (taskMapper.findById(taskId) == null) {
-            throw AppException.of(ErrorCode.TASK_NOT_FOUND, "Task not found: " + taskId);
+            throw ExceptionFactory.create(ErrorCode.TASK_NOT_FOUND, ErrorMessage.TASK_NOT_FOUND, taskId);
         }
         int pageSize = Math.min(Math.max(size <= 0 ? PAGE_SIZE_DEFAULT : size, 1), PAGE_SIZE_MAX);
         int pageNumber = Math.max(page, 1);

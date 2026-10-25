@@ -9,9 +9,9 @@ import {
   canStartTask,
   canTerminateTask,
   DASH,
-  DB_LABELS,
+  dbLabel,
   isLiveTask,
-  MODE_LABELS,
+  modeLabel,
   phaseOf,
   stateOf,
   type StatusView,
@@ -19,8 +19,10 @@ import {
 import { CircleCheck, CircleClose, Loading } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 
+const { t, locale } = useI18n()
 const router = useRouter()
 const loading = ref(false)
 const rows = ref<MigrationTaskSummary[]>([])
@@ -30,9 +32,9 @@ let pollTimer: ReturnType<typeof setInterval> | null = null
 
 /** start() 一个入口三种文案：未启动=启动、已暂停=恢复、失败=重启。 */
 function startLabel(row: MigrationTaskSummary): string {
-  if (row.state === 'STOPPED') return '恢复'
-  if (row.state === 'FAILED') return '重启'
-  return '启动'
+  if (row.state === 'STOPPED') return t('task.resume')
+  if (row.state === 'FAILED') return t('task.restart')
+  return t('task.start')
 }
 
 interface TaskRow extends MigrationTaskSummary {
@@ -48,8 +50,10 @@ interface TaskRow extends MigrationTaskSummary {
   createdLabel: string
 }
 
-const viewRows = computed<TaskRow[]>(() =>
-  rows.value.map((row) => ({
+const viewRows = computed<TaskRow[]>(() => {
+  // 语言切换时重算所有派生标签（stateOf/phaseOf/dbLabel/modeLabel 内部经 i18n 翻译）
+  void locale.value
+  return rows.value.map((row) => ({
     ...row,
     status: stateOf(row),
     phaseLabel: phaseOf(row),
@@ -57,12 +61,12 @@ const viewRows = computed<TaskRow[]>(() =>
     pausable: canPauseTask(row),
     terminatable: canTerminateTask(row),
     deletable: canDeleteTask(row),
-    sourceLabel: DB_LABELS[row.source?.type] ?? DASH,
-    targetLabel: DB_LABELS[row.target?.type] ?? DASH,
-    modeLabel: MODE_LABELS[row.mode] ?? row.mode,
+    sourceLabel: row.source?.type ? dbLabel(row.source.type) : DASH,
+    targetLabel: row.target?.type ? dbLabel(row.target.type) : DASH,
+    modeLabel: modeLabel(row.mode),
     createdLabel: formatDateTime(row.createdAt),
-  })),
-)
+  }))
+})
 
 /** 有任务在跑就 2s 静默刷新，全静止就停掉，避免列表上的转圈图标不动。 */
 function syncPolling() {
@@ -106,7 +110,7 @@ async function onStart(row: TaskRow) {
   actionKind.value = 'start'
   try {
     await startTask(row.id)
-    ElMessage.success('已启动')
+    ElMessage.success(t('task.started'))
     await load()
   } catch (error) {
     ElMessage.error(apiErrorMessage(error))
@@ -122,7 +126,7 @@ async function onPause(row: TaskRow) {
   actionKind.value = 'pause'
   try {
     await stopTask(row.id)
-    ElMessage.success('已暂停')
+    ElMessage.success(t('task.paused'))
     await load()
   } catch (error) {
     ElMessage.error(apiErrorMessage(error))
@@ -136,9 +140,9 @@ async function onPause(row: TaskRow) {
 async function onTerminate(row: TaskRow) {
   try {
     await ElMessageBox.confirm(
-      `确认结束任务「${row.name}」？结束后任务不可再启动，仅可删除记录。`,
-      '结束任务',
-      { type: 'warning', confirmButtonText: '结束', cancelButtonText: '取消' },
+      t('task.terminateConfirm', { name: row.name }),
+      t('task.terminateTitle'),
+      { type: 'warning', confirmButtonText: t('task.terminate'), cancelButtonText: t('common.cancel') },
     )
   } catch (error) {
     if (error === 'cancel' || error === 'close') return
@@ -148,7 +152,7 @@ async function onTerminate(row: TaskRow) {
   actionKind.value = 'terminate'
   try {
     await terminateTask(row.id)
-    ElMessage.success('已结束')
+    ElMessage.success(t('task.terminated'))
     await load()
   } catch (error) {
     ElMessage.error(apiErrorMessage(error))
@@ -160,10 +164,10 @@ async function onTerminate(row: TaskRow) {
 
 async function onDelete(row: TaskRow) {
   try {
-    await ElMessageBox.confirm(`确认删除任务「${row.name}」的记录？该操作不可恢复。`, '删除任务', {
+    await ElMessageBox.confirm(t('task.deleteConfirm', { name: row.name }), t('task.deleteTitle'), {
       type: 'warning',
-      confirmButtonText: '删除',
-      cancelButtonText: '取消',
+      confirmButtonText: t('common.delete'),
+      cancelButtonText: t('common.cancel'),
     })
   } catch (error) {
     if (error === 'cancel' || error === 'close') return
@@ -171,7 +175,7 @@ async function onDelete(row: TaskRow) {
   }
   try {
     await deleteTask(row.id)
-    ElMessage.success('已删除')
+    ElMessage.success(t('task.deleted'))
     await load()
   } catch (error) {
     ElMessage.error(apiErrorMessage(error))
@@ -191,10 +195,10 @@ onUnmounted(() => {
 <template>
   <div>
     <div class="page-toolbar">
-      <h2>任务</h2>
+      <h2>{{ t('task.title') }}</h2>
       <div>
-        <el-button @click="load()">刷新</el-button>
-        <el-button type="primary" @click="router.push('/tasks/create')">新建</el-button>
+        <el-button @click="load()">{{ t('common.refresh') }}</el-button>
+        <el-button type="primary" @click="router.push('/tasks/create')">{{ t('task.new') }}</el-button>
       </div>
     </div>
     <el-table
@@ -206,13 +210,13 @@ onUnmounted(() => {
       class="task-table"
       @row-click="openRow"
     >
-      <el-table-column label="名称/ID" min-width="200">
+      <el-table-column :label="t('task.nameId')" min-width="200">
         <template #default="{ row }: { row: TaskRow }">
           <div class="task-name" :title="row.name">{{ row.name }}</div>
           <div class="task-uuid" :title="row.publicId">{{ row.publicId.slice(0, 19) }}…</div>
         </template>
       </el-table-column>
-      <el-table-column label="状态" width="110">
+      <el-table-column :label="t('task.status')" width="110">
         <template #default="{ row }">
           <span class="status" :class="`status-${row.status.tone}`">
             <el-icon v-if="row.status.tone === 'running'" class="is-loading"><Loading /></el-icon>
@@ -222,22 +226,22 @@ onUnmounted(() => {
           </span>
         </template>
       </el-table-column>
-      <el-table-column label="迁移阶段" width="110">
+      <el-table-column :label="t('task.phase')" width="140">
         <template #default="{ row }">{{ row.phaseLabel }}</template>
       </el-table-column>
-      <el-table-column label="源库引擎" min-width="110">
+      <el-table-column :label="t('task.sourceEngine')" width="110">
         <template #default="{ row }">{{ row.sourceLabel }}</template>
       </el-table-column>
-      <el-table-column label="目标库引擎" min-width="110">
+      <el-table-column :label="t('task.targetEngine')" width="110">
         <template #default="{ row }">{{ row.targetLabel }}</template>
       </el-table-column>
-      <el-table-column label="迁移模式" width="110">
+      <el-table-column :label="t('task.mode')" width="110">
         <template #default="{ row }">{{ row.modeLabel }}</template>
       </el-table-column>
-      <el-table-column label="创建时间" width="180">
+      <el-table-column :label="t('task.createdAt')" width="180">
         <template #default="{ row }">{{ row.createdLabel }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="240" fixed="right">
+      <el-table-column :label="t('common.actions')" width="240" fixed="right">
         <template #default="{ row }">
           <div class="row-actions" @click.stop>
             <el-button
@@ -256,7 +260,7 @@ onUnmounted(() => {
               :loading="actionId === row.id && actionKind === 'pause'"
               @click="onPause(row)"
             >
-              暂停
+              {{ t('task.pause') }}
             </el-button>
             <el-button
               type="warning"
@@ -265,10 +269,10 @@ onUnmounted(() => {
               :loading="actionId === row.id && actionKind === 'terminate'"
               @click="onTerminate(row)"
             >
-              结束
+              {{ t('task.terminate') }}
             </el-button>
             <el-button type="danger" link :disabled="!row.deletable" @click="onDelete(row)">
-              删除
+              {{ t('common.delete') }}
             </el-button>
           </div>
         </template>

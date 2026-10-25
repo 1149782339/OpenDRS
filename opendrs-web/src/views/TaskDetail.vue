@@ -10,13 +10,22 @@ import {
   type MigrationTaskResponse,
 } from '@/types/api'
 import { formatDateTime, formatLogTime } from '@/utils/datetime'
-import { DASH, DB_LABELS, isLiveTask, MODE_LABELS, PHASE_LABELS, stateOf } from '@/utils/taskStatus'
+import {
+  DASH,
+  dbLabel,
+  isLiveTask,
+  modeLabel,
+  phaseLabelOf,
+  stateOf,
+} from '@/utils/taskStatus'
 import { ArrowLeft, Loading } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import TaskMonitor from '@/components/TaskMonitor.vue'
 
+const { t, locale } = useI18n()
 const route = useRoute()
 const router = useRouter()
 
@@ -43,6 +52,7 @@ const logLoading = ref(false)
 
 /** 任务状态：优先用 /status 轮询（含 暂停中/结束中），没轮到时退回任务详情。 */
 const stateView = computed(() => {
+  void locale.value // 语言切换时重译状态标签
   if (status.value) return stateOf(status.value)
   if (task.value) return stateOf(task.value)
   return { tone: 'none' as const, label: '' }
@@ -76,12 +86,14 @@ const progressBlocks = computed<ProgressBlock[]>(() => {
   const reverse = status.value?.reverse ?? null
   if (!reverse) return [forward]
   return [
-    { title: '正向同步进度', offset: forward.offset, lag: forward.lag },
-    { title: '反向同步进度', offset: reverse, lag: null },
+    { title: t('detail.forward'), offset: forward.offset, lag: forward.lag },
+    { title: t('detail.reverse'), offset: reverse, lag: null },
   ]
 })
 /** 迁移阶段独立成栏，任何状态都显示：失败时一眼看出死在结构/全量/增量哪一步。 */
-const phaseLabel = computed(() => (task.value ? PHASE_LABELS[task.value.phase] : ''))
+const phaseLabel = computed(() =>
+  task.value ? phaseLabelOf(task.value.phase) : '',
+)
 const lastPage = computed(() => Math.max(1, Math.ceil(logTotal.value / PAGE_SIZE)))
 const showPager = computed(() => logTotal.value > PAGE_SIZE)
 
@@ -206,27 +218,27 @@ onUnmounted(() => {
     <div class="back-row">
       <span class="back" @click="router.push('/tasks')">
         <el-icon><ArrowLeft /></el-icon>
-        <span>任务列表</span>
+        <span>{{ t('detail.backToList') }}</span>
       </span>
     </div>
 
     <el-tabs v-model="activeTab" class="detail-tabs">
-      <el-tab-pane label="基本信息" name="info">
+      <el-tab-pane :label="t('detail.tabs.info')" name="info">
         <template v-if="task">
           <section class="block">
-            <h3>任务信息</h3>
+            <h3>{{ t('detail.taskInfo') }}</h3>
             <div class="kv">
-              <div class="k">任务名称</div>
+              <div class="k">{{ t('detail.taskName') }}</div>
               <div class="v">{{ task.name }}</div>
-              <div class="k">任务ID</div>
+              <div class="k">{{ t('detail.taskId') }}</div>
               <div class="v mono" :title="task.publicId">{{ task.publicId }}</div>
 
-              <div class="k">任务创建时间</div>
+              <div class="k">{{ t('detail.createdAt') }}</div>
               <div class="v">{{ formatDateTime(task.createdAt) }}</div>
-              <div class="k">迁移模式</div>
-              <div class="v">{{ MODE_LABELS[task.mode] ?? task.mode }}</div>
+              <div class="k">{{ t('detail.mode') }}</div>
+              <div class="v">{{ modeLabel(task.mode) }}</div>
 
-              <div class="k">任务状态</div>
+              <div class="k">{{ t('detail.status') }}</div>
               <div class="v">
                 <span v-if="stateLabel" class="status-text" :class="`status-${tone}`">
                   <el-icon v-if="tone === 'running'" class="is-loading"><Loading /></el-icon>
@@ -234,83 +246,83 @@ onUnmounted(() => {
                 </span>
                 <span v-else>{{ DASH }}</span>
               </div>
-              <div class="k">迁移阶段</div>
+              <div class="k">{{ t('detail.phase') }}</div>
               <div class="v"><span class="phase-tag">{{ phaseLabel }}</span></div>
             </div>
           </section>
 
           <section class="block">
-            <h3>迁移实例信息</h3>
+            <h3>{{ t('detail.instanceInfo') }}</h3>
             <div class="kv">
-              <div class="k">源库引擎</div>
-              <div class="v">{{ DB_LABELS[task.source.type] ?? task.source.type }}</div>
-              <div class="k">IP地址</div>
+              <div class="k">{{ t('detail.sourceEngine') }}</div>
+              <div class="v">{{ dbLabel(task.source.type) }}</div>
+              <div class="k">{{ t('detail.ip') }}</div>
               <div class="v mono">{{ hostPort(task.source) }}</div>
 
-              <div class="k">目标库引擎</div>
-              <div class="v">{{ DB_LABELS[task.target.type] ?? task.target.type }}</div>
-              <div class="k">IP地址</div>
+              <div class="k">{{ t('detail.targetEngine') }}</div>
+              <div class="v">{{ dbLabel(task.target.type) }}</div>
+              <div class="k">{{ t('detail.ip') }}</div>
               <div class="v mono">{{ hostPort(task.target) }}</div>
             </div>
           </section>
 
           <section class="block">
-            <h3>迁移进度</h3>
+            <h3>{{ t('detail.progress') }}</h3>
             <template v-for="(block, index) in progressBlocks" :key="index">
               <h4 v-if="block.title" class="direction-title">{{ block.title }}</h4>
               <div class="kv">
-                <div class="k">更新时间</div>
+                <div class="k">{{ t('detail.updatedAt') }}</div>
                 <div class="v kv-wide">{{ block.offset?.updatedAt ?? DASH }}</div>
-                <div class="k">源位点</div>
+                <div class="k">{{ t('detail.sourceOffset') }}</div>
                 <div class="v mono">{{ block.offset?.source ?? DASH }}</div>
-                <div class="k">抓取位点</div>
+                <div class="k">{{ t('detail.capturedOffset') }}</div>
                 <div class="v mono">{{ block.offset?.captured ?? DASH }}</div>
-                <div class="k">回放位点</div>
+                <div class="k">{{ t('detail.appliedOffset') }}</div>
                 <div class="v mono">{{ block.offset?.applied ?? DASH }}</div>
-                <div class="k">回放时延</div>
+                <div class="k">{{ t('detail.lag') }}</div>
                 <div class="v">{{ block.lag ?? DASH }}</div>
               </div>
             </template>
           </section>
         </template>
-        <el-empty v-else-if="!loading" description="任务不存在或已删除" />
+        <el-empty v-else-if="!loading" :description="t('detail.notExist')" />
       </el-tab-pane>
 
-      <el-tab-pane label="迁移日志" name="logs">
+      <el-tab-pane :label="t('detail.tabs.logs')" name="logs">
         <section class="block">
           <div class="log-head">
-            <h3>迁移日志</h3>
+            <h3>{{ t('detail.tabs.logs') }}</h3>
             <div class="log-tools">
               <el-select
                 v-model="level"
                 size="small"
                 class="level-select"
-                placeholder="全部级别"
+                :placeholder="t('detail.allLevels')"
                 @change="onLevelChange"
               >
-                <el-option label="全部级别" value="" />
+                <el-option :label="t('detail.allLevels')" value="" />
                 <el-option v-for="item in LEVELS" :key="item" :label="item" :value="item" />
               </el-select>
-              <el-button size="small" :loading="logLoading" @click="loadLogs()">刷新</el-button>
+              <el-button size="small" :loading="logLoading" @click="loadLogs()">{{ t('detail.refresh') }}</el-button>
             </div>
           </div>
 
-          <el-table v-loading="logLoading" :data="logs" size="small" class="log-table" empty-text="暂无日志">
-            <el-table-column label="时间" width="176">
+          <el-table v-loading="logLoading" :data="logs" size="small" class="log-table" :empty-text="t('detail.noLogs')">
+            <el-table-column :label="t('detail.time')" width="176">
               <template #default="{ row }">
                 <span class="mono time">{{ formatLogTime(row.loggedAt) }}</span>
               </template>
             </el-table-column>
-            <el-table-column label="级别" width="92">
+            <el-table-column :label="t('detail.level')" width="92">
               <template #default="{ row }">
                 <span class="lv" :class="`lv-${row.level.toLowerCase()}`">{{ row.level }}</span>
               </template>
             </el-table-column>
-            <el-table-column prop="message" label="描述" min-width="320" show-overflow-tooltip />
+            <el-table-column prop="message" :label="t('detail.description')" min-width="320" show-overflow-tooltip />
           </el-table>
 
           <div class="log-foot">
-            <span class="total">共 {{ logTotal }} 条</span>
+            <span class="total">{{ t('detail.total', { n: logTotal }) }}</span>
             <el-pagination
               v-if="showPager"
               :current-page="page"
@@ -324,10 +336,10 @@ onUnmounted(() => {
         </section>
       </el-tab-pane>
 
-      <el-tab-pane label="任务监控" name="monitor" lazy>
+      <el-tab-pane :label="t('detail.tabs.monitor')" name="monitor" lazy>
         <section class="block">
           <TaskMonitor v-if="task" :task-id="taskId" />
-          <el-empty v-else-if="!loading" description="任务不存在或已删除" />
+          <el-empty v-else-if="!loading" :description="t('detail.notExist')" />
         </section>
       </el-tab-pane>
     </el-tabs>

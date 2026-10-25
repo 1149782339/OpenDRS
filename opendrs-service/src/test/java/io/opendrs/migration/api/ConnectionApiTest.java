@@ -12,6 +12,8 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import java.util.Locale;
+
 import io.opendrs.common.error.AppException;
 import io.opendrs.common.error.ErrorCode;
 import io.opendrs.jdbc.JdbcConnection;
@@ -28,6 +30,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
+import org.springframework.context.i18n.LocaleContextHolder;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
@@ -58,6 +61,14 @@ class ConnectionApiTest {
     @BeforeEach
     void resetFactory() {
         Mockito.reset(jdbcConnectionFactory);
+        // MockMvc (Spring 7 TestDispatcherServlet) ignores the LocaleResolver, so message
+        // assertions pin the thread locale directly; the header alone is not enough here.
+        LocaleContextHolder.setLocale(Locale.ENGLISH);
+    }
+
+    @org.junit.jupiter.api.AfterEach
+    void resetLocale() {
+        LocaleContextHolder.resetLocaleContext();
     }
 
     @Test
@@ -129,6 +140,7 @@ class ConnectionApiTest {
         createConnection("dup-conn", mysqlConnectionJson("pw"));
 
         mockMvc.perform(post(BASE)
+                        .header("Accept-Language", "en")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(createBody("dup-conn", mysqlConnectionJson("pw"))))
                 .andExpect(status().isOk())
@@ -147,7 +159,8 @@ class ConnectionApiTest {
 
         assertThat(connectionInfoMapper.findById(id)).isNull();
 
-        mockMvc.perform(delete(BASE + "/" + id))
+        mockMvc.perform(delete(BASE + "/" + id)
+                        .header("Accept-Language", "en"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(1004))
                 .andExpect(jsonPath("$.message").value("Connection not found: " + id));
@@ -155,7 +168,8 @@ class ConnectionApiTest {
 
     @Test
     void deleteMissingReturns1004() throws Exception {
-        mockMvc.perform(delete(BASE + "/999999"))
+        mockMvc.perform(delete(BASE + "/999999")
+                        .header("Accept-Language", "en"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(1004))
                 .andExpect(jsonPath("$.message").value("Connection not found: 999999"));
@@ -174,7 +188,8 @@ class ConnectionApiTest {
 
         assertThat(connectionInfoMapper.findById(sourceId)).isNotNull();
 
-        mockMvc.perform(delete(BASE + "/" + sourceId))
+        mockMvc.perform(delete(BASE + "/" + sourceId)
+                        .header("Accept-Language", "en"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(1006))
                 .andExpect(jsonPath("$.message").value(
@@ -202,11 +217,12 @@ class ConnectionApiTest {
                 .thenThrow(new JdbcException("refused"));
 
         mockMvc.perform(post(BASE + "/test")
+                        .header("Accept-Language", "en")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(oracleConnectionJson("secret-oracle")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(1005))
-                .andExpect(jsonPath("$.message").value("refused"));
+                .andExpect(jsonPath("$.message").value("Connection test failed: refused"));
     }
 
     @Test
@@ -234,10 +250,11 @@ class ConnectionApiTest {
         when(jdbcConnectionFactory.open(any(JdbcConnectionConfig.class))).thenReturn(failing);
         doThrow(new JdbcException("auth failed")).when(failing).ping();
 
-        mockMvc.perform(post(BASE + "/" + id + "/test"))
+        mockMvc.perform(post(BASE + "/" + id + "/test")
+                        .header("Accept-Language", "en"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(1005))
-                .andExpect(jsonPath("$.message").value("auth failed"));
+                .andExpect(jsonPath("$.message").value("Connection test failed: auth failed"));
     }
 
     private long createConnection(String name, String connectionJson) throws Exception {

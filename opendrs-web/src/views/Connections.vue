@@ -9,9 +9,12 @@ import {
 } from '@/api/connection'
 import ConnectionFields from '@/components/ConnectionFields.vue'
 import { emptyConnection, type ConnectionInfo, type ConnectionResponse } from '@/types/api'
-import { DB_LABELS } from '@/utils/taskStatus'
+import { dbLabel } from '@/utils/taskStatus'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { onMounted, reactive, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const loading = ref(false)
 const rows = ref<ConnectionResponse[]>([])
@@ -51,7 +54,7 @@ function parseExtra(text: string): Record<string, unknown> | undefined {
   }
   const parsed: unknown = JSON.parse(trimmed)
   if (parsed == null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new Error('额外参数必须是 JSON 对象')
+    throw new Error(t('connection.extraInvalid'))
   }
   return parsed as Record<string, unknown>
 }
@@ -67,7 +70,7 @@ async function onTestUnsaved() {
   testingUnsaved.value = true
   try {
     const result = await testAdHocConnection(buildConnection())
-    ElMessage.success(result.ok ? `测试成功，延迟 ${result.latencyMs ?? 0} ms` : '测试失败')
+    ElMessage.success(result.ok ? t('connection.testOk', { ms: result.latencyMs ?? 0 }) : t('connection.testFail'))
   } catch (error) {
     ElMessage.error(apiErrorMessage(error))
   } finally {
@@ -79,7 +82,7 @@ async function onCreate() {
   creating.value = true
   try {
     await createConnection({ name: form.name, connection: buildConnection() })
-    ElMessage.success('创建成功')
+    ElMessage.success(t('connection.createOk'))
     dialogVisible.value = false
     await load()
   } catch (error) {
@@ -93,7 +96,7 @@ async function onTestSaved(row: ConnectionResponse) {
   testingId.value = row.id
   try {
     const result = await testSavedConnection(row.id)
-    ElMessage.success(result.ok ? `测试成功，延迟 ${result.latencyMs ?? 0} ms` : '测试失败')
+    ElMessage.success(result.ok ? t('connection.testOk', { ms: result.latencyMs ?? 0 }) : t('connection.testFail'))
   } catch (error) {
     ElMessage.error(apiErrorMessage(error))
   } finally {
@@ -103,13 +106,13 @@ async function onTestSaved(row: ConnectionResponse) {
 
 async function onDelete(row: ConnectionResponse) {
   try {
-    await ElMessageBox.confirm(`确认删除数据源「${row.name}」？`, '删除数据源', {
+    await ElMessageBox.confirm(t('connection.deleteConfirm', { name: row.name }), t('connection.deleteTitle'), {
       type: 'warning',
-      confirmButtonText: '删除',
-      cancelButtonText: '取消',
+      confirmButtonText: t('common.delete'),
+      cancelButtonText: t('common.cancel'),
     })
     await deleteConnection(row.id)
-    ElMessage.success('已删除')
+    ElMessage.success(t('connection.deleted'))
     await load()
   } catch (error) {
     if (error === 'cancel' || error === 'close') {
@@ -125,23 +128,23 @@ onMounted(load)
 <template>
   <div>
     <div class="page-toolbar">
-      <h2>数据源</h2>
+      <h2>{{ t('connection.title') }}</h2>
       <div>
-        <el-button @click="load">刷新</el-button>
-        <el-button type="primary" @click="openCreate">新建</el-button>
+        <el-button @click="load">{{ t('common.refresh') }}</el-button>
+        <el-button type="primary" @click="openCreate">{{ t('common.create') }}</el-button>
       </div>
     </div>
     <el-table v-loading="loading" :data="rows" border stripe>
-      <el-table-column prop="id" label="ID" width="80" />
-      <el-table-column prop="name" label="名称" min-width="140" />
-      <el-table-column label="类型" min-width="110">
-        <template #default="{ row }: { row: ConnectionResponse }">{{ DB_LABELS[row.type] }}</template>
+      <el-table-column prop="id" :label="t('common.id')" width="80" />
+      <el-table-column prop="name" :label="t('common.name')" min-width="140" />
+      <el-table-column :label="t('common.type')" min-width="110">
+        <template #default="{ row }: { row: ConnectionResponse }">{{ dbLabel(row.type) }}</template>
       </el-table-column>
-      <el-table-column prop="host" label="主机" min-width="140" />
-      <el-table-column prop="port" label="端口" width="90" />
-      <el-table-column prop="database" label="数据库" min-width="120" />
-      <el-table-column prop="username" label="用户名" min-width="120" />
-      <el-table-column label="操作" width="180" fixed="right">
+      <el-table-column prop="host" :label="t('common.host')" min-width="140" />
+      <el-table-column prop="port" :label="t('common.port')" width="90" />
+      <el-table-column prop="database" :label="t('common.database')" min-width="120" />
+      <el-table-column prop="username" :label="t('common.username')" min-width="120" />
+      <el-table-column :label="t('common.actions')" width="180" fixed="right">
         <template #default="{ row }">
           <el-button
             type="primary"
@@ -149,24 +152,24 @@ onMounted(load)
             :loading="testingId === row.id"
             @click="onTestSaved(row)"
           >
-            测试
+            {{ t('connection.test') }}
           </el-button>
-          <el-button type="danger" link @click="onDelete(row)">删除</el-button>
+          <el-button type="danger" link @click="onDelete(row)">{{ t('common.delete') }}</el-button>
         </template>
       </el-table-column>
     </el-table>
 
-    <el-dialog v-model="dialogVisible" title="新建数据源" width="560px" destroy-on-close>
+    <el-dialog v-model="dialogVisible" :title="t('connection.createTitle')" width="560px" destroy-on-close>
       <el-form label-width="110px">
-        <el-form-item label="名称" required>
+        <el-form-item :label="t('common.name')" required>
           <el-input v-model="form.name" />
         </el-form-item>
         <ConnectionFields v-model="form.connection" v-model:extra-text="form.extraText" />
       </el-form>
       <template #footer>
-        <el-button :loading="testingUnsaved" @click="onTestUnsaved">测试未保存</el-button>
-        <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="creating" @click="onCreate">创建</el-button>
+        <el-button :loading="testingUnsaved" @click="onTestUnsaved">{{ t('connection.testUnsaved') }}</el-button>
+        <el-button @click="dialogVisible = false">{{ t('common.cancel') }}</el-button>
+        <el-button type="primary" :loading="creating" @click="onCreate">{{ t('common.create') }}</el-button>
       </template>
     </el-dialog>
   </div>

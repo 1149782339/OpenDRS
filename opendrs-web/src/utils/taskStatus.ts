@@ -1,46 +1,20 @@
 import type { DbType, MigrationPhase, TaskState, MigrationMode } from '@/types/api'
+import { i18n } from '@/i18n'
 
 export const DASH = '—'
 
-export const DB_LABELS: Record<DbType, string> = {
-  MYSQL: 'MySQL',
-  POSTGRESQL: 'PostgreSQL',
-  ORACLE: 'Oracle',
+/** 引擎名是产品名，不翻译；仍走字典便于统一兜底。 */
+export function dbLabel(type: DbType): string {
+  return i18n.global.t(`status.db.${type}`)
 }
 
-export const MODE_LABELS: Record<MigrationMode, string> = {
-  FULL_ONLY: '全量迁移',
-  INCREMENTAL_ONLY: '增量迁移',
-  FULL_AND_INCREMENTAL: '全量+增量',
-}
-
-/** 只有 state=运行中 时才把 phase 当作对外状态，其余阶段不单独成词。 */
-export const RUNNING_PHASES: Partial<Record<MigrationPhase, string>> = {
-  SCHEMA_MIGRATION: '结构迁移',
-  FULL: '全量迁移',
-  INCREMENTAL: '增量迁移',
+export function modeLabel(mode: MigrationMode): string {
+  return i18n.global.t(`status.mode.${mode}`)
 }
 
 /** 详情页把状态和阶段分开写，所以每个阶段都要有一个名字。 */
-export const PHASE_LABELS: Record<MigrationPhase, string> = {
-  CREATED: '待预检查',
-  PRECHECKING: '预检查中',
-  PRECHECKED: '预检查通过',
-  SCHEMA_MIGRATION: '结构迁移',
-  FULL: '全量迁移',
-  INCREMENTAL: '增量迁移',
-}
-
-/** 状态列文案：状态与阶段拆列后，状态只由 state（+stopIntent）决定。 */
-export const STATE_LABELS: Record<TaskState, string> = {
-  STARTING: '启动中',
-  RUNNING: '运行中',
-  STOPPING: '暂停中',
-  TERMINATING: '结束中',
-  STOPPED: '已暂停',
-  COMPLETED: '已结束',
-  FAILED: '失败',
-  TERMINATED: '已结束',
+export function phaseLabelOf(phase: MigrationPhase): string {
+  return i18n.global.t(`status.phase.${phase}`)
 }
 
 export type StatusTone = 'running' | 'done' | 'failed' | 'none'
@@ -83,16 +57,17 @@ export function isLiveTask(row: TaskStatusInput): boolean {
 /**
  * 状态列：未启动 / 启动中 / 运行中 / 暂停中 / 结束中 / 已暂停 / 失败 / 已结束。
  * 暂停中=STOPPING、结束中=TERMINATING，是独立枚举值；state 为空一律「未启动」。
+ * 标签经 i18n 翻译，在 computed 里调用可随语言切换重算（t 内部读取响应式 locale）。
  */
 export function stateOf(row: TaskStatusInput): StatusView {
   const state = row.state
-  if (state == null) return { tone: 'none', label: '未启动' }
-  return { tone: stateTone(state), label: STATE_LABELS[state] }
+  if (state == null) return { tone: 'none', label: i18n.global.t('status.notStarted') }
+  return { tone: stateTone(state), label: i18n.global.t(`status.state.${state}`) }
 }
 
 /** 阶段列：六个阶段恒有值（phase  NOT NULL），与状态列拆开各说各话。 */
 export function phaseOf(row: TaskStatusInput): string {
-  return PHASE_LABELS[row.phase] ?? DASH
+  return phaseLabelOf(row.phase) ?? DASH
 }
 
 /** 启动可用：预检查通过且未启动（列表直启）；STOPPED=恢复、FAILED=重启也走 start()。 */
@@ -121,12 +96,12 @@ export function canDeleteTask(row: TaskStatusInput): boolean {
 
 /**
  * @deprecated 兼容旧合并口径（状态列被阶段名顶替）。新代码用 stateOf/phaseOf 拆列。
- * 运行中的标签仍按阶段替换，仅 TaskDetail 旧逻辑引用。
+ * 仅历史引用保留；运行中的标签按阶段名替换。
  */
 export function statusOf(row: TaskStatusInput): StatusView {
   const state = row.state
   if (state === 'RUNNING') {
-    const label = RUNNING_PHASES[row.phase]
+    const label = phaseLabelOf(row.phase)
     return label ? { tone: 'running', label } : { tone: 'none', label: DASH }
   }
   return stateOf(row)

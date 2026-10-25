@@ -1,7 +1,8 @@
 package io.opendrs.migration.service;
 
-import io.opendrs.common.error.AppException;
 import io.opendrs.common.error.ErrorCode;
+import io.opendrs.common.error.ExceptionFactory;
+import io.opendrs.common.i18n.ErrorMessage;
 import io.opendrs.jdbc.JdbcConnection;
 import io.opendrs.jdbc.JdbcConnectionFactory;
 import io.opendrs.migration.domain.ConnectionInfo;
@@ -61,9 +62,9 @@ public class ServerIdAllocator {
         try (JdbcConnection connection = connectionFactory.open(source.toJdbcConfig())) {
             return new HashSet<>(queryReplicas(connection));
         } catch (RuntimeException ex) {
-            throw AppException.of(
+            throw ExceptionFactory.create(
                     ErrorCode.CONNECTION_TEST_FAILED,
-                    "cannot list replicas on the source (SHOW REPLICAS/SHOW SLAVE HOSTS): " + ex.getMessage());
+                    ErrorMessage.CONNECTION_LIST_REPLICAS_FAILED, ex.getMessage());
         }
     }
 
@@ -79,9 +80,9 @@ public class ServerIdAllocator {
                     .findFirst()
                     .orElseThrow(() -> new IllegalStateException("server_uuid query returned nothing"));
         } catch (RuntimeException ex) {
-            throw AppException.of(
+            throw ExceptionFactory.create(
                     ErrorCode.CONNECTION_TEST_FAILED,
-                    "cannot read server_uuid from connection " + connectionInfo.getId() + ": " + ex.getMessage());
+                    ErrorMessage.CONNECTION_SERVER_UUID_FAILED, connectionInfo.getId(), ex.getMessage());
         }
     }
 

@@ -1,6 +1,14 @@
 spring:
   application:
     name: opendrs
+  messages:
+    # i18n bundles: messages.properties (base) + messages_zh_CN.properties (Chinese).
+    basename: messages
+    encoding: UTF-8
+    # Never let the server's OS language leak into message fallback.
+    fallback-to-system-locale: false
+    # A missing key must fail loudly in dev instead of rendering the raw key to users.
+    use-code-as-default-message: false
   datasource:
     url: jdbc:mysql://${OPENDRS_DB_HOST:localhost}:${OPENDRS_DB_PORT:3306}/${OPENDRS_DB_NAME:opendrs}?useSSL=false&allowPublicKeyRetrieval=true&characterEncoding=utf8
     username: ${OPENDRS_DB_USER:opendrs}

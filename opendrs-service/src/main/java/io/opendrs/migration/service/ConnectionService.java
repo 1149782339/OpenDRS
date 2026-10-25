@@ -1,7 +1,8 @@
 package io.opendrs.migration.service;
 
-import io.opendrs.common.error.AppException;
 import io.opendrs.common.error.ErrorCode;
+import io.opendrs.common.error.ExceptionFactory;
+import io.opendrs.common.i18n.ErrorMessage;
 import io.opendrs.jdbc.JdbcConnection;
 import io.opendrs.jdbc.JdbcConnectionFactory;
 import io.opendrs.jdbc.JdbcException;
@@ -36,7 +37,8 @@ public class ConnectionService {
     @Transactional
     public ConnectionResponse create(CreateConnectionRequest request) {
         if (connectionMapper.findByName(request.name()) != null) {
-            throw AppException.of(ErrorCode.PARAM_INVALID, "Connection name already exists: " + request.name());
+            throw ExceptionFactory.create(
+                    ErrorCode.PARAM_INVALID, ErrorMessage.CONNECTION_NAME_EXISTS, request.name());
         }
         ConnectionInfo row = toDomain(request.connection());
         row.setName(request.name());
@@ -53,9 +55,7 @@ public class ConnectionService {
     public void delete(Long id) {
         requireConnection(id);
         if (taskMapper.countByConnectionId(id) > 0) {
-            throw AppException.of(
-                    ErrorCode.CONNECTION_IN_USE,
-                    "Connection " + id + " is referenced by a migration task");
+            throw ExceptionFactory.create(ErrorCode.CONNECTION_IN_USE, ErrorMessage.CONNECTION_IN_USE, id);
         }
         connectionMapper.deleteById(id);
     }
@@ -78,8 +78,8 @@ public class ConnectionService {
         try (JdbcConnection connection = jdbcConnectionFactory.open(info.toJdbcConfig())) {
             return DbDialects.of(info.toDatabaseType()).listSchemas(connection);
         } catch (JdbcException ex) {
-            throw AppException.of(
-                    ErrorCode.METADATA_READ_FAILED, "Failed to list schemas: " + ex.getMessage());
+            throw ExceptionFactory.create(
+                    ErrorCode.METADATA_READ_FAILED, ErrorMessage.CONNECTION_LIST_SCHEMAS_FAILED, ex.getMessage());
         }
     }
 
@@ -87,7 +87,7 @@ public class ConnectionService {
     public List<String> listTables(Long id, String schema) {
         ConnectionInfo info = requireConnection(id);
         if (schema == null || schema.isBlank()) {
-            throw AppException.of(ErrorCode.PARAM_INVALID, "schema is required");
+            throw ExceptionFactory.create(ErrorCode.PARAM_INVALID, ErrorMessage.CONNECTION_SCHEMA_REQUIRED);
         }
         try (JdbcConnection connection = jdbcConnectionFactory.open(info.toJdbcConfig())) {
             return DbDialects.of(info.toDatabaseType())
@@ -96,9 +96,9 @@ public class ConnectionService {
                     .map(table -> table.ref().table())
                     .toList();
         } catch (JdbcException ex) {
-            throw AppException.of(
+            throw ExceptionFactory.create(
                     ErrorCode.METADATA_READ_FAILED,
-                    "Failed to list tables of " + schema + ": " + ex.getMessage());
+                    ErrorMessage.CONNECTION_LIST_TABLES_FAILED, schema, ex.getMessage());
         }
     }
 
@@ -107,7 +107,8 @@ public class ConnectionService {
         try (JdbcConnection connection = jdbcConnectionFactory.open(info.toJdbcConfig())) {
             connection.ping();
         } catch (JdbcException ex) {
-            throw AppException.of(ErrorCode.CONNECTION_TEST_FAILED, ex.getMessage());
+            throw ExceptionFactory.create(
+                    ErrorCode.CONNECTION_TEST_FAILED, ErrorMessage.CONNECTION_TEST_FAILED, ex.getMessage());
         }
         long latencyMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
         return new ConnectionTestResponse(true, latencyMs);
@@ -116,7 +117,7 @@ public class ConnectionService {
     private ConnectionInfo requireConnection(Long id) {
         ConnectionInfo connection = connectionMapper.findById(id);
         if (connection == null) {
-            throw AppException.of(ErrorCode.CONNECTION_NOT_FOUND, "Connection not found: " + id);
+            throw ExceptionFactory.create(ErrorCode.CONNECTION_NOT_FOUND, ErrorMessage.CONNECTION_NOT_FOUND, id);
         }
         return connection;
     }

@@ -1,7 +1,8 @@
 package io.opendrs.migration.service;
 
-import io.opendrs.common.error.AppException;
 import io.opendrs.common.error.ErrorCode;
+import io.opendrs.common.error.ExceptionFactory;
+import io.opendrs.common.i18n.ErrorMessage;
 import io.opendrs.common.log.MigrationLogLevel;
 import io.opendrs.common.metadata.DatabaseType;
 import io.opendrs.migration.api.request.CreateMigrationTaskRequest;
@@ -80,30 +81,34 @@ public class MigrationTaskService {
         try {
             mappingValidator.validate(MappingRequests.toNeutral(options.selection().toTableSelection()));
         } catch (MappingException ex) {
-            throw AppException.of(ErrorCode.PARAM_INVALID, ex.getMessage());
+            throw ExceptionFactory.create(
+                    ErrorCode.PARAM_INVALID, ErrorMessage.TASK_MAPPING_INVALID, ex.getMessage());
         }
         if (taskMapper.findByName(request.name()) != null) {
-            throw AppException.of(ErrorCode.TASK_CONFLICT, "Task name already exists: " + request.name());
+            throw ExceptionFactory.create(
+                    ErrorCode.TASK_CONFLICT, ErrorMessage.TASK_NAME_EXISTS, request.name());
         }
 
         ConnectionInfo source = connectionMapper.findById(request.sourceConnectionId());
         if (source == null) {
-            throw AppException.of(
+            throw ExceptionFactory.create(
                     ErrorCode.CONNECTION_NOT_FOUND,
-                    "Source data source not found: " + request.sourceConnectionId());
+                    ErrorMessage.TASK_SOURCE_NOT_FOUND, request.sourceConnectionId());
         }
         ConnectionInfo target = connectionMapper.findById(request.targetConnectionId());
         if (target == null) {
-            throw AppException.of(
+            throw ExceptionFactory.create(
                     ErrorCode.CONNECTION_NOT_FOUND,
-                    "Target data source not found: " + request.targetConnectionId());
+                    ErrorMessage.TASK_TARGET_NOT_FOUND, request.targetConnectionId());
         }
         if (options.topology() == MigrationOptions.Topology.BIDIRECTIONAL) {
             if (source.toDatabaseType() != DatabaseType.MYSQL || target.toDatabaseType() != DatabaseType.MYSQL) {
-                throw AppException.of(ErrorCode.PARAM_INVALID, "双向同步仅支持 MySQL 到 MySQL");
+                throw ExceptionFactory.create(
+                        ErrorCode.PARAM_INVALID, ErrorMessage.TASK_BIDIR_MYSQL_ONLY);
             }
             if (request.mode() != MigrationMode.FULL_AND_INCREMENTAL) {
-                throw AppException.of(ErrorCode.PARAM_INVALID, "双向同步要求同步模式为 全量+增量");
+                throw ExceptionFactory.create(
+                        ErrorCode.PARAM_INVALID, ErrorMessage.TASK_BIDIR_FULL_INC_ONLY);
             }
         }
 
@@ -165,20 +170,20 @@ public class MigrationTaskService {
         switch (selection.mode()) {
             case ALL -> {
                 if (hasSchemas || hasTables) {
-                    throw AppException.of(
-                            ErrorCode.PARAM_INVALID, "selection.mode=ALL requires empty schemas/tables");
+                    throw ExceptionFactory.create(
+                            ErrorCode.PARAM_INVALID, ErrorMessage.TASK_SELECTION_ALL_EMPTY);
                 }
             }
             case SCHEMA -> {
                 if (!hasSchemas || hasTables) {
-                    throw AppException.of(
-                            ErrorCode.PARAM_INVALID, "selection.mode=SCHEMA requires non-empty schemas and empty tables");
+                    throw ExceptionFactory.create(
+                            ErrorCode.PARAM_INVALID, ErrorMessage.TASK_SELECTION_SCHEMA_NEEDS_SCHEMAS);
                 }
             }
             case TABLE -> {
                 if (hasSchemas || !hasTables) {
-                    throw AppException.of(
-                            ErrorCode.PARAM_INVALID, "selection.mode=TABLE requires non-empty tables and empty schemas");
+                    throw ExceptionFactory.create(
+                            ErrorCode.PARAM_INVALID, ErrorMessage.TASK_SELECTION_TABLE_NEEDS_TABLES);
                 }
             }
         }
@@ -216,15 +221,15 @@ public class MigrationTaskService {
         transactionTemplate.executeWithoutResult(status -> {
             MigrationTask task = requireTask(id);
             if (!canStart(task)) {
-                throw AppException.of(
+                throw ExceptionFactory.create(
                         ErrorCode.TASK_CONFLICT,
-                        "Task " + id + " cannot be started from state " + task.getState());
+                        ErrorMessage.TASK_CANNOT_START_FROM, id, task.getState());
             }
             int updated = taskMapper.compareAndSetState(id, task.getState(), TaskState.STARTING);
             if (updated == 0) {
-                throw AppException.of(
+                throw ExceptionFactory.create(
                         ErrorCode.TASK_CONFLICT,
-                        "Task " + id + " cannot be started from state " + task.getState());
+                        ErrorMessage.TASK_CANNOT_START_FROM, id, task.getState());
             }
             // The user confirmed the migration, so the pipeline has entered its structure step —
             // except bidirectional sync, which owns no schema migration and goes straight to the
@@ -257,9 +262,9 @@ public class MigrationTaskService {
                 if (latest.getState() == TaskState.STOPPED || latest.getState() == TaskState.STOPPING) {
                     return toStatus(latest);
                 }
-                throw AppException.of(
+                throw ExceptionFactory.create(
                         ErrorCode.TASK_CONFLICT,
-                        "Task " + id + " cannot be paused from state " + latest.getState());
+                        ErrorMessage.TASK_CANNOT_PAUSE_FROM, id, latest.getState());
             }
             return toStatus(requireTask(id));
         }
@@ -270,17 +275,17 @@ public class MigrationTaskService {
                 if (latest.getState() == TaskState.STOPPED || latest.getState() == TaskState.STOPPING) {
                     return toStatus(latest);
                 }
-                throw AppException.of(
+                throw ExceptionFactory.create(
                         ErrorCode.TASK_CONFLICT,
-                        "Task " + id + " cannot be paused from state " + latest.getState());
+                        ErrorMessage.TASK_CANNOT_PAUSE_FROM, id, latest.getState());
             }
             coordinatorRegistry.requestStop(id);
             logService.log(id, MigrationLogLevel.WARNING, "pause requested by user");
             return toStatus(requireTask(id));
         }
-        throw AppException.of(
+        throw ExceptionFactory.create(
                 ErrorCode.TASK_CONFLICT,
-                "Task " + id + " cannot be paused from state " + state);
+                ErrorMessage.TASK_CANNOT_PAUSE_FROM, id, state);
     }
 
     /**
@@ -331,9 +336,9 @@ public class MigrationTaskService {
             if (latest.getState() == TaskState.TERMINATED) {
                 return toStatus(latest);
             }
-            throw AppException.of(
+            throw ExceptionFactory.create(
                     ErrorCode.TASK_CONFLICT,
-                    "Task " + id + " cannot be terminated from state " + latest.getState());
+                    ErrorMessage.TASK_CANNOT_TERMINATE_FROM, id, latest.getState());
         }
         logService.log(id, MigrationLogLevel.WARNING, "task terminated by user");
         return toStatus(requireTask(id));
@@ -343,9 +348,9 @@ public class MigrationTaskService {
     public void delete(Long id) {
         MigrationTask task = requireTask(id);
         if (task.getState() != TaskState.TERMINATED && task.getState() != TaskState.COMPLETED) {
-            throw AppException.of(
+            throw ExceptionFactory.create(
                     ErrorCode.TASK_CONFLICT,
-                    "Task " + id + " is " + describe(task) + " and must be terminated before delete");
+                    ErrorMessage.TASK_MUST_TERMINATE_BEFORE_DELETE, id, describe(task));
         }
         offsetMapper.deleteByTaskId(id);
         schemaHistoryMapper.deleteByTaskId(id);
@@ -391,7 +396,7 @@ public class MigrationTaskService {
     private MigrationTask requireTask(Long id) {
         MigrationTask task = taskMapper.findById(id);
         if (task == null) {
-            throw AppException.of(ErrorCode.TASK_NOT_FOUND, "Task not found: " + id);
+            throw ExceptionFactory.create(ErrorCode.TASK_NOT_FOUND, ErrorMessage.TASK_NOT_FOUND, id);
         }
         return task;
     }
@@ -399,7 +404,7 @@ public class MigrationTaskService {
     private ConnectionInfo requireConnection(Long id) {
         ConnectionInfo connection = connectionMapper.findById(id);
         if (connection == null) {
-            throw AppException.of(ErrorCode.INTERNAL_ERROR, "Connection not found: " + id);
+            throw ExceptionFactory.create(ErrorCode.INTERNAL_ERROR, ErrorMessage.CONNECTION_NOT_FOUND, id);
         }
         return connection;
     }

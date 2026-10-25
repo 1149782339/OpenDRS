@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { CaretBottom, Check } from '@element-plus/icons-vue'
-import { computed, ref } from 'vue'
+import { computed } from 'vue'
+import { i18n, saveLocale } from '@/i18n'
 
 /** 可选语言。label 用各自语言自己的写法：中文写「简体中文」，英文写「English」。 */
 const LOCALES = [
@@ -8,7 +9,14 @@ const LOCALES = [
   { value: 'en-US', label: 'English' },
 ]
 
-const current = ref('zh-CN')
+/** 与全局 i18n locale 双向绑定，切换即全局生效并持久化到 localStorage。 */
+const current = computed<string>({
+  get: () => i18n.global.locale.value as string,
+  set: (value: string) => {
+    i18n.global.locale.value = value as 'zh-CN' | 'en-US'
+    saveLocale(value)
+  },
+})
 
 const currentLabel = computed(
   () => LOCALES.find((item) => item.value === current.value)?.label ?? '',

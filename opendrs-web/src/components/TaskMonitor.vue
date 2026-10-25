@@ -11,6 +11,9 @@ import * as echarts from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
 import { ElMessage } from 'element-plus'
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 echarts.use([LineChart, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer])
 
@@ -33,98 +36,40 @@ interface MetricCard {
 /** 全部指标共用一种蓝：磁贴各自独立，不需要靠颜色区分，颜色留给「有无异常」这类语义。 */
 const ACCENT = '#409eff'
 
-const cards: MetricCard[] = [
-  {
-    key: 'replayTps',
-    title: '目标库回放TPS',
-    unit: 'count/s',
-    direction: 'forward',
-    hint: '目标库每秒成功回放的事务数，来自事务执行计时器次数的速率，与源端写入 TPS 同口径。',
-    pick: (m) => m.applied,
-    format: (v) => Math.round(v).toLocaleString(),
-  },
-  {
-    key: 'replayQps',
-    title: '目标库回放QPS',
-    unit: 'rows/s',
-    direction: 'forward',
-    hint: '目标库每秒成功回放的行数：按 batch 内 addBatch 的行数计数（一次 executeBatch 含 N 行计 N），且只在 commit 成功后计入，与源端写入 QPS 同口径。',
-    pick: (m) => m.appliedRows,
-    format: (v) => Math.round(v).toLocaleString(),
-  },
-  {
-    key: 'txExecTime',
-    title: '目标库事务平均执行时间',
-    unit: 'ms',
-    direction: 'forward',
-    hint: '单事务在目标库的平均执行时间：批次内每个源端事务继承该批次的语句执行耗时，为 N 个事务时延的算术平均。',
-    pick: (m) => m.execMs,
-    format: (v) => v.toFixed(1),
-  },
-  {
-    key: 'txCommitTime',
-    title: '目标库事务平均提交时间',
-    unit: 'ms',
-    direction: 'forward',
-    hint: '单事务在目标库的平均提交时间：批次内每个源端事务继承该批次的 commit 耗时，为 N 个事务时延的算术平均。',
-    pick: (m) => m.commitMs,
-    format: (v) => v.toFixed(1),
-  },
-  {
-    key: 'replayLag',
-    title: '目标库数据同步延迟',
-    unit: 's',
-    direction: 'forward',
-    hint: '源端 binlog 事件产生时间与该批次在目标库提交时间的差值，反映增量同步的落后程度。',
-    pick: (m) => m.lag,
-    format: (v) => v.toFixed(1),
-  },
-  {
-    key: 'replayTpsRev',
-    title: '源库回放TPS',
-    unit: 'count/s',
-    direction: 'reverse',
-    hint: '双向同步的反向链路：每秒写回源库的事务数。',
-    pick: (m) => m.applied,
-    format: (v) => Math.round(v).toLocaleString(),
-  },
-  {
-    key: 'replayQpsRev',
-    title: '源库回放QPS',
-    unit: 'rows/s',
-    direction: 'reverse',
-    hint: '双向同步的反向链路：每秒写回源库的行数，计数口径与正向一致。',
-    pick: (m) => m.appliedRows,
-    format: (v) => Math.round(v).toLocaleString(),
-  },
-  {
-    key: 'txExecTimeRev',
-    title: '源库事务平均执行时间',
-    unit: 'ms',
-    direction: 'reverse',
-    hint: '双向同步的反向链路：单事务写回源库的平均执行时间。',
-    pick: (m) => m.execMs,
-    format: (v) => v.toFixed(1),
-  },
-  {
-    key: 'txCommitTimeRev',
-    title: '源库事务平均提交时间',
-    unit: 'ms',
-    direction: 'reverse',
-    hint: '双向同步的反向链路：单事务写回源库的平均提交时间。',
-    pick: (m) => m.commitMs,
-    format: (v) => v.toFixed(1),
-  },
-  {
-    key: 'replayLagRev',
-    title: '源库数据同步延迟',
-    unit: 's',
-    direction: 'reverse',
-    hint: '双向同步的反向链路：目标端 binlog 事件产生时间与该批次在源库提交时间的差值。',
-    pick: (m) => m.lag,
-    format: (v) => v.toFixed(1),
-  },
+/**
+ * 指标定义：title/hint 走 i18n（key 对应语言包 monitor.metric.*），
+ * 单位（count/s、rows/s、ms、s）与口径绑定，不翻译。
+ */
+interface MetricDef {
+  key: string
+  unit: string
+  direction: 'forward' | 'reverse'
+  pick: (m: ReplayDirectionMetrics) => number | null
+  /** 统计值格式化：TPS 取整，延迟保留 1 位小数。 */
+  format: (v: number) => string
+}
+
+const METRICS: MetricDef[] = [
+  { key: 'replayTps', unit: 'count/s', direction: 'forward', pick: (m) => m.applied, format: (v) => Math.round(v).toLocaleString() },
+  { key: 'replayQps', unit: 'rows/s', direction: 'forward', pick: (m) => m.appliedRows, format: (v) => Math.round(v).toLocaleString() },
+  { key: 'txExecTime', unit: 'ms', direction: 'forward', pick: (m) => m.execMs, format: (v) => v.toFixed(1) },
+  { key: 'txCommitTime', unit: 'ms', direction: 'forward', pick: (m) => m.commitMs, format: (v) => v.toFixed(1) },
+  { key: 'replayLag', unit: 's', direction: 'forward', pick: (m) => m.lag, format: (v) => v.toFixed(1) },
+  { key: 'replayTpsRev', unit: 'count/s', direction: 'reverse', pick: (m) => m.applied, format: (v) => Math.round(v).toLocaleString() },
+  { key: 'replayQpsRev', unit: 'rows/s', direction: 'reverse', pick: (m) => m.appliedRows, format: (v) => Math.round(v).toLocaleString() },
+  { key: 'txExecTimeRev', unit: 'ms', direction: 'reverse', pick: (m) => m.execMs, format: (v) => v.toFixed(1) },
+  { key: 'txCommitTimeRev', unit: 'ms', direction: 'reverse', pick: (m) => m.commitMs, format: (v) => v.toFixed(1) },
+  { key: 'replayLagRev', unit: 's', direction: 'reverse', pick: (m) => m.lag, format: (v) => v.toFixed(1) },
 ]
+
+/** 展示用卡片：标题/说明按当前语言翻译，随 locale 切换重算。 */
+const cards = computed<MetricCard[]>(() =>
+  METRICS.map((m) => ({
+    ...m,
+    title: t(`monitor.metric.${m.key}.title`),
+    hint: t(`monitor.metric.${m.key}.hint`),
+  })),
+)
 
 const keyword = ref('')
 /** 当前选中的时间窗口，默认和过去一致：近15分钟。 */
@@ -138,7 +83,7 @@ const customNotHonored = ref(false)
 const hasReverse = computed(() => points.value.some((p) => p.reverse !== null))
 const visibleCards = computed(() => {
   const kw = keyword.value.trim().toLowerCase()
-  return cards.filter(
+  return cards.value.filter(
     (c) =>
       (c.direction === 'forward' || hasReverse.value) &&
       (!kw || c.title.toLowerCase().includes(kw)),
@@ -256,7 +201,7 @@ function restartTimer() {
 }
 
 function render(data: ReplayMetricsPoint[]) {
-  for (const card of cards) {
+  for (const card of cards.value) {
     const chart = charts.get(card.key)
     if (!chart) continue
     const sample = (p: ReplayMetricsPoint) => {
@@ -381,7 +326,7 @@ const statsMap = reactive<Record<string, Stats>>({})
 
 function statText(key: string, field: keyof Stats): string {
   const stats = statsMap[key]
-  const card = cards.find((c) => c.key === key)
+  const card = cards.value.find((c) => c.key === key)
   const value = stats?.[field]
   if (value == null || !card) return '—'
   return card.format(value)
@@ -450,13 +395,13 @@ onUnmounted(() => {
       <el-input
         v-model="keyword"
         class="search"
-        placeholder="请输入指标名称"
+        :placeholder="t('monitor.searchPlaceholder')"
         clearable
         :prefix-icon="Search"
       />
       <TimeRangePicker v-model="range" />
       <span v-if="customNotHonored" class="toolbar-note">
-        服务端尚未支持自定义时间区间，当前显示的是默认窗口的数据
+        {{ t('monitor.customNotHonored') }}
       </span>
     </div>
     <div v-show="visibleCards.length > 0" class="card-grid">
@@ -470,19 +415,19 @@ onUnmounted(() => {
         <div class="card-stats">
           <div class="stat">
             <div class="stat-value">{{ statText(card.key, 'max') }}<span v-if="hasValue(card.key, 'max')" class="stat-unit">{{ card.unit }}</span></div>
-            <div class="stat-label">最大值</div>
+            <div class="stat-label">{{ t('monitor.stat.max') }}</div>
           </div>
           <div class="stat">
             <div class="stat-value">{{ statText(card.key, 'min') }}<span v-if="hasValue(card.key, 'min')" class="stat-unit">{{ card.unit }}</span></div>
-            <div class="stat-label">最小值</div>
+            <div class="stat-label">{{ t('monitor.stat.min') }}</div>
           </div>
           <div class="stat">
             <div class="stat-value">{{ statText(card.key, 'avg') }}<span v-if="hasValue(card.key, 'avg')" class="stat-unit">{{ card.unit }}</span></div>
-            <div class="stat-label">平均值</div>
+            <div class="stat-label">{{ t('monitor.stat.avg') }}</div>
           </div>
           <div class="stat">
             <div class="stat-value">{{ statText(card.key, 'current') }}<span v-if="hasValue(card.key, 'current')" class="stat-unit">{{ card.unit }}</span></div>
-            <div class="stat-label">当前值</div>
+            <div class="stat-label">{{ t('monitor.stat.current') }}</div>
           </div>
         </div>
         <div :ref="(el) => setCardEl(card.key, el as Element | null)" class="card-chart" />
@@ -491,7 +436,7 @@ onUnmounted(() => {
     <el-empty
       v-if="attempted && !hasData"
       class="empty"
-      description="暂无监控数据：任务启动并进入增量迁移后，这里会显示目标库回放 TPS 与数据同步延迟曲线"
+      :description="t('monitor.empty')"
     />
   </div>
 </template>

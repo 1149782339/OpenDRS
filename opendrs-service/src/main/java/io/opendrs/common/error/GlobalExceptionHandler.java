@@ -1,6 +1,8 @@
 package io.opendrs.common.error;
 
 import io.opendrs.common.api.Response;
+import io.opendrs.common.i18n.ErrorMessage;
+import io.opendrs.common.i18n.I18nUtils;
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.ConstraintViolationException;
 import org.slf4j.Logger;
@@ -15,6 +17,11 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.HandlerMethodValidationException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
+/**
+ * Translates exceptions into the response envelope. Business {@link AppException}s resolve their
+ * {@link ErrorMessage} in the request's locale here — the single place in the system where an
+ * exception becomes user-facing text.
+ */
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
@@ -22,38 +29,41 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(AppException.class)
     public ResponseEntity<Response<Object>> handleAppException(AppException ex) {
+        String message = ex.getErrorMessage() != null
+                ? I18nUtils.getMessage(ex.getErrorMessage(), ex.getArgs())
+                : ex.getCode().name();
         return ResponseEntity
                 .status(ex.getCode().getHttpStatus())
-                .body(Response.fail(ex.getCode(), ex.getMessage(), ex.getData()));
+                .body(Response.fail(ex.getCode(), message, ex.getData()));
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<Response<Void>> handleMethodArgumentNotValid(MethodArgumentNotValidException ex) {
-        String message = ex.getBindingResult().getFieldErrors().stream()
+        String details = ex.getBindingResult().getFieldErrors().stream()
                 .map(GlobalExceptionHandler::formatFieldError)
                 .reduce((a, b) -> a + "; " + b)
-                .orElse(ErrorCode.PARAM_INVALID.getDefaultMessage());
-        return paramInvalid(message);
+                .orElse("");
+        return paramInvalid(details.isEmpty() ? null : details);
     }
 
     @ExceptionHandler(ConstraintViolationException.class)
     public ResponseEntity<Response<Void>> handleConstraintViolation(ConstraintViolationException ex) {
-        String message = ex.getConstraintViolations().stream()
+        String details = ex.getConstraintViolations().stream()
                 .map(GlobalExceptionHandler::formatConstraint)
                 .reduce((a, b) -> a + "; " + b)
-                .orElse(ErrorCode.PARAM_INVALID.getDefaultMessage());
-        return paramInvalid(message);
+                .orElse("");
+        return paramInvalid(details.isEmpty() ? null : details);
     }
 
     @ExceptionHandler(HandlerMethodValidationException.class)
     public ResponseEntity<Response<Void>> handleHandlerMethodValidation(HandlerMethodValidationException ex) {
-        return paramInvalid(ErrorCode.PARAM_INVALID.getDefaultMessage());
+        return paramInvalid(null);
     }
 
     @ExceptionHandler({HttpMessageNotReadableException.class, MethodArgumentTypeMismatchException.class})
     public ResponseEntity<Response<Void>> handleUnreadable(Exception ex) {
         log.debug("Rejected request payload: {}", ex.getMessage());
-        return paramInvalid("Request body or parameter is invalid");
+        return paramInvalid(I18nUtils.getMessage(ErrorMessage.PARAM_BAD_REQUEST));
     }
 
     @ExceptionHandler(DataAccessException.class)
@@ -61,7 +71,7 @@ public class GlobalExceptionHandler {
         log.error("Database error", ex);
         return ResponseEntity
                 .status(ErrorCode.DB_ERROR.getHttpStatus())
-                .body(Response.fail(ErrorCode.DB_ERROR, "数据库异常", null));
+                .body(Response.fail(ErrorCode.DB_ERROR, I18nUtils.getMessage(ErrorMessage.SYSTEM_DB_ERROR), null));
     }
 
     @ExceptionHandler(Exception.class)
@@ -69,10 +79,14 @@ public class GlobalExceptionHandler {
         log.error("Unhandled error", ex);
         return ResponseEntity
                 .status(ErrorCode.INTERNAL_ERROR.getHttpStatus())
-                .body(Response.fail(ErrorCode.INTERNAL_ERROR, "系统内部错误", null));
+                .body(Response.fail(ErrorCode.INTERNAL_ERROR,
+                        I18nUtils.getMessage(ErrorMessage.SYSTEM_INTERNAL_ERROR), null));
     }
 
-    private static ResponseEntity<Response<Void>> paramInvalid(String message) {
+    private static ResponseEntity<Response<Void>> paramInvalid(String details) {
+        String message = details == null || details.isEmpty()
+                ? I18nUtils.getMessage(ErrorMessage.PARAM_INVALID)
+                : I18nUtils.getMessage(ErrorMessage.PARAM_INVALID_DETAIL, details);
         return ResponseEntity
                 .status(ErrorCode.PARAM_INVALID.getHttpStatus())
                 .body(Response.fail(ErrorCode.PARAM_INVALID, message, null));

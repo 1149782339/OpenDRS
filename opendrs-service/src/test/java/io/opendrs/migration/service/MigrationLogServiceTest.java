@@ -12,6 +12,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import io.opendrs.common.error.AppException;
+import io.opendrs.common.error.ErrorCode;
 import io.opendrs.common.log.MigrationLogLevel;
 import io.opendrs.common.log.MigrationLogListener;
 import io.opendrs.migration.domain.MigrationLog;
@@ -129,9 +130,11 @@ class MigrationLogServiceTest {
     void pageRejectsUnknownTask() {
         when(taskMapper.findById(404L)).thenReturn(null);
 
+        // AppException#getMessage() is now the i18n key; assert the business code instead.
         assertThatThrownBy(() -> service.page(404L, MigrationLogLevel.ERROR, 1, 20))
                 .isInstanceOf(AppException.class)
-                .hasMessageContaining("404");
+                .extracting(ex -> ((AppException) ex).getCode())
+                .isEqualTo(ErrorCode.TASK_NOT_FOUND);
     }
 
     @SuppressWarnings("unchecked")

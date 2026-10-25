@@ -1,4 +1,12 @@
-import { createRouter, createWebHistory } from 'vue-router'
+import { createRouter, createWebHistory, type RouteLocationNormalized } from 'vue-router'
+import { i18n } from '@/i18n'
+
+declare module 'vue-router' {
+  interface RouteMeta {
+    /** 页面标题的 i18n key；切换语言时按 key 重译。 */
+    titleKey?: string
+  }
+}
 
 const router = createRouter({
   history: createWebHistory(),
@@ -8,32 +16,42 @@ const router = createRouter({
       path: '/connections',
       name: 'connections',
       component: () => import('@/views/Connections.vue'),
-      meta: { title: '数据源' },
+      meta: { titleKey: 'nav.connections' },
     },
     {
       path: '/tasks',
       name: 'tasks',
       component: () => import('@/views/Tasks.vue'),
-      meta: { title: '任务' },
+      meta: { titleKey: 'nav.tasks' },
     },
     {
       path: '/tasks/create',
       name: 'task-create',
       component: () => import('@/views/TaskCreate.vue'),
-      meta: { title: '新建任务' },
+      meta: { titleKey: 'nav.taskCreate' },
     },
     {
       path: '/tasks/:id',
       name: 'task-detail',
       component: () => import('@/views/TaskDetail.vue'),
-      meta: { title: '任务详情' },
+      meta: { titleKey: 'nav.taskDetail' },
     },
   ],
 })
 
-router.afterEach((to) => {
-  const title = typeof to.meta.title === 'string' ? to.meta.title : '管理台'
+function applyTitle(to: RouteLocationNormalized) {
+  const key = to.meta.titleKey
+  const title = key ? i18n.global.t(key) : i18n.global.t('nav.console')
   document.title = `${title} · OpenDRS`
+}
+
+router.afterEach((to) => {
+  applyTitle(to)
 })
+
+/** 语言切换后重刷当前页标题（App.vue 里 watch locale 调用）。 */
+export function refreshTitle(): void {
+  applyTitle(router.currentRoute.value)
+}
 
 export default router

@@ -37,6 +37,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.context.i18n.LocaleContextHolder;
+import java.util.Locale;
 import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -89,8 +91,16 @@ class MigrationTaskPrecheckApiTest {
 
     private PrecheckResults canned;
 
+    @org.junit.jupiter.api.AfterEach
+    void resetLocale() {
+        LocaleContextHolder.resetLocaleContext();
+    }
+
     @BeforeEach
     void stubEngine() {
+        // MockMvc (Spring 7 TestDispatcherServlet) ignores the LocaleResolver, so message
+        // assertions pin the thread locale directly; the header alone is not enough here.
+        LocaleContextHolder.setLocale(Locale.ENGLISH);
         Mockito.reset(engine);
         mysqlSourceId = dataSource(
                 "precheck-mysql-source", DbType.MYSQL, "10.0.0.2", 3306, "hr", "cdc", "secret-source");
@@ -301,7 +311,8 @@ class MigrationTaskPrecheckApiTest {
 
     @Test
     void precheckMissingTaskReturns1002() throws Exception {
-        mockMvc.perform(post(BASE + "/999999/precheck"))
+        mockMvc.perform(post(BASE + "/999999/precheck")
+                        .header("Accept-Language", "en"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(1002))
                 .andExpect(jsonPath("$.message").value("Task not found: 999999"));
@@ -406,7 +417,8 @@ class MigrationTaskPrecheckApiTest {
                 .andReturn();
         long id = jsonMapper.readTree(created.getResponse().getContentAsString()).path("data").path("id").asLong();
 
-        mockMvc.perform(post(BASE + "/" + id + "/precheck"))
+        mockMvc.perform(post(BASE + "/" + id + "/precheck")
+                        .header("Accept-Language", "en"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(1001))
                 .andExpect(jsonPath("$.message").value("No precheck registered for ORACLE → MYSQL"));

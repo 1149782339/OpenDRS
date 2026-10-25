@@ -4,6 +4,9 @@ import { ArrowLeft, ArrowRight, CaretBottom, CaretTop } from '@element-plus/icon
 import type { DatePickerInstance } from 'element-plus'
 import { PRESET_RANGES, stepForSpan, type RangeWindow } from '@/types/monitor'
 import { formatDateTimeShort } from '@/utils/datetime'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const props = defineProps<{ modelValue: RangeWindow }>()
 const emit = defineEmits<{ 'update:modelValue': [value: RangeWindow] }>()
@@ -31,7 +34,8 @@ const triggerText = computed(() => {
   if (window.key === 'custom' && window.start !== null && window.end !== null) {
     return `${formatDateTimeShort(window.start * 1000)} ~ ${formatDateTimeShort(window.end * 1000)}`
   }
-  return window.label
+  // 预设档位：文本按当前语言翻译（monitor.range.*）
+  return t(`monitor.range.${window.key}`)
 })
 
 /** 自定义形态要塞下日历，宽度和预设列表不是一个量级。 */
@@ -74,7 +78,6 @@ function confirmCustom() {
   const endSec = Math.floor(range[1].getTime() / 1000)
   emit('update:modelValue', {
     key: 'custom',
-    label: '自定义',
     minutes: null,
     start: startSec,
     end: endSec,
@@ -139,10 +142,10 @@ watch(visible, (open) => {
         :class="{ active: preset.key === modelValue.key }"
         @click="selectPreset(preset)"
       >
-        {{ preset.label }}
+        {{ t(`monitor.range.${preset.key}`) }}
       </button>
       <button type="button" class="range-option range-option-split" @click="enterCustom">
-        <span>自定义</span>
+        <span>{{ t('monitor.custom') }}</span>
         <el-icon><ArrowRight /></el-icon>
       </button>
     </div>
@@ -156,15 +159,15 @@ watch(visible, (open) => {
     >
       <button type="button" class="range-back" @click="mode = 'list'">
         <el-icon><ArrowLeft /></el-icon>
-        <span>返回</span>
+        <span>{{ t('monitor.back') }}</span>
       </button>
       <el-date-picker
         ref="pickerRef"
         v-model="draft"
         type="datetimerange"
-        range-separator="至"
-        start-placeholder="开始时间"
-        end-placeholder="结束时间"
+        :range-separator="t('monitor.rangeSeparator')"
+        :start-placeholder="t('monitor.startTime')"
+        :end-placeholder="t('monitor.endTime')"
         format="YYYY/MM/DD HH:mm:ss"
         :default-time="[new Date(2000, 1, 1, 0, 0, 0), new Date(2000, 1, 1, 23, 59, 59)]"
         :disabled-date="disableFuture"
@@ -177,9 +180,9 @@ watch(visible, (open) => {
       <!-- 日历面板浮在这一块上，留出它的高度，下面的按钮才不会被盖住 -->
       <div class="range-calendar-space" :style="{ height: `${panelSpace}px` }" />
       <div class="range-custom-foot">
-        <span class="range-custom-hint">只能选择过去的时间</span>
+        <span class="range-custom-hint">{{ t('monitor.pastOnly') }}</span>
         <el-button size="small" type="primary" :disabled="draft === null" @click="confirmCustom">
-          确定
+          {{ t('common.confirm') }}
         </el-button>
       </div>
     </div>

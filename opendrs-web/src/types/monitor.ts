@@ -3,8 +3,6 @@ export type RangeKey = '15m' | '30m' | '1h' | 'custom'
 
 export interface RangeWindow {
   key: RangeKey
-  /** 触发器上显示的文本。 */
-  label: string
   /** 相对窗口的长度（分钟）；自定义区间为 null，改用 start/end。 */
   minutes: number | null
   /** 自定义区间的起止（epoch 秒）；预设档位为 null。 */
@@ -32,10 +30,11 @@ export const MAX_STEP_SECONDS = 3600
  * 用户选了「近2小时」看到的却是近15分钟，而界面上毫无提示。要放开这个上限，
  * 先改服务端 clamp 的语义（越界收敛到边界，而不是退回默认值）。
  */
+/** 档位文本由界面按 key 从 i18n 取（monitor.range.*），这里只存窗口参数。 */
 export const PRESET_RANGES: RangeWindow[] = [
-  { key: '15m', label: '近15分钟', minutes: 15, start: null, end: null, step: 5 },
-  { key: '30m', label: '近30分钟', minutes: 30, start: null, end: null, step: 10 },
-  { key: '1h', label: '近1小时', minutes: 60, start: null, end: null, step: 20 },
+  { key: '15m', minutes: 15, start: null, end: null, step: 5 },
+  { key: '30m', minutes: 30, start: null, end: null, step: 10 },
+  { key: '1h', minutes: 60, start: null, end: null, step: 20 },
 ]
 
 /** 按窗口长度挑一个步长，让每条曲线的点数都落在 TARGET_POINTS 附近。 */
