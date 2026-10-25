@@ -26,15 +26,15 @@ services:
       - --server-id=1
       - --gtid-mode=ON
       - --enforce-gtid-consistency=ON
-      - --port=3406
-      - --mysqlx-port=34060
+      - --port=3306
+      - --mysqlx-port=33060
       - --bind-address=0.0.0.0
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
     volumes:
       - e2e-mysql1-data:/var/lib/mysql
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-P3406",
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-P3306",
              "-ue2e_mysql", "-p123456"]
       interval: 5s
       timeout: 5s

@@ -1,7 +1,7 @@
 # Application stack: backend (Spring Boot) + frontend (nginx) + Prometheus +
 # the MySQL metadata store the backend requires.
 #
-# Migration data sources (binlog-enabled source MySQL on 3406 + PostgreSQL target)
+# Migration data sources (binlog-enabled source MySQL on 3306 + PostgreSQL target)
 # live in scripts/test/docker-compose.yml; they are started only for e2e runs:
 #
 #   docker compose -p opendrs -f deploy/docker-compose.yml \
@@ -22,13 +22,18 @@ services:
       MYSQL_PASSWORD: "123456"
     network_mode: host
     command:
+      # Explicit port: the e2e-* data sources now own 3306 and up (e2e-mysql1=3306,
+      # e2e-mysql2=3307, ...), so the metadata store must not sit on the default.
+      - --port=3406
+      - --mysqlx-port=34060
       - --bind-address=0.0.0.0
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
     volumes:
       - ../mysql_data:/var/lib/mysql
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uopendrs", "-p123456"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-P3406",
+             "-uopendrs", "-p123456"]
       interval: 5s
       timeout: 5s
       retries: 20
@@ -54,7 +59,7 @@ services:
     network_mode: host
     environment:
       OPENDRS_DB_HOST: 127.0.0.1
-      OPENDRS_DB_PORT: "3306"
+      OPENDRS_DB_PORT: "3406"
       OPENDRS_DB_NAME: opendrs
       OPENDRS_DB_USER: opendrs
       OPENDRS_DB_PASSWORD: "123456"

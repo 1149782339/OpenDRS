@@ -243,7 +243,7 @@ public final class CdcLoadTool {
     // -------------------------------------------------------------------- cli
 
     private static final class Cli {
-        String host = "127.0.0.1:3306";
+        String host = "127.0.0.1:3406";
         String user = "root";
         String password = "";
         String db = "cdc_load";
@@ -324,7 +324,7 @@ public final class CdcLoadTool {
         System.out.println("""
                 CDC load generator for OpenDRS
 
-                java -jar cdc-load-tool.jar prepare -h 127.0.0.1:3306 -u root -p 123456 \\
+                java -jar cdc-load-tool.jar prepare -h 127.0.0.1:3406 -u root -p 123456 \\
                         -d cdc_load --table-num 10 -n 10000
                     Create cdc_load.sbtest1..sbtest10
                     (col1 INT PRIMARY KEY AUTO_INCREMENT, col2 VARCHAR(32))
@@ -338,7 +338,7 @@ public final class CdcLoadTool {
                     Note: -i/-o only shape the data THIS tool inserts; for ongoing writes
                     each MySQL server needs auto_increment_increment/offset in its own config.
 
-                java -jar cdc-load-tool.jar run -h 127.0.0.1:3306 -u root -p 123456 \\
+                java -jar cdc-load-tool.jar run -h 127.0.0.1:3406 -u root -p 123456 \\
                         -d cdc_load --table-num 10 -T 8 -k 4 -s 60
                     Concurrent single-row UPDATE workload across all tables.
                     -T threads (default 4), -s seconds (default 0 = until Ctrl+C),
@@ -348,7 +348,7 @@ public final class CdcLoadTool {
                     each transaction holds k locks at once).
                     Prints rows/s every second.
 
-                java -jar cdc-load-tool.jar clean -h 127.0.0.1:3306 -u root -p 123456 \\
+                java -jar cdc-load-tool.jar clean -h 127.0.0.1:3406 -u root -p 123456 \\
                         -d cdc_load --table-num 10
                     Drop cdc_load.sbtest1..sbtest10 (the tables `prepare` created).
                     The database itself is kept; -t sets the table prefix (default sbtest).

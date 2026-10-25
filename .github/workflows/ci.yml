@@ -32,13 +32,8 @@ jobs:
           cache: maven
 
       - name: Unit tests
-        # MysqlBinlogCdcIT / MysqlToPostgresCdcIT need live databases; run them
-        # in a services job once container-based ITs are wired up.
-        run: >-
-          mvn test
-          -Dtest='!MysqlBinlogCdcIT,!MysqlToPostgresCdcIT'
-          -DfailIfNoTests=false
-          -Dsurefire.failIfNoSpecifiedTests=false
+        # Container-based ITs were removed; e2e lives in scripts/test (framework runner).
+        run: mvn test
 
   frontend:
     name: Frontend (type-check + build)
@@ -87,7 +82,7 @@ jobs:
         run: cd opendrs-web && npm ci && npm run build
 
       # Application stack (backend + frontend + prometheus + metadata MySQL) plus the
-      # migration data sources from scripts/test (source MySQL :3406, target PostgreSQL :5432).
+      # migration data sources from scripts/test (source MySQL :3306, target PostgreSQL :5432).
       # -p opendrs pins the project (default would follow deploy/, breaking volume
       #   sharing with scripts/test/data-sources.sh); the deploy file must come first
       #   so relative paths in the second file resolve consistently.

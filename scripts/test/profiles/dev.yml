@@ -9,7 +9,7 @@ env:
   datasources:
     mysql1:
       host: "127.0.0.1"
-      port: 3406
+      port: 3306
       user: "e2e_mysql"
       password: "123456"
       database: "e2e_db"

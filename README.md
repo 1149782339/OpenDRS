@@ -31,7 +31,7 @@ compose 栈包含：
 |---|---|---|
 | frontend (nginx) | 80 | Web UI + API 反代 |
 | backend | 8080 | Spring Boot 应用（host 网络） |
-| mysql | 3306 | 演示源库 + 服务元数据库（root/123456，库 `opendrs`） |
+| mysql | 3406 | 演示源库 + 服务元数据库（root/123456，库 `opendrs`） |
 | mysql2 | 3307 | 双向同步演示对端（root/123456，库 `bidir_test`） |
 | postgres | 5432 | 演示目标库（opendrs/opendrs，库 `opendrs`） |
 | prometheus | 9090 | 回放指标采集 |
@@ -148,7 +148,7 @@ curl http://localhost/api/v1/migration/connections
 # 新建数据源
 curl -X POST http://localhost/api/v1/migration/connections \
   -H 'Content-Type: application/json' \
-  -d '{"name":"my-mysql","connection":{"type":"MYSQL","host":"127.0.0.1","port":3306,
+  -d '{"name":"my-mysql","connection":{"type":"MYSQL","host":"127.0.0.1","port":3406,
        "database":"demo","username":"root","password":"123456",
        "extra":{"allowPublicKeyRetrieval":true}}}'
 
@@ -171,7 +171,7 @@ curl 'http://localhost/api/v1/migration/tasks/{id}/logs?page=1&size=50'
 ```bash
 # 后端：编译 / 测试 / 打包
 mvn compile
-mvn test                      # 88 个单测；两个 *IT 需要本机 Docker，无 Docker 自动跳过
+mvn test                      # 单测；端到端用例走 scripts/test framework（需容器）
 mvn -DskipTests package
 
 # 前端：热更新开发（代理 /api 到 :8080）
