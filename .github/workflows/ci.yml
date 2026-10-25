@@ -7,14 +7,15 @@ on:
       # Local tooling and docs: no code or tests change, a full CI run is pure waste.
       # Frontend sources stay INCLUDED — the frontend build job is the only check
       # opendrs-web currently has.
+      # scripts/ is NOT ignored: it holds the e2e framework the E2E job runs — framework
+      # changes must trigger CI (an ignored framework regression once slipped to main
+      # exactly because of this).
       - 'deploy/**'
-      - 'scripts/**'
       - '*.md'
       - '**/*.md'
   pull_request:
     paths-ignore:
       - 'deploy/**'
-      - 'scripts/**'
       - '*.md'
       - '**/*.md'
 
