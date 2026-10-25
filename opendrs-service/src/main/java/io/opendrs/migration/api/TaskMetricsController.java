@@ -38,6 +38,12 @@ public class TaskMetricsController {
     private static final String RATE_WINDOW = "30s";
     private static final int DEFAULT_MINUTES = 15;
     private static final int DEFAULT_STEP = 5;
+    private static final int MIN_STEP_SECONDS = 5;
+    /** Preset windows stay fine-grained; a custom window may span days, so its step may be far wider. */
+    private static final int MAX_PRESET_STEP_SECONDS = 120;
+    private static final int MAX_CUSTOM_STEP_SECONDS = 3600;
+    /** Prometheus hard-rejects range queries above this many points per series. */
+    private static final long MAX_POINTS_PER_SERIES = 11_000;
 
     private final RestClient prometheus;
 
@@ -45,31 +51,53 @@ public class TaskMetricsController {
         this.prometheus = RestClient.builder().baseUrl(prometheusUrl).build();
     }
 
+    /**
+     * Replay metrics over either a relative window ({@code minutes} back from now, the default)
+     * or an absolute {@code start}/{@code end} range in epoch seconds ("自定义" in the UI).
+     * An absolute range wins only when fully valid (positive, end after start, not in the future);
+     * a partial or invalid one falls back to the relative window instead of failing the request.
+     * {@code step} is saturated into [5s, 2min] for preset windows and [5s, 1h] for custom ones.
+     */
     @GetMapping("/{id}/metrics/replay")
     public Response<TaskReplayMetricsResponse> replay(
             @PathVariable Long id,
             @RequestParam(defaultValue = "15") int minutes,
-            @RequestParam(defaultValue = "5") int step) {
-        int windowMinutes = clamp(minutes, 1, 60, DEFAULT_MINUTES);
-        int stepSeconds = clamp(step, 5, 120, DEFAULT_STEP);
-        long end = System.currentTimeMillis() / 1000;
-        long start = end - windowMinutes * 60L;
+            @RequestParam(defaultValue = "5") int step,
+            @RequestParam(required = false) Long start,
+            @RequestParam(required = false) Long end) {
+        long now = System.currentTimeMillis() / 1000;
+        boolean custom = start != null && end != null && start > 0 && end > start && end <= now;
+        if (!custom && (start != null || end != null)) {
+            log.warn("Ignoring invalid custom range start={} end={} (now={}); falling back to minutes={}",
+                    start, end, now, minutes);
+        }
+        long windowEnd = custom ? end : now;
+        long windowStart = custom ? start : windowEnd - clamp(minutes, 1, 60, DEFAULT_MINUTES) * 60L;
+        int stepMax = custom ? MAX_CUSTOM_STEP_SECONDS : MAX_PRESET_STEP_SECONDS;
+        // Saturate into range (unlike minutes' fallback): an over-wide step from an old or
+        // hand-rolled client becomes the widest usable one, never a silently tiny default.
+        int stepSeconds = Math.max(MIN_STEP_SECONDS, Math.min(stepMax, step));
+        // Prometheus rejects range queries above 11k points per series; widen the step instead of erroring.
+        long stepFloor = (windowEnd - windowStart) / MAX_POINTS_PER_SERIES;
+        if (stepSeconds < stepFloor) {
+            stepSeconds = (int) stepFloor;
+        }
 
         // Every series is queried per direction: forward always exists, reverse only when a
         // bidirectional pipeline records it — one-way tasks simply get no reverse samples,
         // which the frontend renders as "no reverse direction".
-        Map<Long, Double> capturedFwd = queryRange(capturedPromql(id, "forward"), start, end, stepSeconds);
-        Map<Long, Double> capturedRev = queryRange(capturedPromql(id, "reverse"), start, end, stepSeconds);
-        Map<Long, Double> appliedFwd = queryRange(appliedPromql(id, "forward"), start, end, stepSeconds);
-        Map<Long, Double> appliedRev = queryRange(appliedPromql(id, "reverse"), start, end, stepSeconds);
-        Map<Long, Double> appliedRowsFwd = queryRange(appliedRowsPromql(id, "forward"), start, end, stepSeconds);
-        Map<Long, Double> appliedRowsRev = queryRange(appliedRowsPromql(id, "reverse"), start, end, stepSeconds);
-        Map<Long, Double> execMsFwd = queryRange(txAvgPromql("opendrs_sink_tx_exec_time", id, "forward"), start, end, stepSeconds);
-        Map<Long, Double> execMsRev = queryRange(txAvgPromql("opendrs_sink_tx_exec_time", id, "reverse"), start, end, stepSeconds);
-        Map<Long, Double> commitMsFwd = queryRange(txAvgPromql("opendrs_sink_tx_commit_time", id, "forward"), start, end, stepSeconds);
-        Map<Long, Double> commitMsRev = queryRange(txAvgPromql("opendrs_sink_tx_commit_time", id, "reverse"), start, end, stepSeconds);
-        Map<Long, Double> lagFwd = queryRange(lagPromql(id, "forward"), start, end, stepSeconds);
-        Map<Long, Double> lagRev = queryRange(lagPromql(id, "reverse"), start, end, stepSeconds);
+        Map<Long, Double> capturedFwd = queryRange(capturedPromql(id, "forward"), windowStart, windowEnd, stepSeconds);
+        Map<Long, Double> capturedRev = queryRange(capturedPromql(id, "reverse"), windowStart, windowEnd, stepSeconds);
+        Map<Long, Double> appliedFwd = queryRange(appliedPromql(id, "forward"), windowStart, windowEnd, stepSeconds);
+        Map<Long, Double> appliedRev = queryRange(appliedPromql(id, "reverse"), windowStart, windowEnd, stepSeconds);
+        Map<Long, Double> appliedRowsFwd = queryRange(appliedRowsPromql(id, "forward"), windowStart, windowEnd, stepSeconds);
+        Map<Long, Double> appliedRowsRev = queryRange(appliedRowsPromql(id, "reverse"), windowStart, windowEnd, stepSeconds);
+        Map<Long, Double> execMsFwd = queryRange(txAvgPromql("opendrs_sink_tx_exec_time", id, "forward"), windowStart, windowEnd, stepSeconds);
+        Map<Long, Double> execMsRev = queryRange(txAvgPromql("opendrs_sink_tx_exec_time", id, "reverse"), windowStart, windowEnd, stepSeconds);
+        Map<Long, Double> commitMsFwd = queryRange(txAvgPromql("opendrs_sink_tx_commit_time", id, "forward"), windowStart, windowEnd, stepSeconds);
+        Map<Long, Double> commitMsRev = queryRange(txAvgPromql("opendrs_sink_tx_commit_time", id, "reverse"), windowStart, windowEnd, stepSeconds);
+        Map<Long, Double> lagFwd = queryRange(lagPromql(id, "forward"), windowStart, windowEnd, stepSeconds);
+        Map<Long, Double> lagRev = queryRange(lagPromql(id, "reverse"), windowStart, windowEnd, stepSeconds);
 
         List<Long> timestamps = Stream.of(capturedFwd, capturedRev, appliedFwd, appliedRev,
                         appliedRowsFwd, appliedRowsRev, execMsFwd, execMsRev, commitMsFwd, commitMsRev,

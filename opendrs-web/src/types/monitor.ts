@@ -18,11 +18,12 @@ export interface RangeWindow {
 export const TARGET_POINTS = 180
 
 /**
- * 采样步长的上下限。服务端的 step 钳在 [5,120]，越界会静默退回 5 秒，
- * 所以前端先收敛到同一个区间，免得发一个服务端会偷偷改掉的请求。
+ * 采样步长的上下限（只约束自定义区间：预设档位的步长是写死的固定值，不经过 stepForSpan）。
+ * 服务端对自定义区间的 step 钳在 [5,3600]，区间过宽导致单序列点数超过 Prometheus 的
+ * 11000 上限时还会自动放大 step；前端先收敛到同一区间，免得发一个服务端会偷偷改掉的请求。
  */
 export const MIN_STEP_SECONDS = 5
-export const MAX_STEP_SECONDS = 120
+export const MAX_STEP_SECONDS = 3600
 
 /**
  * 预设档位。
