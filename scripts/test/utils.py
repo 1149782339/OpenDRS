@@ -129,6 +129,37 @@ class PostgresConnection:
         finally:
             conn.close()
 
+    def with_database(self, database: str) -> "PostgresConnection":
+        """同一连接参数、指向另一个库的连接——用例级目标库隔离用。"""
+        cfg = dict(self.cfg)
+        cfg["database"] = database
+        return PostgresConnection(cfg)
+
+    def create_database(self, name: str) -> None:
+        """在配置的库（维护库）上建用例专属库。name 由 case_ctx.ns 生成，是安全标识符。"""
+        conn = psycopg2.connect(host=self.cfg["host"], port=int(self.cfg["port"]),
+                                user=self.cfg["user"], password=self.cfg["password"],
+                                dbname=self.cfg["database"])
+        conn.autocommit = True
+        try:
+            with conn.cursor() as cur:
+                cur.execute(f'CREATE DATABASE "{name}"')
+        finally:
+            conn.close()
+
+    def drop_database(self, name: str) -> None:
+        """先踢掉残留连接再删库（用例中断留下的 idle 连接会挡住 DROP DATABASE）。"""
+        conn = psycopg2.connect(host=self.cfg["host"], port=int(self.cfg["port"]),
+                                user=self.cfg["user"], password=self.cfg["password"],
+                                dbname=self.cfg["database"])
+        conn.autocommit = True
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = %s", (name,))
+                cur.execute(f'DROP DATABASE IF EXISTS "{name}"')
+        finally:
+            conn.close()
+
     def drop_table(self, schema: str, table: str) -> None:
         conn = self._connect()
         try:

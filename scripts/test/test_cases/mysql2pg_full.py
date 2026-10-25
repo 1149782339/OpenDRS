@@ -23,7 +23,12 @@ ROW_COUNT = 10_000
 @pytest.fixture(scope="module")
 def prepared(env, case_ctx, fw_config):
     mysql = MySqlConnection(env.datasources["mysql1"])
-    pg = PostgresConnection(env.datasources["postgres1"])
+    pg_admin = PostgresConnection(env.datasources["postgres1"])
+    # 每个用例独立的目标库：同 stage 并行用例共享目标实例时，目标 schema（= 源库名）
+    # 的 CREATE SCHEMA IF NOT EXISTS 并发会撞 pg_namespace 唯一索引（PG 已知竞态）。
+    pg_db = case_ctx.ns("db")
+    pg_admin.create_database(pg_db)
+    pg = pg_admin.with_database(pg_db)
     schema = mysql.cfg["database"]        # MySQL 库名迁移后是同名的 PG schema
     tables = [case_ctx.ns("user_wallet"), case_ctx.ns("user_wallet_b")]
     timeout = float(fw_config.get("case_timeout_sec", 900))
@@ -42,7 +47,7 @@ def prepared(env, case_ctx, fw_config):
         username=mysql.cfg["user"], password=mysql.cfg["password"])
     target = opendrs.create_datasource(
         case_ctx.ns("tgt_pg"), "POSTGRESQL",
-        host=pg.cfg["host"], port=int(pg.cfg["port"]), database=pg.cfg["database"],
+        host=pg.cfg["host"], port=int(pg.cfg["port"]), database=pg_db,
         username=pg.cfg["user"], password=pg.cfg["password"])
     assert opendrs.test_datasource(source)
     assert opendrs.test_datasource(target)
@@ -69,6 +74,7 @@ def prepared(env, case_ctx, fw_config):
             for table in tables:
                 pg.drop_table(schema, table)
                 mysql.drop_table(table)
+            pg_admin.drop_database(pg_db)
 
 
 def test_full_migration(prepared):
