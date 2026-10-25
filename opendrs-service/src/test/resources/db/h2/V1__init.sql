@@ -87,3 +87,12 @@ CREATE TABLE migration_logs (
   KEY idx_log_task_id (task_id, id),
   CONSTRAINT fk_log_task FOREIGN KEY (task_id) REFERENCES migration_tasks (id)
 );
+
+CREATE TABLE task_snapshot_complete_tables (
+  pipeline_id BIGINT       NOT NULL,
+  table_name  VARCHAR(512) NOT NULL,
+  row_count   BIGINT       NULL,
+  created_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (pipeline_id, table_name),
+  CONSTRAINT fk_snapshot_complete_pipeline FOREIGN KEY (pipeline_id) REFERENCES task_pipelines (id)
+);

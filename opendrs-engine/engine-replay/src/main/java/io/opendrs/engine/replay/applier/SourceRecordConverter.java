@@ -82,11 +82,11 @@ public final class SourceRecordConverter {
                 // structure is owned by the schema migration step (which also resolves object
                 // dependencies between tables), so applying them here would DROP and recreate
                 // tables that may already hold migrated rows.
-                LOGGER.info("skip schema change from the snapshot phase, target schema is owned by schema migration: {}", ddl);
+                LOGGER.debug("skip schema change from the snapshot phase, target schema is owned by schema migration: {}", ddl);
                 return Optional.empty();
             }
             if (!applyDdlEnabled) {
-                LOGGER.info("schema change event is omitted");
+                LOGGER.debug("schema change event is omitted");
                 return Optional.empty();
             }
             if (ddl == null || ddl.isBlank()) {

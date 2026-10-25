@@ -58,6 +58,21 @@ public final class DebeziumEngineConfig {
         // / initial_only (全量，快照完自动停). No "never" mapping: a connector without stored
         // offsets refuses to start with no snapshot at all — no_data is the incremental entry.
         props.setProperty("snapshot.mode", snapshotModeValue(spec.snapshotStrategy()));
+        if (spec.resumeTables() != null && !spec.resumeTables().isEmpty()) {
+            // Resume run of a crashed full load: snapshot only the remaining tables (the done
+            // ones were skipped by the service-side planner, the half-finished ones truncated).
+            props.setProperty("snapshot.include.collection.list", resumeIncludeList(spec.resumeTables()));
+            if (spec.snapshotStrategy() == SnapshotStrategy.INITIAL) {
+                // Full+incremental resume: after the snapshot, stream from the stored P0 position
+                // via the custom snapshotter. Must come after the snapshot.mode line above — it
+                // overrides the strategy-mapped value.
+                props.setProperty("snapshot.mode", "custom");
+                props.setProperty("snapshot.mode.custom.name", ResumableInitialSnapshotter.NAME);
+            }
+            // INITIAL_ONLY (full-only) resume keeps the strategy-mapped initial_only mode: the
+            // include list alone restricts the snapshot, and the connector stops by itself after
+            // it — no binlog streaming, no P0 involved.
+        }
         props.setProperty("notification.enabled.channels", NOTIFICATION_CHANNEL_SINK);
         props.setProperty("notification.sink.topic.name", notificationTopic(spec.pipelineId()));
         // Parallel snapshot read: threads × multiplier ≈ the number of chunks Debezium splits
@@ -186,6 +201,17 @@ public final class DebeziumEngineConfig {
                 .collect(Collectors.joining(","));
     }
 
+    /**
+     * Debezium patterns are regexes: a literal identifier must be quoted, dots included.
+     * Quoting the whole "db.table" string at once keeps the separator literal too.
+     */
+    static String resumeIncludeList(java.util.Set<String> tables) {
+        return tables.stream()
+                .sorted()
+                .map(DebeziumEngineConfig::literal)
+                .collect(Collectors.joining(","));
+    }
+
     /** Debezium patterns are regexes: a literal identifier must be quoted, dots included. */
     private static String literal(String name) {
         return Pattern.quote(name);
@@ -256,17 +282,35 @@ public final class DebeziumEngineConfig {
              * (全量：snapshot then the connector stops by itself). Null keeps
              * {@link SnapshotStrategy#INITIAL}.
              */
-            SnapshotStrategy snapshotStrategy) {
+            SnapshotStrategy snapshotStrategy,
+            /**
+             * Remaining {@code db.table}s of a crashed full load, for resume-by-table. Restricts
+             * the data snapshot to these tables via {@code snapshot.include.collection.list}.
+             * With {@link SnapshotStrategy#INITIAL} it additionally switches the snapshot to
+             * {@code custom} ({@link ResumableInitialSnapshotter}) so streaming resumes from the
+             * stored P0 position after the snapshot; with {@link SnapshotStrategy#INITIAL_ONLY}
+             * the strategy-mapped {@code initial_only} mode is kept — snapshot only, the
+             * connector stops by itself, no P0 involved (a full-only task implies a quiesced
+             * source). Only valid with those two strategies. Null/empty means a normal full load.
+             */
+            java.util.Set<String> resumeTables) {
 
         public EngineSpec {
             direction = direction == null ? ReplayDirection.FORWARD : direction;
             snapshotStrategy = snapshotStrategy == null ? SnapshotStrategy.INITIAL : snapshotStrategy;
+            if (resumeTables != null && !resumeTables.isEmpty()
+                    && snapshotStrategy != SnapshotStrategy.INITIAL
+                    && snapshotStrategy != SnapshotStrategy.INITIAL_ONLY) {
+                throw new IllegalStateException(
+                        "resumeTables is only valid with the INITIAL or INITIAL_ONLY snapshot strategy, got "
+                                + snapshotStrategy);
+            }
         }
 
         /** Compact form for callers without a persisted pipeline; the task id stands in as pipeline id. */
         public EngineSpec(long taskId, JdbcConnectionConfig source, List<Table> tables, Long databaseServerId) {
             this(taskId, taskId, source, tables, databaseServerId, null, null,
-                    ReplayMetrics.NONE, null, ReplayDirection.FORWARD, null, null, null, null, null);
+                    ReplayMetrics.NONE, null, ReplayDirection.FORWARD, null, null, null, null, null, null);
         }
 
         public EngineSpec(
@@ -277,7 +321,7 @@ public final class DebeziumEngineConfig {
                 JdbcConnectionConfig target,
                 TableSelection tableSelection) {
             this(taskId, taskId, source, tables, databaseServerId, target, tableSelection,
-                    ReplayMetrics.NONE, null, ReplayDirection.FORWARD, null, null, null, null, null);
+                    ReplayMetrics.NONE, null, ReplayDirection.FORWARD, null, null, null, null, null, null);
         }
 
         public EngineSpec(
@@ -289,7 +333,7 @@ public final class DebeziumEngineConfig {
                 TableSelection tableSelection,
                 ReplayMetrics metrics) {
             this(taskId, taskId, source, tables, databaseServerId, target, tableSelection,
-                    metrics, null, ReplayDirection.FORWARD, null, null, null, null, null);
+                    metrics, null, ReplayDirection.FORWARD, null, null, null, null, null, null);
         }
 
         public EngineSpec(
@@ -302,7 +346,7 @@ public final class DebeziumEngineConfig {
                 TableSelection tableSelection,
                 ReplayMetrics metrics) {
             this(taskId, pipelineId, source, tables, databaseServerId, target, tableSelection,
-                    metrics, null, ReplayDirection.FORWARD, null, null, null, null, null);
+                    metrics, null, ReplayDirection.FORWARD, null, null, null, null, null, null);
         }
 
         public EngineSpec(
@@ -316,7 +360,7 @@ public final class DebeziumEngineConfig {
                 ReplayMetrics metrics,
                 GtidLoopConfig gtidLoop) {
             this(taskId, pipelineId, source, tables, databaseServerId, target, tableSelection,
-                    metrics, gtidLoop, ReplayDirection.FORWARD, null, null, null, null, null);
+                    metrics, gtidLoop, ReplayDirection.FORWARD, null, null, null, null, null, null);
         }
     }
 }

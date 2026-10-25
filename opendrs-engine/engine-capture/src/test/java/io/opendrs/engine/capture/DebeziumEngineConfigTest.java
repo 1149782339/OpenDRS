@@ -118,7 +118,7 @@ class DebeziumEngineConfigTest {
                 7L, 7L, mysql(), tables(), 85744L, null, TableSelection.all(),
                 io.opendrs.engine.replay.metrics.ReplayMetrics.NONE, null,
                 io.opendrs.engine.replay.metrics.ReplayDirection.FORWARD,
-                null, null, 8, 4, null);
+                null, null, 8, 4, null, null);
         Properties props = DebeziumEngineConfig.capture(spec);
 
         assertThat(props.getProperty("snapshot.max.threads")).isEqualTo("8");
@@ -152,8 +152,67 @@ class DebeziumEngineConfigTest {
                 7L, 7L, mysql(), tables(), 85744L, null, TableSelection.all(),
                 io.opendrs.engine.replay.metrics.ReplayMetrics.NONE, null,
                 io.opendrs.engine.replay.metrics.ReplayDirection.FORWARD,
-                null, null, null, null, strategy);
+                null, null, null, null, strategy, null);
         return DebeziumEngineConfig.capture(spec).getProperty("snapshot.mode");
+    }
+
+    @Test
+    void resumeTablesSwitchToCustomSnapshotterAndRestrictTheSnapshot() {
+        EngineSpec spec = new EngineSpec(
+                7L, 7L, mysql(), tables(), 85744L, null, TableSelection.all(),
+                io.opendrs.engine.replay.metrics.ReplayMetrics.NONE, null,
+                io.opendrs.engine.replay.metrics.ReplayDirection.FORWARD,
+                null, null, null, null, null,
+                java.util.Set.of("hr.emp", "hr.dept", "sales.orders"));
+
+        Properties props = DebeziumEngineConfig.capture(spec);
+
+        assertThat(props.getProperty("snapshot.mode")).isEqualTo("custom");
+        assertThat(props.getProperty("snapshot.mode.custom.name"))
+                .isEqualTo(ResumableInitialSnapshotter.NAME);
+        // Regex-quoted literals, sorted for determinism; the dot must not act as a wildcard.
+        assertThat(props.getProperty("snapshot.include.collection.list"))
+                .isEqualTo("\\Qhr.dept\\E,\\Qhr.emp\\E,\\Qsales.orders\\E");
+    }
+
+    @Test
+    void resumeTablesSurviveDotsAsLiteralCharacters() {
+        EngineSpec spec = specWithResume(java.util.Set.of("my.db", "a.b"));
+
+        assertThat(DebeziumEngineConfig.capture(spec).getProperty("snapshot.include.collection.list"))
+                .isEqualTo("\\Qa.b\\E,\\Qmy.db\\E");
+    }
+
+    @Test
+    void nullOrEmptyResumeTablesKeepTheNormalSnapshotMode() {
+        assertThat(DebeziumEngineConfig.capture(specWithResume(null))
+                .getProperty("snapshot.mode")).isEqualTo("initial");
+        Properties empty = DebeziumEngineConfig.capture(specWithResume(java.util.Set.of()));
+        assertThat(empty.getProperty("snapshot.mode")).isEqualTo("initial");
+        assertThat(empty.getProperty("snapshot.include.collection.list")).isNull();
+        assertThat(empty.getProperty("snapshot.mode.custom.name")).isNull();
+    }
+
+    @Test
+    void resumeTablesRejectNonInitialSnapshotStrategies() {
+        // EngineSpec enforces the contract at construction time: a resume continues the full
+        // load and then streams, which only the INITIAL strategy means.
+        assertThatThrownBy(() -> new EngineSpec(
+                7L, 7L, mysql(), tables(), 85744L, null, TableSelection.all(),
+                io.opendrs.engine.replay.metrics.ReplayMetrics.NONE, null,
+                io.opendrs.engine.replay.metrics.ReplayDirection.FORWARD,
+                null, null, null, null, io.opendrs.engine.replay.SnapshotStrategy.NO_DATA,
+                java.util.Set.of("hr.emp")))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("resumeTables");
+    }
+
+    private static EngineSpec specWithResume(java.util.Set<String> resumeTables) {
+        return new EngineSpec(
+                7L, 7L, mysql(), tables(), 85744L, null, TableSelection.all(),
+                io.opendrs.engine.replay.metrics.ReplayMetrics.NONE, null,
+                io.opendrs.engine.replay.metrics.ReplayDirection.FORWARD,
+                null, null, null, null, null, resumeTables);
     }
 
     private static EngineSpec spec(long taskId, TableSelection selection) {

@@ -8,6 +8,7 @@ import io.opendrs.jdbc.dialect.MysqlDialect;
 import io.opendrs.jdbc.dialect.PostgresDialect;
 import io.opendrs.engine.replay.mapping.MappingValidator;
 import io.opendrs.migration.metrics.MicrometerReplayMetrics;
+import io.opendrs.migration.service.JdbcFullLoadCheckpointListener;
 import javax.sql.DataSource;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -36,12 +37,14 @@ public class CaptureConfig {
             MysqlDialect mysqlDialect,
             PostgresDialect postgresDialect,
             DataSource dataSource,
-            MeterRegistry meterRegistry) {
+            MeterRegistry meterRegistry,
+            JdbcFullLoadCheckpointListener fullLoadCheckpointListener) {
         return new DefaultMigrationEngine(
                 connectionFactory,
                 mysqlDialect,
                 postgresDialect,
                 dataSource,
-                new MicrometerReplayMetrics(meterRegistry));
+                new MicrometerReplayMetrics(meterRegistry),
+                fullLoadCheckpointListener);
     }
 }

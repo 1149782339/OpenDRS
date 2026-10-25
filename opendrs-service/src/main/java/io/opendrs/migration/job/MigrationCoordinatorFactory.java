@@ -6,6 +6,7 @@ import io.opendrs.migration.mapper.MigrationTaskMapper;
 import io.opendrs.migration.mapper.TaskPipelineMapper;
 import io.opendrs.migration.service.MigrationLagRegistry;
 import io.opendrs.migration.service.MigrationLogService;
+import io.opendrs.migration.service.FullLoadResumePlanner;
 import io.opendrs.migration.service.ServerIdAllocator;
 import org.springframework.stereotype.Component;
 
@@ -20,6 +21,7 @@ public class MigrationCoordinatorFactory {
     private final MigrationLogService logService;
     private final MigrationLagRegistry lagRegistry;
     private final ServerIdAllocator serverIdAllocator;
+    private final FullLoadResumePlanner resumePlanner;
 
     public MigrationCoordinatorFactory(
             MigrationTaskMapper taskMapper,
@@ -29,7 +31,8 @@ public class MigrationCoordinatorFactory {
             MigrationEngine engine,
             MigrationLogService logService,
             MigrationLagRegistry lagRegistry,
-            ServerIdAllocator serverIdAllocator) {
+            ServerIdAllocator serverIdAllocator,
+            FullLoadResumePlanner resumePlanner) {
         this.taskMapper = taskMapper;
         this.connectionMapper = connectionMapper;
         this.pipelineMapper = pipelineMapper;
@@ -38,6 +41,7 @@ public class MigrationCoordinatorFactory {
         this.logService = logService;
         this.lagRegistry = lagRegistry;
         this.serverIdAllocator = serverIdAllocator;
+        this.resumePlanner = resumePlanner;
     }
 
     public MigrationCoordinator create(io.opendrs.migration.domain.MigrationTask task) {
@@ -52,6 +56,7 @@ public class MigrationCoordinatorFactory {
                 null,
                 serverIdAllocator,
                 lagRegistry::listenerFor,
-                pipelineMapper);
+                pipelineMapper,
+                resumePlanner);
     }
 }

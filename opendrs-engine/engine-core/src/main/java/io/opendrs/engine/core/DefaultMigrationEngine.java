@@ -62,6 +62,7 @@ public class DefaultMigrationEngine implements MigrationEngine {
     private final DebeziumCdcEngineFactory cdcEngineFactory;
     private final SchemaMigrator schemaMigrator;
     private final ReplayMetrics replayMetrics;
+    private final io.opendrs.common.progress.FullLoadCheckpointListener fullLoadCheckpointListener;
     private final ExecutorService executor = Executors.newCachedThreadPool(new EngineThreadFactory());
 
     public DefaultMigrationEngine(
@@ -78,6 +79,22 @@ public class DefaultMigrationEngine implements MigrationEngine {
             PostgresDialect postgresDialect,
             DataSource metadataDataSource,
             ReplayMetrics replayMetrics) {
+        this(factory, mysqlDialect, postgresDialect, metadataDataSource, replayMetrics,
+                io.opendrs.common.progress.FullLoadCheckpointListener.NONE);
+    }
+
+    /**
+     * @param fullLoadCheckpointListener receives the full-load checkpoint events the capture
+     *     consumer reports (table list resolved, table committed); the service persists them so
+     *     a crashed full load can resume table by table
+     */
+    public DefaultMigrationEngine(
+            JdbcConnectionFactory factory,
+            MysqlDialect mysqlDialect,
+            PostgresDialect postgresDialect,
+            DataSource metadataDataSource,
+            ReplayMetrics replayMetrics,
+            io.opendrs.common.progress.FullLoadCheckpointListener fullLoadCheckpointListener) {
         this.factory = factory;
         this.expander = new TableSelectionExpander(factory);
         this.mappingValidator = new MappingValidator();
@@ -87,6 +104,9 @@ public class DefaultMigrationEngine implements MigrationEngine {
         this.mysqlBidirectionalPlanBuilder = new PlanBuilder(MysqlBidirectionalProfile.registry());
         this.cdcEngineFactory = new DebeziumCdcEngineFactory(factory, mappingValidator, metadataDataSource);
         this.replayMetrics = replayMetrics;
+        this.fullLoadCheckpointListener = fullLoadCheckpointListener == null
+                ? io.opendrs.common.progress.FullLoadCheckpointListener.NONE
+                : fullLoadCheckpointListener;
     }
 
     @Override
@@ -168,8 +188,10 @@ public class DefaultMigrationEngine implements MigrationEngine {
                 param.tableApplierConcurrency(),
                 param.snapshotThreads(),
                 param.snapshotThreadsMultiplier(),
-                param.snapshotStrategy());
-        return cdcEngineFactory.create(spec, onSnapshot, listener, param.lagListener());
+                param.snapshotStrategy(),
+                param.resumeTables());
+        return cdcEngineFactory.create(
+                spec, onSnapshot, listener, param.lagListener(), fullLoadCheckpointListener);
     }
 
     /**

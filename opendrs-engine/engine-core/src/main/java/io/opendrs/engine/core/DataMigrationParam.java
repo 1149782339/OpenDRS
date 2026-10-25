@@ -75,7 +75,14 @@ public record DataMigrationParam(
          * Sync mode of the run: full+incremental, incremental-only or full-only. The service
          * wires the task's mode; null keeps {@link SnapshotStrategy#INITIAL} (full+incremental).
          */
-        SnapshotStrategy snapshotStrategy)
+        SnapshotStrategy snapshotStrategy,
+        /**
+         * Remaining {@code db.table}s when this run resumes a crashed full load, non-empty only
+         * together with {@link SnapshotStrategy#INITIAL} (the EngineSpec constructor rejects any
+         * other strategy). The service computes the set from the persisted full-load checkpoints;
+         * null keeps a normal full snapshot.
+         */
+        java.util.Set<String> resumeTables)
         implements MigrationParam {
 
     public DataMigrationParam {
@@ -100,7 +107,7 @@ public record DataMigrationParam(
         return new DataMigrationParam(
                 taskId, source, target, selection, databaseServerId,
                 phaseListener, logListener, lagListener, null, null, ReplayDirection.FORWARD,
-                null, null, null, null, null);
+                null, null, null, null, null, null);
     }
 
     public static Builder builder() {
@@ -125,6 +132,7 @@ public record DataMigrationParam(
         private Integer snapshotThreads;
         private Integer snapshotThreadsMultiplier;
         private SnapshotStrategy snapshotStrategy;
+        private java.util.Set<String> resumeTables;
 
         private Builder() {
         }
@@ -234,6 +242,15 @@ public record DataMigrationParam(
             return this;
         }
 
+        /**
+         * Remaining {@code db.table}s of a crashed full load, for resume-by-table; the service
+         * wires the checkpoint-derived set. Null keeps a normal full snapshot.
+         */
+        public Builder resumeTables(java.util.Set<String> resumeTables) {
+            this.resumeTables = resumeTables;
+            return this;
+        }
+
         public DataMigrationParam build() {
             return new DataMigrationParam(
                     taskId,
@@ -251,7 +268,8 @@ public record DataMigrationParam(
                     tableApplierConcurrency,
                     snapshotThreads,
                     snapshotThreadsMultiplier,
-                    snapshotStrategy);
+                    snapshotStrategy,
+                    resumeTables);
         }
     }
 }

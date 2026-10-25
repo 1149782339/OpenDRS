@@ -52,6 +52,7 @@ public class MigrationCoordinator implements Runnable {
     private final java.util.function.Function<Long, MigrationLagListener> lagListenerFactory;
     private final ServerIdAllocator serverIdAllocator;
     private final io.opendrs.migration.mapper.TaskPipelineMapper pipelineMapper;
+    private final io.opendrs.migration.service.FullLoadResumePlanner resumePlanner;
     private final AtomicBoolean stopRequested = new AtomicBoolean(false);
     private volatile Thread worker;
 
@@ -186,6 +187,29 @@ public class MigrationCoordinator implements Runnable {
             ServerIdAllocator serverIdAllocator,
             java.util.function.Function<Long, MigrationLagListener> lagListenerFactory,
             io.opendrs.migration.mapper.TaskPipelineMapper pipelineMapper) {
+        this(taskId, mode, taskMapper, connectionMapper, registry, engine, logListener,
+                lagListener, serverIdAllocator, lagListenerFactory, pipelineMapper, null);
+    }
+
+    /**
+     * @param pipelineMapper loads the task's pipeline rows; null in unit tests, where an ephemeral
+     *     single pipeline synthesized from the task row stands in
+     * @param resumePlanner decides per-pipeline full-load resume (remaining tables from the
+     *     persisted checkpoints); null in unit tests, where no checkpoint DB is reachable
+     */
+    public MigrationCoordinator(
+            Long taskId,
+            MigrationMode mode,
+            MigrationTaskMapper taskMapper,
+            ConnectionInfoMapper connectionMapper,
+            MigrationCoordinatorRegistry registry,
+            MigrationEngine engine,
+            MigrationLogListener logListener,
+            MigrationLagListener lagListener,
+            ServerIdAllocator serverIdAllocator,
+            java.util.function.Function<Long, MigrationLagListener> lagListenerFactory,
+            io.opendrs.migration.mapper.TaskPipelineMapper pipelineMapper,
+            io.opendrs.migration.service.FullLoadResumePlanner resumePlanner) {
         this.taskId = taskId;
         this.mode = mode;
         this.taskMapper = taskMapper;
@@ -199,6 +223,7 @@ public class MigrationCoordinator implements Runnable {
                 : lagListenerFactory;
         this.serverIdAllocator = serverIdAllocator;
         this.pipelineMapper = pipelineMapper;
+        this.resumePlanner = resumePlanner;
     }
 
     public Long getTaskId() {
@@ -422,6 +447,10 @@ public class MigrationCoordinator implements Runnable {
                 ? options.full().exportConcurrency() : null;
         Integer snapshotThreadsMultiplier = options != null && options.full() != null
                 ? options.full().chunkMultiplier() : null;
+        io.opendrs.engine.replay.metrics.ReplayDirection direction = java.util.Objects.equals(
+                pipeline.getSourceEndpointId(), task.getSourceConnectionId())
+                ? io.opendrs.engine.replay.metrics.ReplayDirection.FORWARD
+                : io.opendrs.engine.replay.metrics.ReplayDirection.REVERSE;
         return DataMigrationParam.builder()
                 .taskId(taskId)
                 .pipelineId(pipeline.getId())
@@ -430,19 +459,79 @@ public class MigrationCoordinator implements Runnable {
                 .selection(selection(task))
                 .databaseServerId(serverIdOf(source))
                 .gtidLoop(gtidLoopOf(pipeline, pipelines))
-                .direction(java.util.Objects.equals(
-                        pipeline.getSourceEndpointId(), task.getSourceConnectionId())
-                        ? io.opendrs.engine.replay.metrics.ReplayDirection.FORWARD
-                        : io.opendrs.engine.replay.metrics.ReplayDirection.REVERSE)
+                .direction(direction)
                 .txApplierConcurrency(txApplierConcurrency)
                 .tableApplierConcurrency(tableApplierConcurrency)
                 .snapshotThreads(snapshotThreads)
                 .snapshotThreadsMultiplier(snapshotThreadsMultiplier)
                 .snapshotStrategy(strategyOf(mode))
+                .resumeTables(resumeTablesOf(task, pipeline, source, target, direction))
                 .phaseListener(phase -> onTaskPhase(phase, pipeline))
                 .logListener(logListener)
                 .lagListener(lagListenerFactory.apply(pipeline.getId()))
                 .build();
+    }
+
+    /**
+     * 全量断点续传：引擎启动前按 (taskId, direction) 读 checkpoint，done 表跳过、半成品表
+     * TRUNCATE 后与剩余表一起重拍。
+     *
+     * <p>两种快照策略都参与，但语义不同：
+     * <ul>
+     *   <li>{@code INITIAL}（全量+增量）：位点 P0 复用，快照完从 P0 续流（引擎侧
+     *   ResumableInitialSnapshotter）。</li>
+     *   <li>{@code INITIAL_ONLY}（仅全量）：纯快照续传——done 表跳过、半成品表 TRUNCATE
+     *   后重导，不依赖 binlog 位点。前提是仅全量任务隐含源库离线/静止：跳过的表不会
+     *   与源端重新核对，崩溃期间源端若有变更，目标端不会察觉（仅全量本身也不捕获这类
+     *   变更，续传只是把同一假设贯彻到底）。</li>
+     * </ul>
+     * {@code NO_DATA}（增量）没有快照，不参与。
+     *
+     * <p>退化与限制：
+     * <ul>
+     *   <li>binlog 保留期必须覆盖整个全量窗口（仅 INITIAL 策略涉及）。P0 被 purge 时
+     *   Debezium 会报错失败，下次重启还会在同一位置失败——需要人工清掉目标库全量数据后
+     *   从头重跑（无显式检测）。</li>
+     *   <li>无主键表不参与续传：半成品表 TRUNCATE 后重导依赖 dup-key→upsert 消化重复行，
+     *   无 PK 的表无法 upsert，预检查已将其挡在任务外。</li>
+     * </ul>
+     *
+     * @return remaining 表集合（非空时引擎只快照这些表），{@code null} 时不续传、完全走
+     *     现有全量路径
+     */
+    private java.util.Set<String> resumeTablesOf(
+            MigrationTask task,
+            io.opendrs.migration.domain.TaskPipeline pipeline,
+            ConnectionInfo source,
+            ConnectionInfo target,
+            io.opendrs.engine.replay.metrics.ReplayDirection direction) {
+        io.opendrs.engine.replay.SnapshotStrategy strategy = strategyOf(mode);
+        if (resumePlanner == null
+                || (strategy != io.opendrs.engine.replay.SnapshotStrategy.INITIAL
+                        && strategy != io.opendrs.engine.replay.SnapshotStrategy.INITIAL_ONLY)) {
+            return null;
+        }
+        java.util.Set<String> remaining =
+                resumePlanner.resumeTables(taskId, pipeline.getId(), selection(task), source, target);
+        if (remaining == null) {
+            return null;
+        }
+        if (remaining.isEmpty()) {
+            // 全部表已 done：不传 resumeTables，引擎按 INITIAL 正常启动——存量位点存在时
+            // Debezium 跳过快照直接进入增量，这正是"快照完成直接进增量"的现有路径。
+            return null;
+        }
+        log.info("Task job {} direction {} resumes full load, {} table(s) to re-snapshot",
+                taskId, direction.tag(), remaining.size());
+        note(MigrationLogLevel.INFO, "resume full load: " + remaining.size()
+                + " table(s) to re-snapshot, " + "done table(s) skipped");
+        if (strategy == io.opendrs.engine.replay.SnapshotStrategy.INITIAL_ONLY) {
+            // FULL_ONLY 续传的离线前提必须留在任务日志里：跳过的表不会与源端重新核对。
+            note(MigrationLogLevel.WARNING,
+                    "FULL_ONLY resume assumes the source is unchanged since the previous run;"
+                            + " skipped tables are not re-verified");
+        }
+        return remaining;
     }
 
     /**

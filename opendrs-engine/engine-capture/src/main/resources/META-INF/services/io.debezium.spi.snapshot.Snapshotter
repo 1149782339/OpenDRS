@@ -4,3 +4,4 @@
 # "ServiceConfigurationError: Provider ... not found" — which no unit test would catch.
 io.opendrs.engine.capture.SchemaOnlySnapshotter
 io.opendrs.engine.capture.IncrementalSnapshotter
+io.opendrs.engine.capture.ResumableInitialSnapshotter

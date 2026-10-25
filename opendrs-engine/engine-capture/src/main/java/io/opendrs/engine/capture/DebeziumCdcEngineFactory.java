@@ -6,6 +6,7 @@ import io.debezium.engine.format.ChangeEventFormat;
 import io.debezium.engine.spi.OffsetCommitPolicy;
 import io.debezium.embedded.Connect;
 import io.opendrs.common.log.MigrationLogListener;
+import io.opendrs.common.progress.FullLoadCheckpointListener;
 import io.opendrs.common.progress.MigrationLagListener;
 import io.opendrs.jdbc.JdbcConnectionFactory;
 import io.opendrs.engine.replay.ReplayConfig;
@@ -71,6 +72,20 @@ public class DebeziumCdcEngineFactory implements CdcEngineFactory {
             Runnable onSnapshotCompleted,
             MigrationLogListener logListener,
             MigrationLagListener lagListener) {
+        return create(spec, onSnapshotCompleted, logListener, lagListener, FullLoadCheckpointListener.NONE);
+    }
+
+    /**
+     * @param checkpointListener told when the snapshot's table list resolves and whenever a
+     *     table's full load commits on the target; called on the Debezium thread, so the
+     *     implementation must not block
+     */
+    public CdcEngine create(
+            DebeziumEngineConfig.EngineSpec spec,
+            Runnable onSnapshotCompleted,
+            MigrationLogListener logListener,
+            MigrationLagListener lagListener,
+            FullLoadCheckpointListener checkpointListener) {
         MigrationLogListener listener = logListener == null ? MigrationLogListener.NONE : logListener;
         if (spec.target() == null) {
             // Nothing is applied, so there is nothing to measure against.
@@ -81,7 +96,7 @@ public class DebeziumCdcEngineFactory implements CdcEngineFactory {
                             new LoggingChangeConsumer(spec.taskId()), onSnapshotCompleted, listener),
                     null);
         }
-        ReplayApplyChangeConsumer applyConsumer = applyConsumer(spec, listener, lagListener);
+        ReplayApplyChangeConsumer applyConsumer = applyConsumer(spec, listener, lagListener, checkpointListener);
         return build(
                 DebeziumEngineConfig.capture(spec),
                 spec.taskId(),
@@ -108,7 +123,8 @@ public class DebeziumCdcEngineFactory implements CdcEngineFactory {
     private ReplayApplyChangeConsumer applyConsumer(
             DebeziumEngineConfig.EngineSpec spec,
             MigrationLogListener logListener,
-            MigrationLagListener positionListener) {
+            MigrationLagListener positionListener,
+            FullLoadCheckpointListener checkpointListener) {
         ReplayConfig.Builder configBuilder = ReplayConfig.builder()
                 // Stateless provider: every call opens a fresh physical connection, so each
                 // parallel applier worker (via its own JdbcConnection) gets its own connection.
@@ -128,7 +144,9 @@ public class DebeziumCdcEngineFactory implements CdcEngineFactory {
             configBuilder.tableApplierConcurrency(spec.tableApplierConcurrency());
         }
         ReplayConfig config = configBuilder.build();
-        return new ReplayApplyChangeConsumer(spec.taskId(), config, logListener, positionListener);
+        return new ReplayApplyChangeConsumer(
+                spec.taskId(), spec.pipelineId(), config,
+                logListener, positionListener, checkpointListener);
     }
 
     private MappedTableNamingStrategy specTableNaming(DebeziumEngineConfig.EngineSpec spec) {

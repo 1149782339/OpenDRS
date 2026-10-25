@@ -20,6 +20,7 @@ import io.opendrs.migration.job.MigrationCoordinatorRegistry;
 import io.opendrs.migration.mapper.ConnectionInfoMapper;
 import io.opendrs.migration.mapper.DebeziumOffsetMapper;
 import io.opendrs.migration.mapper.DebeziumSchemaHistoryMapper;
+import io.opendrs.migration.mapper.FullLoadCheckpointMapper;
 import io.opendrs.migration.mapper.MigrationTaskMapper;
 import io.opendrs.migration.mapper.TaskPipelineMapper;
 import io.opendrs.engine.replay.exception.MappingException;
@@ -39,6 +40,7 @@ public class MigrationTaskService {
     private final DebeziumOffsetMapper offsetMapper;
     private final DebeziumSchemaHistoryMapper schemaHistoryMapper;
     private final TaskPipelineMapper pipelineMapper;
+    private final FullLoadCheckpointMapper checkpointMapper;
     private final MappingValidator mappingValidator;
     private final MigrationCoordinatorRegistry coordinatorRegistry;
     private final MigrationLogService logService;
@@ -52,6 +54,7 @@ public class MigrationTaskService {
             DebeziumOffsetMapper offsetMapper,
             DebeziumSchemaHistoryMapper schemaHistoryMapper,
             TaskPipelineMapper pipelineMapper,
+            FullLoadCheckpointMapper checkpointMapper,
             MappingValidator mappingValidator,
             MigrationCoordinatorRegistry coordinatorRegistry,
             MigrationLogService logService,
@@ -63,6 +66,7 @@ public class MigrationTaskService {
         this.offsetMapper = offsetMapper;
         this.schemaHistoryMapper = schemaHistoryMapper;
         this.pipelineMapper = pipelineMapper;
+        this.checkpointMapper = checkpointMapper;
         this.mappingValidator = mappingValidator;
         this.coordinatorRegistry = coordinatorRegistry;
         this.logService = logService;
@@ -355,6 +359,7 @@ public class MigrationTaskService {
         offsetMapper.deleteByTaskId(id);
         schemaHistoryMapper.deleteByTaskId(id);
         logService.deleteByTaskId(id);
+        checkpointMapper.deleteByTaskId(id);
         // Offsets/history delete by subquery on task_pipelines, so pipelines go last among children.
         List<TaskPipeline> pipelines = pipelineMapper.findByTaskId(id);
         pipelineMapper.deleteByTaskId(id);

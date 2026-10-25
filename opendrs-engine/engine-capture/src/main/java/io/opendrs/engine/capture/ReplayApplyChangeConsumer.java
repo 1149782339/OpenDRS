@@ -4,9 +4,11 @@ import io.debezium.engine.DebeziumEngine;
 import io.debezium.engine.RecordChangeEvent;
 import io.opendrs.common.log.MigrationLogLevel;
 import io.opendrs.common.log.MigrationLogListener;
+import io.opendrs.common.progress.FullLoadCheckpointListener;
 import io.opendrs.common.progress.MigrationLagListener;
 import io.opendrs.engine.replay.GtidLoopConfig;
 import io.opendrs.engine.replay.ReplayConfig;
+import io.opendrs.engine.replay.applier.Applier;
 import io.opendrs.engine.replay.applier.ChangeEventApplier;
 import io.opendrs.engine.replay.applier.RoutingApplier;
 import io.opendrs.engine.replay.context.ConnectorContext;
@@ -14,7 +16,9 @@ import io.opendrs.engine.replay.context.TaskContext;
 import io.opendrs.engine.replay.exception.ApplierException;
 import io.opendrs.engine.replay.util.ErrorHandler;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.apache.kafka.connect.data.Struct;
 import org.apache.kafka.connect.source.SourceRecord;
@@ -30,12 +34,21 @@ public final class ReplayApplyChangeConsumer
 
     private static final Logger log = LoggerFactory.getLogger(ReplayApplyChangeConsumer.class);
 
+    /** Total attempts for one checkpoint write; the WARN log counts the retries as n/3. */
+    static final int CHECKPOINT_MAX_ATTEMPTS = 3;
+
+    /** Pause between checkpoint retries; 1s keeps a transient metadata-DB blip from failing a task. */
+    static final long CHECKPOINT_RETRY_BACKOFF_MS = 1000;
+
     private final long taskId;
+    private final long pipelineId;
     private final ReplayConfig config;
     private final ErrorHandler errorHandler;
-    private final ChangeEventApplier applier;
+    private final Applier<Collection<SourceRecord>> applier;
     private final MigrationLogListener logListener;
     private final MigrationLagListener positionListener;
+    private final FullLoadCheckpointListener checkpointListener;
+    private final long checkpointRetryBackoffMs;
     private final AtomicBoolean running = new AtomicBoolean(true);
 
     public ReplayApplyChangeConsumer(long taskId, ReplayConfig config) {
@@ -51,16 +64,67 @@ public final class ReplayApplyChangeConsumer
             ReplayConfig config,
             MigrationLogListener logListener,
             MigrationLagListener positionListener) {
+        this(taskId, config, logListener, positionListener, null);
+    }
+
+    public ReplayApplyChangeConsumer(
+            long taskId,
+            ReplayConfig config,
+            MigrationLogListener logListener,
+            MigrationLagListener positionListener,
+            FullLoadCheckpointListener checkpointListener) {
+        this(taskId, taskId, config, logListener, positionListener, checkpointListener, null,
+                CHECKPOINT_RETRY_BACKOFF_MS);
+    }
+
+    /**
+     * @param pipelineId the directional pipeline the checkpoints are recorded for; the engine
+     *     factory passes {@code EngineSpec.pipelineId()}. Callers without a persisted pipeline
+     *     (unit tests) fall back to the task id.
+     */
+    public ReplayApplyChangeConsumer(
+            long taskId,
+            long pipelineId,
+            ReplayConfig config,
+            MigrationLogListener logListener,
+            MigrationLagListener positionListener,
+            FullLoadCheckpointListener checkpointListener) {
+        this(taskId, pipelineId, config, logListener, positionListener, checkpointListener, null,
+                CHECKPOINT_RETRY_BACKOFF_MS);
+    }
+
+    /**
+     * Test seam: injects the applier (a no-op fake applies nothing) and a short retry backoff
+     * so checkpoint-trigger tests need not sleep. A null applier builds the production
+     * RoutingApplier pipeline.
+     */
+    ReplayApplyChangeConsumer(
+            long taskId,
+            long pipelineId,
+            ReplayConfig config,
+            MigrationLogListener logListener,
+            MigrationLagListener positionListener,
+            FullLoadCheckpointListener checkpointListener,
+            Applier<Collection<SourceRecord>> applier,
+            long checkpointRetryBackoffMs) {
         this.taskId = taskId;
+        this.pipelineId = pipelineId;
         this.config = config;
         this.logListener = logListener == null ? MigrationLogListener.NONE : logListener;
         this.positionListener = positionListener == null ? MigrationLagListener.NONE : positionListener;
+        this.checkpointListener = checkpointListener == null ? FullLoadCheckpointListener.NONE : checkpointListener;
         this.errorHandler = new ErrorHandler();
         ConnectorContext context = running::get;
-        // RoutingApplier splits READ rows (snapshot) to the table-parallel applier and
-        // everything else to the transaction applier; both drain before apply() returns, so
-        // offset bookkeeping below stays exactly as the serial path had it.
-        this.applier = new ChangeEventApplier(new RoutingApplier(context, errorHandler, config), config);
+        if (applier != null) {
+            this.applier = applier;
+        }
+        else {
+            // RoutingApplier splits READ rows (snapshot) to the table-parallel applier and
+            // everything else to the transaction applier; both drain before apply() returns, so
+            // offset bookkeeping below stays exactly as the serial path had it.
+            this.applier = new ChangeEventApplier(new RoutingApplier(context, errorHandler, config), config);
+        }
+        this.checkpointRetryBackoffMs = checkpointRetryBackoffMs;
         this.applier.prepare(TaskContext.empty());
     }
 
@@ -80,13 +144,6 @@ public final class ReplayApplyChangeConsumer
                 continue;
             }
             batch.add(record);
-            log.info(
-                    "CDC record task={} topic={} key={} sourceOffset={} op={}",
-                    taskId,
-                    record.topic(),
-                    record.key(),
-                    record.sourceOffset(),
-                    LoggingChangeConsumer.extractOp(record));
         }
         if (!batch.isEmpty()) {
             config.getMetrics().captured(config.getDirection(), taskId, batch.size());
@@ -100,6 +157,7 @@ public final class ReplayApplyChangeConsumer
             // to the engine; fail here with the original cause instead of applying more work.
             errorHandler.checkFailure();
             applier.apply(batch);
+            reportFullLoadCheckpoints(batch);
             Long lastEventTsMs = lastEventSourceTsMs(batch);
             if (lastEventTsMs != null) {
                 config.getMetrics().replayLag(config.getDirection(), taskId, lastEventTsMs);
@@ -126,6 +184,73 @@ public final class ReplayApplyChangeConsumer
     public void close() {
         running.set(false);
         applier.release();
+    }
+
+    /**
+     * Scans a committed batch for snapshot notifications: the resolved table list is narrated
+     * to the task log (observability only), a table's {@code TABLE_SCAN_COMPLETED} is persisted
+     * through the checkpoint listener. Runs after {@code applier.apply(batch)} returns: Debezium
+     * emits a table's {@code TABLE_SCAN_COMPLETED} only after all of that table's rows, and the
+     * applier commits synchronously before returning, so "notification visible in this batch"
+     * means "table committed on the target". Debezium's ordering guarantee, not a heuristic.
+     *
+     * <p>A persist failure that exhausts the retries is logged at ERROR and otherwise ignored:
+     * the batch's rows are already committed, so failing the task would throw away good data for
+     * a metadata glitch. The missing done mark means a later resume re-exports the table
+     * (idempotent full load) — self-healing by re-export.
+     */
+    private void reportFullLoadCheckpoints(List<SourceRecord> batch) throws InterruptedException {
+        for (SourceRecord record : batch) {
+            Optional<List<String>> resolved = SnapshotNotifications.parseDataCollectionsResolved(record);
+            if (resolved.isPresent()) {
+                logListener.emit(MigrationLogLevel.INFO,
+                        "full load table list resolved: " + resolved.get().size() + " table(s)");
+                continue;
+            }
+            Optional<SnapshotNotifications.TableScanCompleted> scan =
+                    SnapshotNotifications.parseTableScanCompleted(record);
+            if (scan.isPresent()) {
+                if (scan.get().succeeded()) {
+                    onTableFinishedWithRetry(scan.get());
+                }
+            }
+        }
+    }
+
+    private void onTableFinishedWithRetry(SnapshotNotifications.TableScanCompleted scan)
+            throws InterruptedException {
+        String table = scan.table();
+        for (int attempt = 1; ; attempt++) {
+            try {
+                checkpointListener.onTableFinished(pipelineId, table, scan.totalRows());
+                log.info("full load finished for table {} ({} rows)", scan.table(), scan.totalRows());
+                logListener.emit(MigrationLogLevel.INFO,
+                        "full load finished for table " + scan.table()
+                                + " (" + scan.totalRows() + " rows)");
+                return;
+            }
+            catch (RuntimeException ex) {
+                if (attempt >= CHECKPOINT_MAX_ATTEMPTS) {
+                    log.error("failed to persist for full load task {} for table {} ({} rows), ignore it",this.taskId, scan.table(), scan.totalRows(), ex);
+                    logListener.emit(MigrationLogLevel.ERROR,
+                            "failed to persist full load task " + this.taskId + " for table " + scan.table()
+                                    + " (" + scan.totalRows() + " rows)");
+                    return;
+                }
+                log.warn("Failed to persist checkpoint for full task {} table \"{}\", retrying {}/{}", this.taskId, table, attempt, CHECKPOINT_MAX_ATTEMPTS);
+                sleepBeforeCheckpointRetry();
+            }
+        }
+    }
+
+    private void sleepBeforeCheckpointRetry() throws InterruptedException {
+        try {
+            Thread.sleep(checkpointRetryBackoffMs);
+        }
+        catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            throw ex;
+        }
     }
 
     /**

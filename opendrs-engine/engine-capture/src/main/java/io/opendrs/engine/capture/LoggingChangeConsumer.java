@@ -9,12 +9,12 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Logs SourceRecords only. Production apply uses {@link ReplayApplyChangeConsumer}; this class
- * remains as a fallback when no target connection is present and as {@link #extractOp} for tests.
+ * Pass-through SourceRecord consumer for the no-target path (nothing is applied, so there is
+ * nothing to narrate per record — the old per-record INFO line drowned the log on any real
+ * table set). Production apply uses {@link ReplayApplyChangeConsumer}; this class also remains
+ * as {@link #extractOp} for tests and the snapshot-completion watcher.
  */
 public class LoggingChangeConsumer implements DebeziumEngine.ChangeConsumer<RecordChangeEvent<SourceRecord>> {
-
-    private static final Logger log = LoggerFactory.getLogger(LoggingChangeConsumer.class);
 
     private final long taskId;
 
@@ -28,14 +28,6 @@ public class LoggingChangeConsumer implements DebeziumEngine.ChangeConsumer<Reco
             DebeziumEngine.RecordCommitter<RecordChangeEvent<SourceRecord>> committer)
             throws InterruptedException {
         for (RecordChangeEvent<SourceRecord> event : records) {
-            SourceRecord record = event.record();
-            log.info(
-                    "CDC record task={} topic={} key={} sourceOffset={} op={}",
-                    taskId,
-                    record.topic(),
-                    record.key(),
-                    record.sourceOffset(),
-                    extractOp(record));
             committer.markProcessed(event);
         }
         committer.markBatchFinished();

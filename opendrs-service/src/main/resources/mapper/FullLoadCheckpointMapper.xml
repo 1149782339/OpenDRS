@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="io.opendrs.migration.mapper.FullLoadCheckpointMapper">
+
+    <insert id="insertCompleted">
+        INSERT INTO task_snapshot_complete_tables (pipeline_id, table_name, row_count)
+        VALUES (#{pipelineId}, #{table}, #{rowCount})
+        ON DUPLICATE KEY UPDATE row_count = #{rowCount}
+    </insert>
+
+    <select id="findDoneTables" resultType="string">
+        SELECT table_name
+        FROM task_snapshot_complete_tables
+        WHERE pipeline_id = #{pipelineId}
+        ORDER BY table_name
+    </select>
+
+    <delete id="deleteByTaskId">
+        DELETE FROM task_snapshot_complete_tables
+        WHERE pipeline_id IN (SELECT id FROM task_pipelines WHERE task_id = #{taskId})
+    </delete>
+</mapper>
