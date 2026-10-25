@@ -2,6 +2,7 @@ package io.opendrs.migration.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
@@ -9,9 +10,9 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
-import ch.qos.logback.classic.Logger;
-import ch.qos.logback.classic.spi.ILoggingEvent;
-import ch.qos.logback.core.read.ListAppender;
+import io.opendrs.common.log.MigrationLogLevel;
+import io.opendrs.common.log.MigrationLogListener;
+import io.opendrs.common.metadata.TableId;
 import io.opendrs.engine.replay.mapping.MappingValidator;
 import io.opendrs.engine.replay.mapping.SchemaMapping;
 import io.opendrs.engine.replay.mapping.TableMappings;
@@ -26,33 +27,40 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.slf4j.LoggerFactory;
 
 /**
- * The resume decision: done lookup, remaining computation, the exact skip log line, and the
- * dialect-aware TRUNCATE rendering. Everything is mocked but the planner itself and the real
- * {@link MappingValidator} name-mapping chain.
+ * The resume decision against the presence=done store: completed lookup by pipeline, remaining =
+ * current selection − completed, the exact skip/truncate narration, and the dialect-aware
+ * TRUNCATE rendering. Everything is mocked but the planner itself and the real
+ * {@link MappingValidator} name-mapping chain. Table-level selections expand verbatim, so no
+ * source connection is involved unless a test says so.
  */
 class FullLoadResumePlannerTest {
 
+    private static final long TASK_ID = 7L;
+    private static final long PIPELINE_ID = 41L;
+
     private FullLoadCheckpointMapper checkpointMapper;
     private JdbcConnectionFactory connectionFactory;
+    private MigrationLogService logService;
     private FullLoadResumePlanner planner;
 
     private JdbcConnection targetConnection;
     private List<String> executedSql;
-
-    private Logger plannerLogger;
-    private ListAppender<ILoggingEvent> logAppender;
+    private List<String> emitted;
 
     @BeforeEach
     void setUp() throws Exception {
         checkpointMapper = mock(FullLoadCheckpointMapper.class);
         connectionFactory = mock(JdbcConnectionFactory.class);
-        planner = new FullLoadResumePlanner(checkpointMapper, new MappingValidator(), connectionFactory);
+        logService = mock(MigrationLogService.class);
+        emitted = new ArrayList<>();
+        when(logService.listenerFor(anyLong())).thenAnswer(invocation ->
+                (MigrationLogListener) (level, message) -> emitted.add(level + ":" + message));
+        planner = new FullLoadResumePlanner(checkpointMapper, new MappingValidator(),
+                connectionFactory, logService);
 
         targetConnection = mock(JdbcConnection.class);
         executedSql = new ArrayList<>();
@@ -66,16 +74,6 @@ class FullLoadResumePlannerTest {
         when(metaData.getIdentifierQuoteString()).thenReturn("`");
         when(targetConnection.unwrap()).thenReturn(raw);
         when(connectionFactory.open(any())).thenReturn(targetConnection);
-
-        plannerLogger = (Logger) LoggerFactory.getLogger(FullLoadResumePlanner.class);
-        logAppender = new ListAppender<>();
-        logAppender.start();
-        plannerLogger.addAppender(logAppender);
-    }
-
-    @AfterEach
-    void detachLogAppender() {
-        plannerLogger.detachAppender(logAppender);
     }
 
     @Test
@@ -90,29 +88,29 @@ class FullLoadResumePlannerTest {
     }
 
     @Test
-    void noCheckpointsMeansNoResume() {
-        when(checkpointMapper.findDoneTables(7L, "forward")).thenReturn(Set.of());
+    void noCompletedTablesMeansNoResume() {
+        when(checkpointMapper.findDoneTables(PIPELINE_ID)).thenReturn(Set.of());
 
-        assertThat(planner.resumeTables(7L, "forward", null, mysql("hr"), mysql("hr")))
+        assertThat(planner.resumeTables(TASK_ID, PIPELINE_ID, null, mysql("hr"), mysql("hr")))
                 .isNull();
+        // Not even the source-side expansion runs for a fresh pipeline.
         verifyNoInteractions(connectionFactory);
-        assertThat(skipLogLines()).isEmpty();
+        assertThat(emitted).isEmpty();
     }
 
     @Test
     void doneTablesAreSkippedAndRemainingTruncatedWithTargetQuoting() {
-        when(checkpointMapper.findDoneTables(7L, "forward"))
-                .thenReturn(Set.of("hr.emp"));
-        when(checkpointMapper.findAllTables(7L, "forward"))
-                .thenReturn(List.of("hr.dept", "hr.emp"));
+        when(checkpointMapper.findDoneTables(PIPELINE_ID)).thenReturn(Set.of("hr.emp"));
 
-        Set<String> remaining =
-                planner.resumeTables(7L, "forward", null, mysql("hr"), mysql("hr"));
+        Set<String> remaining = planner.resumeTables(
+                TASK_ID, PIPELINE_ID, selectionOf("hr.dept", "hr.emp"), mysql("hr"), mysql("hr"));
 
         assertThat(remaining).containsExactly("hr.dept");
         // MySQL target: backtick-quoted schema.table, one statement per remaining table.
         assertThat(executedSql).containsExactly("truncate table `hr`.`dept`");
-        assertThat(skipLogLines()).containsExactly("table \"hr.emp\" 已经完成，skip to do full snapshot");
+        assertThat(emitted).containsExactly(
+                "INFO:table \"hr.emp\" already done, skipped",
+                "INFO:truncate target table `hr`.`dept` for resume");
     }
 
     @Test
@@ -120,14 +118,13 @@ class FullLoadResumePlannerTest {
         // PG target: double-quoted, and the schema mapping renames db "hr" to "public".
         org.mockito.Mockito.when(targetConnection.unwrap().getMetaData().getIdentifierQuoteString())
                 .thenReturn("\"");
-        when(checkpointMapper.findDoneTables(7L, "forward")).thenReturn(Set.of("hr.emp"));
-        when(checkpointMapper.findAllTables(7L, "forward")).thenReturn(List.of("hr.dept"));
+        when(checkpointMapper.findDoneTables(PIPELINE_ID)).thenReturn(Set.of("hr.emp"));
         TableSelection selection = new TableSelection(
-                List.of(), List.of(), List.of(), List.of(),
+                List.of(), List.of(TableId.of("hr", "dept")), List.of(), List.of(),
                 new TableMappings(List.of(new SchemaMapping("hr", "public")), null));
 
         Set<String> remaining =
-                planner.resumeTables(7L, "forward", selection, mysql("hr"), postgres("public"));
+                planner.resumeTables(TASK_ID, PIPELINE_ID, selection, mysql("hr"), postgres("public"));
 
         assertThat(remaining).containsExactly("hr.dept");
         assertThat(executedSql).containsExactly("truncate table \"public\".\"dept\"");
@@ -136,48 +133,49 @@ class FullLoadResumePlannerTest {
     @Test
     void allDoneResumesNothingAndTruncatesNothing() {
         // LinkedHashSet keeps the stub's iteration order, which drives the skip log order.
-        when(checkpointMapper.findDoneTables(7L, "forward"))
+        when(checkpointMapper.findDoneTables(PIPELINE_ID))
                 .thenReturn(new LinkedHashSet<>(List.of("hr.dept", "hr.emp")));
-        when(checkpointMapper.findAllTables(7L, "forward"))
-                .thenReturn(List.of("hr.dept", "hr.emp"));
 
-        assertThat(planner.resumeTables(7L, "forward", null, mysql("hr"), mysql("hr")))
+        assertThat(planner.resumeTables(
+                TASK_ID, PIPELINE_ID, selectionOf("hr.dept", "hr.emp"), mysql("hr"), mysql("hr")))
                 .isEmpty();
         assertThat(executedSql).isEmpty();
-        assertThat(skipLogLines())
-                .containsExactly(
-                        "table \"hr.dept\" 已经完成，skip to do full snapshot",
-                        "table \"hr.emp\" 已经完成，skip to do full snapshot");
+        assertThat(emitted).containsExactly(
+                "INFO:table \"hr.dept\" already done, skipped",
+                "INFO:table \"hr.emp\" already done, skipped");
     }
 
     @Test
-    void missingListFallsBackToSelectionAndGivesUpWhenExpansionFails() {
-        when(checkpointMapper.findDoneTables(7L, "forward")).thenReturn(Set.of("hr.emp"));
-        when(checkpointMapper.findAllTables(7L, "forward")).thenReturn(List.of());
-        // The source is unreachable, so the selection cannot expand either.
+    void expansionFailureFallsBackToTheNormalFullLoad() {
+        when(checkpointMapper.findDoneTables(PIPELINE_ID)).thenReturn(Set.of("hr.emp"));
+        // A whole-instance selection needs a live source listing; the source is unreachable.
         doThrow(new io.opendrs.jdbc.JdbcException("source down"))
                 .when(connectionFactory).open(any());
 
-        assertThat(planner.resumeTables(7L, "forward", null, mysql("hr"), mysql("hr")))
+        assertThat(planner.resumeTables(TASK_ID, PIPELINE_ID, null, mysql("hr"), mysql("hr")))
                 .isNull();
+        assertThat(emitted).anyMatch(m -> m.startsWith("WARNING:could not expand"));
     }
 
     @Test
     void truncateFailureDegradesToTheUpsertFallback() {
-        when(checkpointMapper.findDoneTables(7L, "forward")).thenReturn(Set.of("hr.emp"));
-        when(checkpointMapper.findAllTables(7L, "forward")).thenReturn(List.of("hr.dept"));
+        when(checkpointMapper.findDoneTables(PIPELINE_ID)).thenReturn(Set.of("hr.emp"));
         doThrow(new RuntimeException("access denied")).when(targetConnection).execute(anyString());
 
         // The resume itself still stands — re-exported rows are digested by dup-key → upsert.
-        assertThat(planner.resumeTables(7L, "forward", null, mysql("hr"), mysql("hr")))
+        assertThat(planner.resumeTables(
+                TASK_ID, PIPELINE_ID, selectionOf("hr.dept"), mysql("hr"), mysql("hr")))
                 .containsExactly("hr.dept");
+        assertThat(emitted).anyMatch(m -> m.startsWith("WARNING:truncate failed"));
     }
 
-    private List<String> skipLogLines() {
-        return logAppender.list.stream()
-                .map(ILoggingEvent::getFormattedMessage)
-                .filter(message -> message.contains("已经完成，skip to do full snapshot"))
-                .toList();
+    private static TableSelection selectionOf(String... dbTables) {
+        List<TableId> tables = new ArrayList<>();
+        for (String dbTable : dbTables) {
+            int dot = dbTable.indexOf('.');
+            tables.add(TableId.of(dbTable.substring(0, dot), dbTable.substring(dot + 1)));
+        }
+        return new TableSelection(List.of(), tables, List.of(), List.of(), null);
     }
 
     private static ConnectionInfo mysql(String db) {

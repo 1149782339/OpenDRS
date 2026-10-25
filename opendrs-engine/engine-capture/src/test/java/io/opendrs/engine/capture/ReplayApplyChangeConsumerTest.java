@@ -115,7 +115,7 @@ class ReplayApplyChangeConsumerTest {
     }
 
     @Test
-    void retriesThreeTimesThenFailsTheTask() {
+    void retriesThreeTimesThenGivesUpWithoutFailingTheTask() throws Exception {
         AtomicInteger attempts = new AtomicInteger();
         FullLoadCheckpointListener failing = new FullLoadCheckpointListener() {
             @Override
@@ -124,24 +124,25 @@ class ReplayApplyChangeConsumerTest {
                 throw new RuntimeException("metadata db down");
             }
         };
-        ReplayApplyChangeConsumer consumer = consumer(failing, fakeApplier);
+        List<String> emitted = new ArrayList<>();
+        ReplayApplyChangeConsumer consumer = consumer(failing, fakeApplier,
+                (level, message) -> emitted.add(level + ":" + message));
 
-        assertThatThrownBy(() -> consumer.handleBatch(List.of(() -> notification("TABLE_SCAN_COMPLETED", Map.of(
+        // The rows are committed; a metadata glitch must not kill the task — the missing done
+        // mark self-heals by re-exporting the table on the next resume.
+        consumer.handleBatch(List.of(() -> notification("TABLE_SCAN_COMPLETED", Map.of(
                 "scanned_collection", "hr.dept",
                 "total_rows_scanned", "7",
-                "status", "SUCCEEDED"))), new FakeCommitter()))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("hr.dept")
-                .hasMessageContaining("41");
+                "status", "SUCCEEDED"))), new FakeCommitter());
 
         assertThat(attempts.get()).isEqualTo(3);
-        // apply() ran and committed; the throw happens after it.
         assertThat(applyCalls.get()).isEqualTo(1);
+        assertThat(emitted).anyMatch(m -> m.startsWith("ERROR:failed to persist full load task"));
     }
 
     @Test
     void keepsQuietWhenListenerIsNone() throws Exception {
-        ReplayApplyChangeConsumer consumer = consumer(null, fakeApplier);
+        ReplayApplyChangeConsumer consumer = consumer(null, fakeApplier, null);
 
         consumer.handleBatch(List.of(() -> notification("TABLE_SCAN_COMPLETED", Map.of(
                 "scanned_collection", "hr.dept",
@@ -153,6 +154,13 @@ class ReplayApplyChangeConsumerTest {
 
     private ReplayApplyChangeConsumer consumer(
             FullLoadCheckpointListener listener, Applier<Collection<SourceRecord>> applier) {
+        return consumer(listener, applier, null);
+    }
+
+    private ReplayApplyChangeConsumer consumer(
+            FullLoadCheckpointListener listener,
+            Applier<Collection<SourceRecord>> applier,
+            io.opendrs.common.log.MigrationLogListener logListener) {
         ReplayConfig config = ReplayConfig.builder()
                 .connectionProvider(() -> {
                     throw new UnsupportedOperationException("no target in unit test");
@@ -160,7 +168,7 @@ class ReplayApplyChangeConsumerTest {
                 .direction(ReplayDirection.REVERSE)
                 .build();
         return new ReplayApplyChangeConsumer(
-                TASK_ID, PIPELINE_ID, config, null, null, listener, applier, 0);
+                TASK_ID, PIPELINE_ID, config, logListener, null, listener, applier, 0);
     }
 
     private static SourceRecord dataRecord() {

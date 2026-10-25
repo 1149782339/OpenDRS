@@ -7,11 +7,10 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import io.opendrs.common.log.MigrationLogListener;
 import io.opendrs.engine.core.DataMigrationParam;
 import io.opendrs.engine.core.DataMigrationTask;
 import io.opendrs.engine.core.DataMigrationTaskPhase;
@@ -24,7 +23,6 @@ import io.opendrs.engine.core.TaskState;
 import io.opendrs.engine.replay.mapping.MappingValidator;
 import io.opendrs.jdbc.JdbcConnection;
 import io.opendrs.jdbc.JdbcConnectionFactory;
-import io.opendrs.jdbc.metadata.Table;
 import io.opendrs.migration.api.request.MigrationOptions;
 import io.opendrs.migration.api.request.SelectedTable;
 import io.opendrs.migration.domain.ConnectionInfo;
@@ -36,6 +34,7 @@ import io.opendrs.migration.mapper.ConnectionInfoMapper;
 import io.opendrs.migration.mapper.FullLoadCheckpointMapper;
 import io.opendrs.migration.mapper.MigrationTaskMapper;
 import io.opendrs.migration.service.FullLoadResumePlanner;
+import io.opendrs.migration.service.MigrationLogService;
 import java.sql.DatabaseMetaData;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -50,10 +49,10 @@ import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 
 /**
- * The coordinator's resume branch end to end (engine faked): done tables are skipped, the
- * remaining set reaches the engine param, the half-done tables are truncated on the target.
- * The real {@link FullLoadResumePlanner} decides; the checkpoint mapper and both JDBC sides
- * are mocked.
+ * The coordinator's resume branch end to end (engine faked): completed tables are skipped, the
+ * remaining set reaches the engine param, the half-done tables are truncated on the target. The
+ * real {@link FullLoadResumePlanner} decides; the checkpoint mapper and both JDBC sides are
+ * mocked. Unit tests get one ephemeral pipeline whose id equals the task id.
  */
 class MigrationCoordinatorResumeTest {
 
@@ -61,12 +60,14 @@ class MigrationCoordinatorResumeTest {
     private ConnectionInfoMapper connectionMapper;
     private FullLoadCheckpointMapper checkpointMapper;
     private JdbcConnectionFactory connectionFactory;
+    private MigrationLogService logService;
     private FullLoadResumePlanner resumePlanner;
     private MigrationCoordinatorRegistry registry;
     private CapturingEngine engine;
 
     private JdbcConnection targetConnection;
     private List<String> executedSql;
+    private List<String> notes;
 
     @BeforeEach
     void setUp() throws Exception {
@@ -74,7 +75,10 @@ class MigrationCoordinatorResumeTest {
         connectionMapper = Mockito.mock(ConnectionInfoMapper.class);
         checkpointMapper = Mockito.mock(FullLoadCheckpointMapper.class);
         connectionFactory = Mockito.mock(JdbcConnectionFactory.class);
-        resumePlanner = new FullLoadResumePlanner(checkpointMapper, new MappingValidator(), connectionFactory);
+        logService = Mockito.mock(MigrationLogService.class);
+        when(logService.listenerFor(anyLong())).thenReturn(MigrationLogListener.NONE);
+        resumePlanner = new FullLoadResumePlanner(checkpointMapper, new MappingValidator(),
+                connectionFactory, logService);
         registry = new MigrationCoordinatorRegistry();
         engine = new CapturingEngine();
         when(connectionMapper.findById(anyLong())).thenReturn(mysql());
@@ -94,16 +98,17 @@ class MigrationCoordinatorResumeTest {
         when(metaData.getIdentifierQuoteString()).thenReturn("`");
         when(targetConnection.unwrap()).thenReturn(raw);
         when(connectionFactory.open(any())).thenReturn(targetConnection);
+        notes = new ArrayList<>();
     }
 
     @Test
     void doneTablesAreSkippedAndRemainingTablesReachTheEngine() throws Exception {
         MigrationTask task = task(21L, MigrationPhase.FULL, TaskState.STARTING, MigrationMode.FULL_AND_INCREMENTAL);
         stubTask(task);
-        when(checkpointMapper.findDoneTables(21L, "forward")).thenReturn(Set.of("hr.emp"));
-        when(checkpointMapper.findAllTables(21L, "forward")).thenReturn(List.of("hr.dept", "hr.emp"));
+        // The ephemeral pipeline's id equals the task id.
+        when(checkpointMapper.findDoneTables(21L)).thenReturn(Set.of("hr.emp"));
 
-        MigrationCoordinator job = job(task);
+        MigrationCoordinator job = job(task, notingListener());
         Thread thread = new Thread(job, "resume-job-21");
         thread.start();
         assertThat(engine.run.started.await(5, TimeUnit.SECONDS)).isTrue();
@@ -112,6 +117,8 @@ class MigrationCoordinatorResumeTest {
         assertThat(param).isNotNull();
         assertThat(param.resumeTables()).containsExactly("hr.dept");
         assertThat(executedSql).containsExactly("truncate table `hr`.`dept`");
+        assertThat(notes).anyMatch(m -> m.contains(
+                "resume full load: 1 table(s) to re-snapshot, done table(s) skipped"));
 
         task.setState(TaskState.STOPPING);
         job.requestStop();
@@ -119,12 +126,12 @@ class MigrationCoordinatorResumeTest {
     }
 
     @Test
-    void noCheckpointsKeepsTheNormalFullSnapshot() throws Exception {
+    void noCompletedTablesKeepsTheNormalFullSnapshot() throws Exception {
         MigrationTask task = task(22L, MigrationPhase.FULL, TaskState.STARTING, MigrationMode.FULL_AND_INCREMENTAL);
         stubTask(task);
-        when(checkpointMapper.findDoneTables(22L, "forward")).thenReturn(Set.of());
+        when(checkpointMapper.findDoneTables(22L)).thenReturn(Set.of());
 
-        MigrationCoordinator job = job(task);
+        MigrationCoordinator job = job(task, MigrationLogListener.NONE);
         Thread thread = new Thread(job, "resume-job-22");
         thread.start();
         assertThat(engine.run.started.await(5, TimeUnit.SECONDS)).isTrue();
@@ -138,20 +145,19 @@ class MigrationCoordinatorResumeTest {
     }
 
     @Test
-    void fullOnlyModeNeverResumes() {
-        // EngineSpec rejects resumeTables with anything but the INITIAL strategy, and re-running
-        // a finished FULL_ONLY snapshot is the existing dup-key → upsert digest — 保持不变。
+    void fullOnlyModeResumesTooAndLeavesTheOfflineAssumptionWarning() {
+        // FULL_ONLY implies a quiesced source, so table-level resume is safe: done tables are
+        // skipped, the rest re-snapshotted — the assumption is narrated as a warning.
         MigrationTask task = task(23L, MigrationPhase.FULL, TaskState.STARTING, MigrationMode.FULL_ONLY);
         stubTask(task);
         engine.finiteData = true;
-        when(checkpointMapper.findDoneTables(23L, "forward")).thenReturn(Set.of("hr.emp"));
-        when(checkpointMapper.findAllTables(23L, "forward")).thenReturn(List.of("hr.dept", "hr.emp"));
+        when(checkpointMapper.findDoneTables(23L)).thenReturn(Set.of("hr.emp"));
 
-        job(task).run();
+        job(task, notingListener()).run();
 
-        assertThat(engine.capturedParam.get().resumeTables()).isNull();
-        assertThat(executedSql).isEmpty();
-        verify(checkpointMapper, never()).findDoneTables(anyLong(), anyString());
+        assertThat(engine.capturedParam.get().resumeTables()).containsExactly("hr.dept");
+        assertThat(executedSql).containsExactly("truncate table `hr`.`dept`");
+        assertThat(notes).anyMatch(m -> m.contains("FULL_ONLY resume assumes the source is unchanged"));
     }
 
     @Test
@@ -188,11 +194,10 @@ class MigrationCoordinatorResumeTest {
         // 全 done：不传 resumeTables，引擎按 INITIAL 正常启动，存量位点使其跳过快照进增量。
         MigrationTask task = task(25L, MigrationPhase.FULL, TaskState.STARTING, MigrationMode.FULL_AND_INCREMENTAL);
         stubTask(task);
-        when(checkpointMapper.findDoneTables(25L, "forward"))
+        when(checkpointMapper.findDoneTables(25L))
                 .thenReturn(new LinkedHashSet<>(List.of("hr.dept", "hr.emp")));
-        when(checkpointMapper.findAllTables(25L, "forward")).thenReturn(List.of("hr.dept", "hr.emp"));
 
-        MigrationCoordinator job = job(task);
+        MigrationCoordinator job = job(task, MigrationLogListener.NONE);
         Thread thread = new Thread(job, "resume-job-25");
         thread.start();
         assertThat(engine.run.started.await(5, TimeUnit.SECONDS)).isTrue();
@@ -205,7 +210,7 @@ class MigrationCoordinatorResumeTest {
         thread.join(5_000);
     }
 
-    private MigrationCoordinator job(MigrationTask task) {
+    private MigrationCoordinator job(MigrationTask task, io.opendrs.common.log.MigrationLogListener logListener) {
         return new MigrationCoordinator(
                 task.getId(),
                 task.getMode(),
@@ -213,12 +218,16 @@ class MigrationCoordinatorResumeTest {
                 connectionMapper,
                 registry,
                 engine,
-                io.opendrs.common.log.MigrationLogListener.NONE,
+                logListener,
                 null,
                 null,
                 null,
                 null,
                 resumePlanner);
+    }
+
+    private io.opendrs.common.log.MigrationLogListener notingListener() {
+        return (level, message) -> notes.add(level + ":" + message);
     }
 
     private void stubTask(MigrationTask task) {
@@ -286,16 +295,12 @@ class MigrationCoordinatorResumeTest {
         @Override
         public DataMigrationTask migrateData(DataMigrationParam param) {
             capturedParam.set(param);
-            if (finiteData) {
-                if (param.phaseListener() != null) {
-                    param.phaseListener().accept(DataMigrationTaskPhase.FULL);
-                    param.phaseListener().accept(DataMigrationTaskPhase.INCREMENTAL);
-                }
-                return new FiniteDataTask();
-            }
             if (param.phaseListener() != null) {
                 param.phaseListener().accept(DataMigrationTaskPhase.FULL);
                 param.phaseListener().accept(DataMigrationTaskPhase.INCREMENTAL);
+            }
+            if (finiteData) {
+                return new FiniteDataTask();
             }
             return new BlockingDataTask(param.taskId(), run);
         }
@@ -349,7 +354,7 @@ class MigrationCoordinatorResumeTest {
 
         @Override
         public DataMigrationTaskPhase taskPhase() {
-            return TaskState.COMPLETED == null ? null : DataMigrationTaskPhase.FULL;
+            return DataMigrationTaskPhase.FULL;
         }
 
         @Override
