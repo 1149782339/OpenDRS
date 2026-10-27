@@ -45,6 +45,15 @@ class DebeziumEngineConfigTest {
     }
 
     @Test
+    void snapshotQueryModeIsCustomAndPointsAtTheWarmupSkippingQuery() {
+        Properties props = DebeziumEngineConfig.capture(spec(7L, TableSelection.all()));
+
+        assertThat(props.getProperty("snapshot.query.mode")).isEqualTo("custom");
+        assertThat(props.getProperty("snapshot.query.mode.custom.name"))
+                .isEqualTo(new SafeSelectAllSnapshotQuery().name());
+    }
+
+    @Test
     void individualTablesAreListedLiterallyAndExcludesAreSubtractedUpstream() {
         Properties props = DebeziumEngineConfig.capture(spec(7L, TableSelection.ofTables(
                 List.of(TableId.of("hr", "emp"), TableId.of("hr", "dept")))));

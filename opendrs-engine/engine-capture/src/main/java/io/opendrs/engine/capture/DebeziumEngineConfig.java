@@ -118,6 +118,15 @@ public final class DebeziumEngineConfig {
         props.setProperty("tombstones.on.delete", "false");
         props.setProperty("include.schema.changes", "true");
         props.setProperty("snapshot.locking.mode", "none");
+        // locking=none 下并行快照建池时，Debezium 会对每条池连接预热执行
+        // SELECT * FROM <第一张表> LIMIT 1（BinlogSnapshotChangeEventSource#getSnapshotConnectionFirstSelect，
+        // 唯一传 ["*"] 列的调用）。池连接 autoCommit=false + RR，第一条 SELECT 就把 read view
+        // 定格在 determineSnapshotOffset 记录 P0（SHOW MASTER STATUS）之前——两者之间提交的事务
+        // 快照读看不到、GTID 又已包含在 P0 的 executed set 里流式不再发，行永久停在旧值。
+        // 自定义 SnapshotQuery 对该预热探测返回空跳过之，read view 不再早于 P0；
+        // 原缝隙内的事务变为快照+增量各到一次（重复），由 sink 的 dup-key→upsert 兜底消化。
+        props.setProperty("snapshot.query.mode", "custom");
+        props.setProperty("snapshot.query.mode.custom.name", SafeSelectAllSnapshotQuery.class.getName());
         // A quiet source emits nothing, so "time since the last applied change" would grow without
         // bound and a perfectly caught-up task would look stuck. A heartbeat proves the connector is
         // alive (and keeps the offset fresh) while no data flows; the sink drops these records.

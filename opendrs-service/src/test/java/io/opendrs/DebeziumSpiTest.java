@@ -3,6 +3,7 @@ package io.opendrs;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 
+import io.debezium.snapshot.spi.SnapshotQuery;
 import io.debezium.spi.snapshot.Snapshotter;
 import java.util.List;
 import java.util.ServiceLoader;
@@ -34,5 +35,24 @@ class DebeziumSpiTest {
                 .toList();
 
         assertThat(names).contains("opendrs_schema", "opendrs_incremental");
+    }
+
+    @Test
+    void everyRegisteredSnapshotQueryResolves() {
+        assertThatCode(() -> ServiceLoader.load(SnapshotQuery.class).stream()
+                        .forEach(provider -> provider.get().name()))
+                .doesNotThrowAnyException();
+    }
+
+    @Test
+    void warmupSkippingSnapshotQueryIsRegistered() {
+        // The name must equal DebeziumEngineConfig's snapshot.query.mode.custom.name, or the
+        // Engine fails at startup with "snapshot query mode not found" — same failure class as
+        // the dangling-FQCN incident above.
+        List<String> names = ServiceLoader.load(SnapshotQuery.class).stream()
+                .map(provider -> provider.get().name())
+                .toList();
+
+        assertThat(names).contains("io.opendrs.engine.capture.SafeSelectAllSnapshotQuery");
     }
 }

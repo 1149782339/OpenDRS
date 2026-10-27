@@ -1,0 +1,6 @@
+# Debezium resolves custom snapshot queries through java.util.ServiceLoader.
+# Same hazard as the Snapshotter file next to this one: a renamed or moved class is a dangling
+# FQCN here, failing at Engine startup with "ServiceConfigurationError: Provider ... not found"
+# — no compile error, no unit test in this module catches it. opendrs-service DebeziumSpiTest
+# guards the registration.
+io.opendrs.engine.capture.SafeSelectAllSnapshotQuery
