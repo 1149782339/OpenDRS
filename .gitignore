@@ -68,3 +68,10 @@ NUL
 
 # Test framework reports
 scripts/test/reports/
+
+# Ad-hoc scratch dirs: local verification scripts, copied reference code, diagnostics.
+# Kept on disk, never committed.
+test-tmp/
+tmp-dbsink/
+tmp-diag/
+.serena/

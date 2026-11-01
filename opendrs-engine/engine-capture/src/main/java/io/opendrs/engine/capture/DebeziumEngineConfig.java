@@ -5,7 +5,7 @@ import io.opendrs.engine.replay.SnapshotStrategy;
 import io.opendrs.jdbc.JdbcConnectionConfig;
 import io.opendrs.jdbc.metadata.Table;
 import io.opendrs.engine.replay.GtidLoopConfig;
-import io.opendrs.engine.replay.mapping.TableSelection;
+import io.opendrs.common.selection.TableSelection;
 import io.opendrs.engine.replay.metrics.ReplayDirection;
 import io.opendrs.engine.replay.metrics.ReplayMetrics;
 import java.util.List;

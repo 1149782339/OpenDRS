@@ -1,6 +1,10 @@
 package io.opendrs.engine.replay.mapping;
 
 import io.opendrs.common.metadata.TableId;
+import io.opendrs.common.selection.SchemaMapping;
+import io.opendrs.common.selection.TableMapping;
+import io.opendrs.common.selection.TableMappings;
+import io.opendrs.common.selection.TableSelection;
 import io.opendrs.jdbc.metadata.Table;
 import io.opendrs.jdbc.metadata.TableRef;
 import io.opendrs.engine.replay.exception.MappingException;

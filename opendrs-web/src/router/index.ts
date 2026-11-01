@@ -22,7 +22,13 @@ const router = createRouter({
       path: '/tasks',
       name: 'tasks',
       component: () => import('@/views/Tasks.vue'),
-      meta: { titleKey: 'nav.tasks' },
+      meta: { titleKey: 'nav.dataTasks' },
+    },
+    {
+      path: '/tasks/schema',
+      name: 'task-schema',
+      component: () => import('@/views/SchemaTasks.vue'),
+      meta: { titleKey: 'nav.schemaTasks' },
     },
     {
       path: '/tasks/create',

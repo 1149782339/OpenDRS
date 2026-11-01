@@ -9,8 +9,16 @@ import { i18n } from '@/i18n'
 import { refreshTitle } from '@/router'
 
 const route = useRoute()
+/**
+ * 左侧菜单高亮项：任务下挂两个子菜单，/tasks/schema 命中结构迁移，
+ * 其余 /tasks/*（列表、新建、详情）都算数据迁移。
+ */
 const active = computed(() => {
-  if (route.path.startsWith('/tasks')) {
+  const path = route.path
+  if (path.startsWith('/tasks/schema')) {
+    return '/tasks/schema'
+  }
+  if (path.startsWith('/tasks')) {
     return '/tasks'
   }
   return '/connections'
@@ -24,6 +32,12 @@ const pageTitle = computed(() => {
 
 /** Element Plus 组件语言跟当前界面语言走。 */
 const epLocale = computed(() => (i18n.global.locale.value.startsWith('zh') ? zhCn : en))
+
+/**
+ * 任务分组默认展开。Element Plus 只在 menu 初始化时读一次 default-openeds，
+ * 之后不再监听，所以这里给常量而不是 computed —— 展开状态由用户自己折叠。
+ */
+const openedSubmenus = ['tasks']
 
 // 语言切换时同步浏览器标签页标题（afterEach 只在路由跳转时触发）
 watch(
@@ -39,6 +53,7 @@ watch(
       <div class="logo">OpenDRS</div>
       <el-menu
         :default-active="active"
+        :default-openeds="openedSubmenus"
         :router="true"
         background-color="#1d2b3a"
         text-color="#c5d0dc"
@@ -48,10 +63,14 @@ watch(
           <el-icon><Link /></el-icon>
           <span>{{ $t('nav.connections') }}</span>
         </el-menu-item>
-        <el-menu-item index="/tasks">
-          <el-icon><List /></el-icon>
-          <span>{{ $t('nav.tasks') }}</span>
-        </el-menu-item>
+        <el-sub-menu index="tasks">
+          <template #title>
+            <el-icon><List /></el-icon>
+            <span>{{ $t('nav.tasks') }}</span>
+          </template>
+          <el-menu-item index="/tasks">{{ $t('nav.dataTasks') }}</el-menu-item>
+          <el-menu-item index="/tasks/schema">{{ $t('nav.schemaTasks') }}</el-menu-item>
+        </el-sub-menu>
       </el-menu>
     </el-aside>
     <el-container>

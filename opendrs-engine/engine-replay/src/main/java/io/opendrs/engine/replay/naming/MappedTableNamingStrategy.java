@@ -4,7 +4,7 @@ import io.opendrs.common.metadata.TableId;
 import io.opendrs.common.naming.TableNamingStrategy;
 import io.opendrs.jdbc.metadata.TableRef;
 import io.opendrs.engine.replay.mapping.MappingValidator;
-import io.opendrs.engine.replay.mapping.TableSelection;
+import io.opendrs.common.selection.TableSelection;
 
 /**
  * Maps MySQL source {@link TableId} (catalog=db) onto OpenDRS task mappings at the consumer

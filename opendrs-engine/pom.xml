@@ -13,10 +13,10 @@
     <artifactId>opendrs-engine</artifactId>
     <packaging>pom</packaging>
     <name>opendrs-engine</name>
-    <description>OpenDRS migration engine — black box behind the MigrationEngine facade (ddl, replay, capture, core, precheck)</description>
+    <description>OpenDRS migration engine — black box behind the MigrationEngine facade (ddl, replay, schema, capture, core, precheck)</description>
 
     <modules>
-        <module>engine-ddl</module>
+        <module>engine-schema</module>
         <module>engine-replay</module>
         <module>engine-precheck</module>
         <module>engine-capture</module>

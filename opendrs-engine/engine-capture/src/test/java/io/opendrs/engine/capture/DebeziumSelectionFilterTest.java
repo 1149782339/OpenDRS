@@ -8,7 +8,7 @@ import io.debezium.relational.TableId;
 import io.debezium.relational.Tables.TableFilter;
 import io.opendrs.common.metadata.DatabaseType;
 import io.opendrs.engine.capture.DebeziumEngineConfig.EngineSpec;
-import io.opendrs.engine.replay.mapping.TableSelection;
+import io.opendrs.common.selection.TableSelection;
 import io.opendrs.jdbc.JdbcConnectionConfig;
 import io.opendrs.jdbc.metadata.Table;
 import io.opendrs.jdbc.metadata.TableRef;

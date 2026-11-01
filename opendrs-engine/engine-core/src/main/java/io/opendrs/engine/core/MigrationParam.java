@@ -1,6 +1,6 @@
 package io.opendrs.engine.core;
 
-import io.opendrs.engine.replay.mapping.TableSelection;
+import io.opendrs.common.selection.TableSelection;
 import io.opendrs.jdbc.JdbcConnectionConfig;
 
 /**

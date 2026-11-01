@@ -210,38 +210,48 @@ onUnmounted(() => {
       class="task-table"
       @row-click="openRow"
     >
-      <el-table-column :label="t('task.nameId')" min-width="200">
+      <el-table-column :label="t('task.nameId')" min-width="146">
         <template #default="{ row }: { row: TaskRow }">
           <div class="task-name" :title="row.name">{{ row.name }}</div>
           <div class="task-uuid" :title="row.publicId">{{ row.publicId.slice(0, 19) }}…</div>
         </template>
       </el-table-column>
-      <el-table-column :label="t('task.status')" width="110">
+      <el-table-column :label="t('task.status')" width="108">
         <template #default="{ row }">
           <span class="status" :class="`status-${row.status.tone}`">
             <el-icon v-if="row.status.tone === 'running'" class="is-loading"><Loading /></el-icon>
             <el-icon v-else-if="row.status.tone === 'done'"><CircleCheck /></el-icon>
             <el-icon v-else-if="row.status.tone === 'failed'"><CircleClose /></el-icon>
-            <span>{{ row.status.label }}</span>
+            <span class="status-label" :title="row.status.label">{{ row.status.label }}</span>
           </span>
         </template>
       </el-table-column>
-      <el-table-column :label="t('task.phase')" width="140">
-        <template #default="{ row }">{{ row.phaseLabel }}</template>
+      <el-table-column :label="t('task.phase')" width="90">
+        <template #default="{ row }">
+          <span class="cell-text" :title="row.phaseLabel">{{ row.phaseLabel }}</span>
+        </template>
       </el-table-column>
-      <el-table-column :label="t('task.sourceEngine')" width="110">
-        <template #default="{ row }">{{ row.sourceLabel }}</template>
+      <el-table-column :label="t('task.sourceEngine')" width="104">
+        <template #default="{ row }">
+          <span class="cell-text" :title="row.sourceLabel">{{ row.sourceLabel }}</span>
+        </template>
       </el-table-column>
-      <el-table-column :label="t('task.targetEngine')" width="110">
-        <template #default="{ row }">{{ row.targetLabel }}</template>
+      <el-table-column :label="t('task.targetEngine')" width="104">
+        <template #default="{ row }">
+          <span class="cell-text" :title="row.targetLabel">{{ row.targetLabel }}</span>
+        </template>
       </el-table-column>
-      <el-table-column :label="t('task.mode')" width="110">
-        <template #default="{ row }">{{ row.modeLabel }}</template>
+      <el-table-column :label="t('task.mode')" width="90">
+        <template #default="{ row }">
+          <span class="cell-text" :title="row.modeLabel">{{ row.modeLabel }}</span>
+        </template>
       </el-table-column>
-      <el-table-column :label="t('task.createdAt')" width="180">
-        <template #default="{ row }">{{ row.createdLabel }}</template>
+      <el-table-column :label="t('task.createdAt')" width="148">
+        <template #default="{ row }">
+          <span class="cell-text" :title="row.createdLabel">{{ row.createdLabel }}</span>
+        </template>
       </el-table-column>
-      <el-table-column :label="t('common.actions')" width="240" fixed="right">
+      <el-table-column :label="t('common.actions')" width="192" fixed="right">
         <template #default="{ row }">
           <div class="row-actions" @click.stop>
             <el-button
@@ -286,6 +296,34 @@ onUnmounted(() => {
   cursor: pointer;
 }
 
+/*
+ * 单元格内边距收到 8px（Element Plus 默认 12px）。
+ * 八列 + 右侧固定的「操作」列，按 12px 算总列宽会超出 1280 屏的可用宽度，
+ * 固定列一压，「创建时间」就看不见了；收到 8px 后每列还能留出余量。
+ */
+.task-table :deep(.cell) {
+  padding: 0 8px;
+}
+
+/*
+ * 列宽是按中文文案定的，英文文案更长（Incremental migration / Full + Incremental）。
+ * 让这些单元格 nowrap + 省略号收住，英文就从「单词中间断行」变成「尾部省略」，
+ * 完整内容看 title。中文文案都在宽度内，行为不变。
+ */
+.cell-text {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.status-label {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 .task-name {
   font-weight: 500;
   line-height: 20px;
@@ -302,6 +340,7 @@ onUnmounted(() => {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  max-width: 100%;
   white-space: nowrap;
 }
 
@@ -328,6 +367,8 @@ onUnmounted(() => {
 .row-actions {
   display: flex;
   align-items: center;
+  /* 英文按钮比中文宽（Resume/Pause/Finish/Delete），窄屏下换行而不是被裁掉 */
+  flex-wrap: wrap;
   gap: 12px;
 }
 

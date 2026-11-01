@@ -3,6 +3,9 @@ package io.opendrs.engine.core;
 import io.opendrs.common.log.MigrationLogLevel;
 import io.opendrs.common.log.MigrationLogListener;
 import io.opendrs.common.metadata.DatabaseType;
+import io.opendrs.common.metadata.TableId;
+import io.opendrs.common.naming.ColumnNamingStrategy;
+import io.opendrs.common.naming.TableNamingStrategy;
 import io.opendrs.engine.capture.CdcEngine;
 import io.opendrs.engine.capture.DebeziumCdcEngineFactory;
 import io.opendrs.engine.capture.DebeziumEngineConfig;
@@ -17,15 +20,27 @@ import io.opendrs.engine.precheck.PrecheckRunner;
 import io.opendrs.engine.precheck.fact.FactStore;
 import io.opendrs.engine.precheck.profile.MysqlBidirectionalProfile;
 import io.opendrs.engine.precheck.profile.MysqlToPgProfile;
+import io.opendrs.engine.replay.ReplayConfig;
+import io.opendrs.engine.replay.dialect.DatabaseDialect;
+import io.opendrs.engine.replay.dialect.DatabaseDialects;
 import io.opendrs.engine.replay.exception.ApplierException;
 import io.opendrs.engine.replay.mapping.MappingValidator;
-import io.opendrs.engine.replay.mapping.TableSelection;
+import io.opendrs.common.selection.TableSelection;
 import io.opendrs.engine.replay.metrics.ReplayMetrics;
+import io.opendrs.engine.replay.naming.DefaultColumnNamingStrategy;
+import io.opendrs.engine.replay.naming.MappedTableNamingStrategy;
+import io.opendrs.engine.schema.dialect.SchemaDialect;
+import io.opendrs.engine.schema.SchemaMigrationException;
+import io.opendrs.engine.schema.SchemaMigrator;
+import io.opendrs.engine.schema.SchemaTarget;
+import io.opendrs.jdbc.JdbcConnectionConfig;
 import io.opendrs.jdbc.JdbcConnectionFactory;
 import io.opendrs.jdbc.JdbcException;
 import io.opendrs.jdbc.dialect.MysqlDialect;
 import io.opendrs.jdbc.dialect.PostgresDialect;
 import io.opendrs.jdbc.metadata.Table;
+import java.sql.Connection;
+import java.sql.SQLException;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -98,7 +113,7 @@ public class DefaultMigrationEngine implements MigrationEngine {
         this.factory = factory;
         this.expander = new TableSelectionExpander(factory);
         this.mappingValidator = new MappingValidator();
-        this.schemaMigrator = new SchemaMigrator(factory, mappingValidator);
+        this.schemaMigrator = new SchemaMigrator(factory);
         this.precheckProfiles = new PrecheckProfiles(List.of(new MysqlToPgProfile(), new MysqlBidirectionalProfile()));
         this.mysqlToPgPlanBuilder = new PlanBuilder(MysqlToPgProfile.registry());
         this.mysqlBidirectionalPlanBuilder = new PlanBuilder(MysqlBidirectionalProfile.registry());
@@ -127,8 +142,10 @@ public class DefaultMigrationEngine implements MigrationEngine {
             log.info("schema migration starting for {} tables", tables.size());
             listener.emit(
                     MigrationLogLevel.INFO, "schema migration starting for " + tables.size() + " table(s)");
+            SchemaTarget schemaTarget = schemaTarget(param.target(), selection);
             return callUnchecked(
-                    () -> schemaMigrator.migrate(param.source(), param.target(), tables, selection, listener));
+                    () -> schemaMigrator.migrate(
+                            param.source(), param.target(), tables, schemaTarget, listener));
         });
         task.start(executor);
         return task;
@@ -167,8 +184,9 @@ public class DefaultMigrationEngine implements MigrationEngine {
         }
         listener.emit(
                 MigrationLogLevel.INFO, "selection matched " + tables.size() + " table(s), starting capture");
+        SchemaTarget schemaTarget = schemaTarget(param.target(), selection);
         List<Table> missing = callUnchecked(
-                () -> schemaMigrator.missingTargets(param.target(), tables, selection));
+                () -> schemaMigrator.missingTargets(param.target(), tables, schemaTarget));
         if (!missing.isEmpty()) {
             throw new IllegalStateException("Target tables are missing for task " + param.taskId()
                     + ", run schema migration first: " + missing);
@@ -279,18 +297,67 @@ public class DefaultMigrationEngine implements MigrationEngine {
         return "tables " + selection.tables();
     }
 
-    /** Adapts the applier's checked exception to the runtime one the task handles carry. */
+    /**
+     * Assembles the target-side context structure migration needs: the table and column naming
+     * rules built from the selection, plus a dialect narrowed to the three operations the schema
+     * module knows about. Keeping this adapter here is what lets {@code engine-schema} stay free of
+     * a dependency on {@code engine-replay}.
+     */
+    private SchemaTarget schemaTarget(JdbcConnectionConfig target, TableSelection selection) {
+        TableNamingStrategy tableNaming = new MappedTableNamingStrategy(mappingValidator, selection);
+        ColumnNamingStrategy columnNaming = new DefaultColumnNamingStrategy();
+        return new SchemaTarget(
+                tableNaming, columnNaming, schemaDialect(target, tableNaming, columnNaming));
+    }
+
+    private static SchemaDialect schemaDialect(
+            JdbcConnectionConfig target,
+            TableNamingStrategy tableNaming,
+            ColumnNamingStrategy columnNaming) {
+        ReplayConfig replayConfig = ReplayConfig.builder()
+                // Structure migration always passes its own raw connection (tableExists /
+                // executeDdl callers), so the dialect never opens its own.
+                .connectionProvider(() -> {
+                    throw new IllegalStateException(
+                            "schema migration dialect never opens its own connection");
+                })
+                .tableNamingStrategy(tableNaming)
+                .columnNamingStrategy(columnNaming)
+                .databaseDialectName(ReplayConfig.dialectNameFor(target.getType()))
+                .build();
+        DatabaseDialect dialect = DatabaseDialects.create(replayConfig);
+        return new SchemaDialect() {
+
+            @Override
+            public TableId resolveTableId(TableId tableId) {
+                return dialect.resolveTableId(tableId);
+            }
+
+            @Override
+            public boolean tableExists(Connection connection, TableId tableId) throws SQLException {
+                return dialect.tableExists(connection, tableId);
+            }
+
+            @Override
+            public void executeDdl(TableId tableId, String ddl, Connection connection)
+                    throws SQLException {
+                dialect.executeDDL(tableId, ddl, connection);
+            }
+        };
+    }
+
+    /** Adapts the engine modules' checked exceptions to the runtime one the task handles carry. */
     private static <T> T callUnchecked(CheckedCall<T> call) {
         try {
             return call.get();
-        } catch (ApplierException ex) {
+        } catch (ApplierException | SchemaMigrationException ex) {
             throw new IllegalStateException(ex.getMessage(), ex);
         }
     }
 
     @FunctionalInterface
     private interface CheckedCall<T> {
-        T get() throws ApplierException;
+        T get() throws ApplierException, SchemaMigrationException;
     }
 
     private static final class EngineThreadFactory implements java.util.concurrent.ThreadFactory {

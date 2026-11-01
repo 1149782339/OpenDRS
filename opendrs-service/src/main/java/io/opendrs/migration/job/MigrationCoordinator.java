@@ -12,7 +12,7 @@ import io.opendrs.engine.core.SchemaMigrationParam;
 import io.opendrs.engine.core.SchemaMigrationTask;
 import io.opendrs.engine.core.TaskState;
 import io.opendrs.engine.replay.GtidLoopConfig;
-import io.opendrs.engine.replay.mapping.TableSelection;
+import io.opendrs.common.selection.TableSelection;
 import io.opendrs.migration.api.request.MigrationOptions;
 import io.opendrs.migration.domain.ConnectionInfo;
 import io.opendrs.migration.domain.MigrationPhase;

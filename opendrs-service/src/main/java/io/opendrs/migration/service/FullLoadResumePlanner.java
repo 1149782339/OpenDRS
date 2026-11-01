@@ -4,7 +4,7 @@ import io.opendrs.common.log.MigrationLogLevel;
 import io.opendrs.common.metadata.TableId;
 import io.opendrs.engine.core.TableSelectionExpander;
 import io.opendrs.engine.replay.mapping.MappingValidator;
-import io.opendrs.engine.replay.mapping.TableSelection;
+import io.opendrs.common.selection.TableSelection;
 import io.opendrs.engine.replay.sql.ExpressionBuilder;
 import io.opendrs.engine.replay.sql.IdentifierRule;
 import io.opendrs.jdbc.JdbcConnection;

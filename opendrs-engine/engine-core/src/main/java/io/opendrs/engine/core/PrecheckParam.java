@@ -1,7 +1,7 @@
 package io.opendrs.engine.core;
 
 import io.opendrs.engine.precheck.PrecheckResults;
-import io.opendrs.engine.replay.mapping.TableSelection;
+import io.opendrs.common.selection.TableSelection;
 import io.opendrs.jdbc.JdbcConnectionConfig;
 import java.util.Objects;
 import java.util.function.Consumer;

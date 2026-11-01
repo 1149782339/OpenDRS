@@ -1,5 +1,6 @@
 package io.opendrs.engine.core;
 
+import io.opendrs.engine.schema.SchemaMigrator;
 import io.opendrs.jdbc.metadata.Table;
 import java.util.List;
 import java.util.concurrent.ExecutorService;

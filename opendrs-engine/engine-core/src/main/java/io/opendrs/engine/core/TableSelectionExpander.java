@@ -1,7 +1,7 @@
 package io.opendrs.engine.core;
 
 import io.opendrs.common.metadata.TableId;
-import io.opendrs.engine.replay.mapping.TableSelection;
+import io.opendrs.common.selection.TableSelection;
 import io.opendrs.jdbc.JdbcConnection;
 import io.opendrs.jdbc.JdbcConnectionConfig;
 import io.opendrs.jdbc.JdbcConnectionFactory;

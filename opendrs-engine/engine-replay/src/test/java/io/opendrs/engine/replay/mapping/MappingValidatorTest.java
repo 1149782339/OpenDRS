@@ -4,6 +4,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import io.opendrs.common.metadata.TableId;
+import io.opendrs.common.selection.SchemaMapping;
+import io.opendrs.common.selection.TableMapping;
+import io.opendrs.common.selection.TableMappings;
+import io.opendrs.common.selection.TableSelection;
 import io.opendrs.engine.replay.exception.MappingException;
 import io.opendrs.jdbc.metadata.Table;
 import io.opendrs.jdbc.metadata.TableRef;

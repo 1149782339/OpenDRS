@@ -3,10 +3,10 @@ package io.opendrs.engine.replay.naming;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import io.opendrs.engine.replay.mapping.MappingValidator;
-import io.opendrs.engine.replay.mapping.SchemaMapping;
-import io.opendrs.engine.replay.mapping.TableMapping;
-import io.opendrs.engine.replay.mapping.TableMappings;
-import io.opendrs.engine.replay.mapping.TableSelection;
+import io.opendrs.common.selection.SchemaMapping;
+import io.opendrs.common.selection.TableMapping;
+import io.opendrs.common.selection.TableMappings;
+import io.opendrs.common.selection.TableSelection;
 import io.opendrs.common.metadata.TableId;
 import java.util.List;
 import org.junit.jupiter.api.Test;

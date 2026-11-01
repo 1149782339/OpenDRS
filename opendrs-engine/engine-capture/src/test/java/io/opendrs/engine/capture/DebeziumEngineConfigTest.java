@@ -6,7 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import io.opendrs.common.metadata.DatabaseType;
 import io.opendrs.common.metadata.TableId;
 import io.opendrs.engine.capture.DebeziumEngineConfig.EngineSpec;
-import io.opendrs.engine.replay.mapping.TableSelection;
+import io.opendrs.common.selection.TableSelection;
 import io.opendrs.jdbc.JdbcConnectionConfig;
 import io.opendrs.jdbc.metadata.Table;
 import io.opendrs.jdbc.metadata.TableRef;
