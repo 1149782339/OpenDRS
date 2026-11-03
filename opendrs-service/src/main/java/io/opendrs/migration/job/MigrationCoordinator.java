@@ -310,7 +310,8 @@ public class MigrationCoordinator implements Runnable {
         }
         if (phase == MigrationPhase.SCHEMA_MIGRATION) {
             // Re-entrant on purpose: the phase is set before the DDL runs, so a restart lands here
-            // with a possibly half-created target. SchemaMigrator skips tables that already exist.
+            // with a possibly half-created target. Schema migration skips objects that already
+            // exist on the target, so re-running it only creates what is missing.
             runSchemaMigration();
             if (stopRequested()) {
                 return;

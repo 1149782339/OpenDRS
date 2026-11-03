@@ -1,5 +1,6 @@
 package io.opendrs.engine.schema.export;
 
+import io.opendrs.common.metadata.DatabaseType;
 import io.opendrs.common.metadata.TableId;
 import io.opendrs.common.selection.TableSelection;
 import io.opendrs.engine.schema.dialect.SchemaDialect;
@@ -21,25 +22,34 @@ public class DefaultObjectExporter implements ObjectExporter {
 
     private final SchemaDialect dialect;
 
+    /** Recorded on the results so a caller knows which dialect produced the batch; may be null. */
+    private final DatabaseType databaseType;
+
     public DefaultObjectExporter(Connection connection, SchemaDialect dialect) {
-        this.connection = connection;
-        this.dialect = dialect;
+        this(connection, dialect, null);
+    }
+
+    public DefaultObjectExporter(Connection connection, SchemaDialect dialect, DatabaseType databaseType) {
+        this.connection = Objects.requireNonNull(connection, "connection");
+        this.dialect = Objects.requireNonNull(dialect, "dialect");
+        this.databaseType = databaseType;
     }
 
     @Override
     public ExportResults export(ExportConfiguration configuration) throws SQLException {
         TableSelection selection = Objects.requireNonNull(configuration.getSelection(), "selection");
         ExportResults results = new ExportResults();
+        results.databaseType = databaseType;
         results.tables = exportObjects(selection, ObjectType.TABLE);
         if (configuration.includeViews()) {
             results.views = exportObjects(selection, ObjectType.VIEW);
         }
-        attachAndCheckDependencies(results, configuration.ignoreForeignKey());
+        attachAndCheckDependencies(results, configuration.includeForeignKeys());
         return results;
     }
 
     /** Fills each object's dependencies and reports ones missing from this export as errors. */
-    private void attachAndCheckDependencies(ExportResults results, boolean ignoreForeignKey)
+    private void attachAndCheckDependencies(ExportResults results, boolean includeForeignKeys)
             throws SQLException {
         List<DatabaseObject> exported = new ArrayList<>();
         if (results.tables != null) {
@@ -54,7 +64,7 @@ public class DefaultObjectExporter implements ObjectExporter {
         }
         for (DatabaseObject object : exported) {
             List<ObjectId> dependencies =
-                    dialect.getObjectDependencies(connection, object.id(), ignoreForeignKey);
+                    dialect.getObjectDependencies(connection, object.id(), !includeForeignKeys);
             object.addDependencies(dependencies);
             for (ObjectId dependency : dependencies) {
                 if (!exportedIds.contains(dependency)) {

@@ -1,5 +1,6 @@
 package io.opendrs.engine.schema;
 
+import io.opendrs.common.metadata.DatabaseType;
 import io.opendrs.engine.schema.convert.ConversionConfiguration;
 import io.opendrs.engine.schema.convert.ConversionResult;
 import io.opendrs.engine.schema.convert.ConversionResults;
@@ -7,18 +8,55 @@ import io.opendrs.engine.schema.convert.ConversionStatus;
 import io.opendrs.engine.schema.convert.converters.SQLConverter;
 import io.opendrs.engine.schema.convert.converters.SQLConverters;
 import io.opendrs.engine.schema.dependency.DependencyResolver;
+import io.opendrs.engine.schema.dialect.MySqlSchemaDialect;
+import io.opendrs.engine.schema.dialect.PostgreSqlSchemaDialect;
+import io.opendrs.engine.schema.dialect.SchemaDialect;
+import io.opendrs.engine.schema.export.DefaultObjectExporter;
 import io.opendrs.engine.schema.export.ExportConfiguration;
 import io.opendrs.engine.schema.export.ExportResults;
+import io.opendrs.engine.schema.imports.DefaultObjectImporter;
 import io.opendrs.engine.schema.imports.ImportConfiguration;
 import io.opendrs.engine.schema.imports.ImportResults;
 import io.opendrs.engine.schema.meta.DatabaseObject;
+import io.opendrs.jdbc.JdbcConnection;
+import io.opendrs.jdbc.JdbcConnectionConfig;
+import io.opendrs.jdbc.JdbcConnectionFactory;
+import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
+/**
+ * Schema migration in three stages: {@link #exportObjects} reads the source's DDL,
+ * {@link #convert} translates it to the target dialect in dependency order, and
+ * {@link #importObjects} executes the result on the target.
+ *
+ * <p>The stages stay separate on purpose — the batch between them is inspectable (and, in the
+ * product, editable) before anything runs against the target.
+ */
 public class MigrationEngine {
-    public ExportResults exportObjects(ExportConfiguration config) {
-        throw new UnsupportedOperationException("exportObjects is not implemented yet");
+
+    private final JdbcConnectionFactory connectionFactory;
+
+    public MigrationEngine(JdbcConnectionFactory connectionFactory) {
+        this.connectionFactory = Objects.requireNonNull(connectionFactory, "connectionFactory");
+    }
+
+    /**
+     * Reads every object the selection covers from {@code source}, plus its dependencies.
+     *
+     * <p>Opens and closes its own connection; the returned {@link ExportResults} carries no
+     * connection and can be inspected, or handed to {@link #convert}, after the source is gone.
+     */
+    public ExportResults exportObjects(JdbcConnectionConfig source, ExportConfiguration configuration)
+            throws SQLException {
+        Objects.requireNonNull(source, "source");
+        Objects.requireNonNull(configuration, "configuration");
+        SchemaDialect dialect = dialectFor(source.getType());
+        try (JdbcConnection connection = connectionFactory.open(source)) {
+            return new DefaultObjectExporter(connection.unwrap(), dialect, source.getType())
+                    .export(configuration);
+        }
     }
 
     /**
@@ -62,7 +100,32 @@ public class MigrationEngine {
         return converter.convert(object.sourceDdlText());
     }
 
-    public ImportResults importObjects(ConversionResults conversionResults, ImportConfiguration config) {
-        throw new UnsupportedOperationException("importObjects is not implemented yet");
+    /**
+     * Executes a converted batch on {@code target}, in the batch's dependency order.
+     *
+     * <p>Opens and closes its own connection. Schema remapping is driven by the
+     * {@link io.opendrs.common.naming.SchemaNamingStrategy} in {@code configuration}; see
+     * {@link ImportConfiguration}.
+     */
+    public ImportResults importObjects(
+            JdbcConnectionConfig target,
+            ConversionResults conversionResults,
+            ImportConfiguration configuration)
+            throws SQLException {
+        Objects.requireNonNull(target, "target");
+        Objects.requireNonNull(conversionResults, "conversionResults");
+        try (JdbcConnection connection = connectionFactory.open(target)) {
+            return new DefaultObjectImporter(connection.unwrap())
+                    .importObjects(conversionResults, configuration);
+        }
+    }
+
+    private static SchemaDialect dialectFor(DatabaseType type) {
+        return switch (type) {
+            case MYSQL -> new MySqlSchemaDialect();
+            case POSTGRESQL -> new PostgreSqlSchemaDialect();
+            case ORACLE -> throw new IllegalArgumentException(
+                    "schema migration has no schema dialect for " + type);
+        };
     }
 }

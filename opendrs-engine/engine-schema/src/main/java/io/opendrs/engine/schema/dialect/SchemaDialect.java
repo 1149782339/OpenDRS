@@ -7,13 +7,13 @@ import java.sql.SQLException;
 import java.util.List;
 
 /**
- * The three dialect operations structure migration needs: target identifier resolution, table
- * existence check, and DDL execution.
+ * The three source-side reads schema migration needs: enumerate objects in a schema, resolve an
+ * object's dependencies, and read its DDL.
  *
- * <p>Deliberately narrow. The full replay dialect knows about INSERT/UPSERT building, Kafka Connect
- * schemas and statement binding — none of which structure migration touches. Keeping this interface
- * here lets {@code engine-schema} stay free of a dependency on {@code engine-replay}; the engine
- * facade adapts the target database's dialect to it when assembling a run.
+ * <p>Deliberately narrow, and read-only. The full replay dialect knows about INSERT/UPSERT building,
+ * Kafka Connect schemas and statement binding — none of which schema migration touches, and it also
+ * owns the target-side writes, which the import stage does itself. Keeping this interface here lets
+ * {@code engine-schema} stay free of a dependency on {@code engine-replay}.
  */
 public interface SchemaDialect {
 

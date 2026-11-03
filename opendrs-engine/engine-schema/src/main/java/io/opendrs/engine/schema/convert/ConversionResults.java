@@ -1,8 +1,10 @@
 package io.opendrs.engine.schema.convert;
 
 import io.opendrs.engine.schema.meta.DatabaseObject;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
@@ -41,8 +43,17 @@ public class ConversionResults {
         return results.isEmpty();
     }
 
-    /** Entries in import (dependency) order. */
-    public Iterable<Map.Entry<DatabaseObject, ConversionResult>> entries() {
-        return Collections.unmodifiableSet(results.entrySet());
+    /**
+     * Snapshot of the entries in import (dependency) order.
+     *
+     * <p>Immutable copies, not a live view: a caller cannot see later {@link #put}s through a list
+     * it already holds, and cannot write through an entry ({@code Map.Entry.setValue} throws).
+     */
+    public List<Map.Entry<DatabaseObject, ConversionResult>> entries() {
+        List<Map.Entry<DatabaseObject, ConversionResult>> snapshot = new ArrayList<>(results.size());
+        for (Map.Entry<DatabaseObject, ConversionResult> entry : results.entrySet()) {
+            snapshot.add(Map.entry(entry.getKey(), entry.getValue()));
+        }
+        return Collections.unmodifiableList(snapshot);
     }
 }

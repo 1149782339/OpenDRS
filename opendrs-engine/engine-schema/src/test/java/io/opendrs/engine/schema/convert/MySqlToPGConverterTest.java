@@ -97,4 +97,82 @@ class MySqlToPGConverterTest {
         assertThat(joined.toLowerCase()).doesNotContain("engine=innodb default");
         assertThat(joined).contains("/*");
     }
+
+    private static final String ORDERS_DDL =
+            "CREATE TABLE `shop`.`orders` ("
+                    + "`id` INT NOT NULL, "
+                    + "`code` VARCHAR(32) NOT NULL, "
+                    + "`customer_id` INT NOT NULL, "
+                    + "PRIMARY KEY (`id`), "
+                    + "UNIQUE KEY `uk_code` (`code`), "
+                    + "KEY `idx_customer` (`customer_id`), "
+                    + "CONSTRAINT `fk_customer` FOREIGN KEY (`customer_id`) "
+                    + "REFERENCES `shop`.`customers` (`id`)"
+                    + ") ENGINE=InnoDB COMMENT='orders'";
+
+    @Test
+    void keepsEveryStructuralElementByDefault() {
+        String joined = String.join("\n", identityConverter().convert(ORDERS_DDL).getStatements());
+
+        assertThat(joined).contains("PRIMARY KEY");
+        assertThat(joined).contains("UNIQUE");
+        assertThat(joined).contains("CREATE INDEX");
+        assertThat(joined).contains("FOREIGN KEY");
+        assertThat(joined).contains("COMMENT ON TABLE");
+    }
+
+    @Test
+    void dropsOnlyTheForeignKeysWhenThatIsTheOnlySwitchOff() {
+        MySqlToPGConverter converter = new MySqlToPGConverter(
+                ConversionConfiguration.builder(tableId -> tableId, column -> column)
+                        .includeForeignKeys(false)
+                        .build());
+
+        String joined = String.join("\n", converter.convert(ORDERS_DDL).getStatements());
+
+        assertThat(joined).doesNotContain("FOREIGN KEY");
+        assertThat(joined).contains("PRIMARY KEY");
+        assertThat(joined).contains("UNIQUE");
+        assertThat(joined).contains("CREATE INDEX");
+        assertThat(joined).contains("COMMENT ON TABLE");
+    }
+
+    @Test
+    void dropsEverythingButTheTableWhenAllSwitchesAreOff() {
+        MySqlToPGConverter converter = new MySqlToPGConverter(
+                ConversionConfiguration.builder(tableId -> tableId, column -> column)
+                        .includePrimaryKey(false)
+                        .includeUniqueKeys(false)
+                        .includeSecondaryIndexes(false)
+                        .includeForeignKeys(false)
+                        .includeComments(false)
+                        .build());
+
+        String joined = String.join("\n", converter.convert(ORDERS_DDL).getStatements());
+
+        assertThat(joined).contains("CREATE TABLE");
+        assertThat(joined).doesNotContain("PRIMARY KEY");
+        assertThat(joined).doesNotContain("UNIQUE");
+        assertThat(joined).doesNotContain("CREATE INDEX");
+        assertThat(joined).doesNotContain("FOREIGN KEY");
+        assertThat(joined).doesNotContain("COMMENT ON");
+    }
+
+    @Test
+    void dropsColumnInlinePrimaryKeyAndUnique() {
+        MySqlToPGConverter converter = new MySqlToPGConverter(
+                ConversionConfiguration.builder(tableId -> tableId, column -> column)
+                        .includePrimaryKey(false)
+                        .includeUniqueKeys(false)
+                        .build());
+
+        String joined = String.join("\n", converter
+                .convert("CREATE TABLE `shop`.`t` (`id` INT PRIMARY KEY, `code` VARCHAR(8) UNIQUE)")
+                .getStatements());
+
+        assertThat(joined).doesNotContain("PRIMARY KEY");
+        assertThat(joined).doesNotContain("UNIQUE");
+        assertThat(joined).contains("\"id\"");
+        assertThat(joined).contains("\"code\"");
+    }
 }

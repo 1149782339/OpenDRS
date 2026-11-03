@@ -81,11 +81,27 @@ public class MySqlToPGParserListener extends MySqlParserBaseListener {
 
     private final TableNamingStrategy tableNamingStrategy;
 
+    /** When false, foreign key constraints are dropped rather than deferred to an ALTER TABLE. */
+    private final boolean includeForeignKeys;
+
+    private final boolean includePrimaryKey;
+
+    private final boolean includeUniqueKeys;
+
+    private final boolean includeSecondaryIndexes;
+
+    private final boolean includeComments;
+
     public MySqlToPGParserListener(TokenStream tokenStream, ConversionConfiguration configuration) {
         this.rewriter = new TokenStreamRewriter(tokenStream);
         this.message = new ConversionMessage();
         this.columnNamingStrategy = configuration.getColumnNamingStrategy();
         this.tableNamingStrategy = configuration.getTableNamingStrategy();
+        this.includeForeignKeys = configuration.includeForeignKeys();
+        this.includePrimaryKey = configuration.includePrimaryKey();
+        this.includeUniqueKeys = configuration.includeUniqueKeys();
+        this.includeSecondaryIndexes = configuration.includeSecondaryIndexes();
+        this.includeComments = configuration.includeComments();
     }
 
     public List<String> getStatements() {
@@ -395,7 +411,11 @@ public class MySqlToPGParserListener extends MySqlParserBaseListener {
     private void rewriteUniqueKeyTableConstraint(MySqlParser.UniqueKeyTableConstraintContext ctx) {
         int columnIndex = context.get(COLUMN_INDEX);
         MySqlParser.ColumnCreateTableContext columnCreateTableContext = context.get(COLUMN_CREAT_TABLE_CONTEXT);
-        List<String> columnNames = getColumnNamesFromIndexColumnNameContext(ctx.indexColumnNames());
+        if (!includeUniqueKeys) {
+            deleteTableConstraint(ctx, columnIndex, columnCreateTableContext);
+            return;
+        }
+        List<String> columnNames = getColumnNamesFromIndexColumnNameContext(ctx.indexColumnNames(), ctx.index == null);
         String columnParts = String.join(",", columnNames);
         TableId tableId = context.get(TABLE_ID);
         if (ctx.index != null) {
@@ -428,31 +448,40 @@ public class MySqlToPGParserListener extends MySqlParserBaseListener {
     void rewriteForeignKeyTableConstraint(MySqlParser.ForeignKeyTableConstraintContext ctx) {
         final int columnIndex = context.get(COLUMN_INDEX);
         final MySqlParser.ColumnCreateTableContext columnCreateTableContext = context.get(COLUMN_CREAT_TABLE_CONTEXT);
-        final TableId tableId = context.get(TABLE_ID);;
+        if (columnIndex > 0) {
+            rewriter.delete(columnCreateTableContext.createDefinitions().COMMA(columnIndex - 1).getSymbol());
+        }
+        rewriter.delete(ctx.getStart(), ctx.getStop());
+        if (!includeForeignKeys) {
+            // Table-only pass: drop the constraint instead of deferring it. See
+            // ConversionConfiguration#includeForeignKeys.
+            return;
+        }
+        final TableId tableId = context.get(TABLE_ID);
         MySqlParser.ReferenceDefinitionContext referenceDefinitionContext = ctx.referenceDefinition();
         TableId refTableId = parseTableId(referenceDefinitionContext.tableName().fullId().getText());
-        List<String> refColumnNames = getColumnNamesFromIndexColumnNameContext(referenceDefinitionContext.indexColumnNames());
-        List<String> foreignColumnNames = getColumnNamesFromIndexColumnNameContext(ctx.indexColumnNames());
+        List<String> refColumnNames = getColumnNamesFromIndexColumnNameContext(referenceDefinitionContext.indexColumnNames(), false);
+        List<String> foreignColumnNames = getColumnNamesFromIndexColumnNameContext(ctx.indexColumnNames(), false);
         String tableName = tableId.toQuoted('"').toString();
         String sql = String.format(ALTER_TABLE_FOREIGN_KEY, tableName,
                 StringUtil.quote(ctx.name.simpleId().getText(), '"'),
                 String.join(",", foreignColumnNames), refTableId.toQuoted('"'),
                 String.join(",", refColumnNames));
         afterStatements.add(sql);
-        if (columnIndex > 0) {
-            rewriter.delete(columnCreateTableContext.createDefinitions().COMMA(columnIndex - 1).getSymbol());
-        }
-        rewriter.delete(ctx.getStart(), ctx.getStop());
     }
 
     void rewritePrimaryKeyTableConstraint(MySqlParser.PrimaryKeyTableConstraintContext ctx) {
         int columnIndex = context.get(COLUMN_INDEX);
         MySqlParser.ColumnCreateTableContext columnCreateTableContext = context.get(COLUMN_CREAT_TABLE_CONTEXT);
         TableId tableId = context.get(TABLE_ID);
+        if (!includePrimaryKey) {
+            deleteTableConstraint(ctx, columnIndex, columnCreateTableContext);
+            return;
+        }
         for (MySqlParser.IndexOptionContext indexOptionContext : ctx.indexOption()) {
             comment(indexOptionContext.getStart(), indexOptionContext.getStop());
         }
-        List<String> columnNames = getColumnNamesFromIndexColumnNameContext(ctx.indexColumnNames());
+        List<String> columnNames = getColumnNamesFromIndexColumnNameContext(ctx.indexColumnNames(), ctx.index == null);
         if (ctx.index != null) {
             String columnParts = String.join(",", columnNames);
             afterStatements.add(String.format(CREATE_PRIMARY_KEY_TEMPLATE, tableId.getTable(),
@@ -465,6 +494,15 @@ public class MySqlToPGParserListener extends MySqlParserBaseListener {
        // List<String> columnNames = getColumnNamesFromIndexColumnNameContext(ctx.indexColumnNames());
        // String columnParts = String.join(",", columnNames);
        // rewriter.replace(ctx.getStart(), ctx.getStop(), "PRIMARY KEY(" + columnParts + ")");
+    }
+
+    /** Drops a table-level constraint together with the comma that separated it from the previous one. */
+    private void deleteTableConstraint(
+            ParserRuleContext ctx, int columnIndex, MySqlParser.ColumnCreateTableContext table) {
+        rewriter.delete(ctx.getStart(), ctx.getStop());
+        if (columnIndex > 0) {
+            rewriter.delete(table.createDefinitions().COMMA(columnIndex - 1).getSymbol());
+        }
     }
 
 
@@ -481,12 +519,11 @@ public class MySqlToPGParserListener extends MySqlParserBaseListener {
     private void rewriteSpecialIndexDeclaration(MySqlParser.SpecialIndexDeclarationContext ctx) {
         final String tableId = context.get(TABLE_ID);
         final MySqlParser.ColumnCreateTableContext columnCreateTableContext = context.get(COLUMN_CREAT_TABLE_CONTEXT);
-        List<String> columnNames = getColumnNamesFromIndexColumnNameContext(ctx.indexColumnNames());
-        for (MySqlParser.IndexColumnNameContext indexColumnNameContext : ctx.indexColumnNames().indexColumnName()) {
-            String columnName = indexColumnNameContext.getText();
-            columnNames.add(StringUtil.quote(StringUtil.unquote(columnName, '`'), '"'));
-        }
+        List<String> columnNames = getColumnNamesFromIndexColumnNameContext(ctx.indexColumnNames(), false);
         rewriter.delete(ctx.getStart(), ctx.getStop());
+        if (!includeSecondaryIndexes) {
+            return;
+        }
         String columnParts = String.join(",", columnNames);
         afterStatements.add(String.format(CREATE_INDEX_TEMPLATE, tableId, columnParts));
     }
@@ -497,12 +534,15 @@ public class MySqlToPGParserListener extends MySqlParserBaseListener {
         final MySqlParser.ColumnCreateTableContext columnCreateTableContext = context.get(COLUMN_CREAT_TABLE_CONTEXT);
         final MySqlParser.ColumnDeclarationContext ColumnDeclarationContext = context.get(COLUMN_DECLARATION_CONTEXT);
         final String columnName = ColumnDeclarationContext.fullColumnName().getText();
-        List<String> columnNames = getColumnNamesFromIndexColumnNameContext(ctx.indexColumnNames());
+        List<String> columnNames = getColumnNamesFromIndexColumnNameContext(ctx.indexColumnNames(), false);
         if (columnIndex > 0) {
             rewriter.delete(columnCreateTableContext.createDefinitions().COMMA(columnIndex - 1).getSymbol());
         }
         Token token = ctx.getStop();
         rewriter.delete(ctx.getStart(), ctx.getStop());
+        if (!includeSecondaryIndexes) {
+            return;
+        }
         String columnParts = String.join(",", columnNames);
         String indexName;
         if (ctx.uid() != null) {
@@ -627,10 +667,18 @@ public class MySqlToPGParserListener extends MySqlParserBaseListener {
         List<MySqlParser.ColumnConstraintContext> columnConstraintContexts = ctx.columnConstraint();
         for (MySqlParser.ColumnConstraintContext columnConstraintContext : columnConstraintContexts) {
             if (columnConstraintContext instanceof MySqlParser.PrimaryKeyColumnConstraintContext) {
-                rewriter.replace(columnConstraintContext.getStart(), columnConstraintContext.getStop(), "PRIMARY KEY");
+                if (includePrimaryKey) {
+                    rewriter.replace(columnConstraintContext.getStart(), columnConstraintContext.getStop(), "PRIMARY KEY");
+                } else {
+                    rewriter.delete(columnConstraintContext.getStart(), columnConstraintContext.getStop());
+                }
             }
             if (columnConstraintContext instanceof MySqlParser.UniqueKeyColumnConstraintContext) {
-                rewriter.replace(columnConstraintContext.getStart(), columnConstraintContext.getStop(), "UNIQUE");
+                if (includeUniqueKeys) {
+                    rewriter.replace(columnConstraintContext.getStart(), columnConstraintContext.getStop(), "UNIQUE");
+                } else {
+                    rewriter.delete(columnConstraintContext.getStart(), columnConstraintContext.getStop());
+                }
             }
             if (columnConstraintContext instanceof MySqlParser.CommentColumnConstraintContext) {
                 rewriteCommentConstraint((MySqlParser.CommentColumnConstraintContext) columnConstraintContext, fullColumnName);
@@ -674,6 +722,9 @@ public class MySqlToPGParserListener extends MySqlParserBaseListener {
         String columnName = StringUtil.quote(fullColumnName, '"');
         String comment = columnConstraintContext.STRING_LITERAL().getText();
         rewriter.delete(columnConstraintContext.getStart(), columnConstraintContext.getStop());
+        if (!includeComments) {
+            return;
+        }
         afterStatements.add(String.format(CREATE_COMMENT_ON_COLUMN_TEMPLATE,
                 StringUtil.quote(tableId.getTable(), '"'), columnName, comment));
     }
@@ -683,6 +734,9 @@ public class MySqlToPGParserListener extends MySqlParserBaseListener {
         TableId tableId = context.get(TABLE_ID);
         String comment = ctx.STRING_LITERAL().getText();
         rewriter.delete(ctx.getStart(), ctx.getStop());
+        if (!includeComments) {
+            return;
+        }
         afterStatements.add(String.format(CREATE_COMMENT_ON_TABLE_TEMPLATE,
                 StringUtil.quote(tableId.getTable(), '"') , comment));
     }
@@ -727,11 +781,19 @@ public class MySqlToPGParserListener extends MySqlParserBaseListener {
         comment(ctx.getStart(),ctx.getStop());
     }
 
-    private List<String> getColumnNamesFromIndexColumnNameContext(MySqlParser.IndexColumnNamesContext ctx) {
+    /**
+     * @param rewriteNames whether to quote the column names in the original text. Must be
+     *     {@code false} when the caller deletes the surrounding node: {@link TokenStreamRewriter}
+     *     rejects a replace that overlaps a delete, and the rewritten text is discarded anyway.
+     */
+    private List<String> getColumnNamesFromIndexColumnNameContext(
+            MySqlParser.IndexColumnNamesContext ctx, boolean rewriteNames) {
         List<String> columnNames = new ArrayList<>(ctx.indexColumnName().size());
         for (MySqlParser.IndexColumnNameContext indexColumnNameContext : ctx.indexColumnName()) {
             String columnName = indexColumnNameContext.uid().getText();
-            rewriter.replace(indexColumnNameContext.uid().getStart(), indexColumnNameContext.uid().getStop(), StringUtil.quote(columnName, '"'));
+            if (rewriteNames) {
+                rewriter.replace(indexColumnNameContext.uid().getStart(), indexColumnNameContext.uid().getStop(), StringUtil.quote(columnName, '"'));
+            }
             if (indexColumnNameContext.sortType != null) {
                 columnName = StringUtil.quote(StringUtil.unquote(columnName, '`'), '"') + " " + indexColumnNameContext.sortType.getText();
             } else {
