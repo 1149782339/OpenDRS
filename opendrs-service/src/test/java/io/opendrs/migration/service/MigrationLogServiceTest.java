@@ -19,7 +19,10 @@ import io.opendrs.migration.domain.MigrationLog;
 import io.opendrs.migration.domain.MigrationTask;
 import io.opendrs.migration.mapper.MigrationLogMapper;
 import io.opendrs.migration.mapper.MigrationTaskMapper;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.stream.IntStream;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -135,6 +138,42 @@ class MigrationLogServiceTest {
                 .isInstanceOf(AppException.class)
                 .extracting(ex -> ((AppException) ex).getCode())
                 .isEqualTo(ErrorCode.TASK_NOT_FOUND);
+    }
+
+    /**
+     * The writer thread and {@link MigrationLogService#flush()} must not insert side by side.
+     * A caller-side drain used to commit the tail first, so {@code ORDER BY id} put a later line
+     * on page one.
+     */
+    @Test
+    void flushWhileTheWriterIsRunningKeepsOfferOrder() {
+        List<String> recorded = Collections.synchronizedList(new ArrayList<>());
+        when(logMapper.insertBatch(any())).thenAnswer(invocation -> {
+            List<MigrationLog> batch = invocation.getArgument(0);
+            for (MigrationLog row : batch) {
+                recorded.add(row.getMessage());
+            }
+            return batch.size();
+        });
+
+        service.start();
+        try {
+            List<String> expected = new ArrayList<>();
+            for (int round = 0; round < 20; round++) {
+                int roundNumber = round;
+                List<String> lines = IntStream.range(0, 30)
+                        .mapToObj(i -> "r" + roundNumber + "-" + i)
+                        .toList();
+                for (String line : lines) {
+                    service.log(7L, MigrationLogLevel.INFO, line);
+                }
+                service.flush();
+                expected.addAll(lines);
+            }
+            assertThat(recorded).containsExactlyElementsOf(expected);
+        } finally {
+            service.stop();
+        }
     }
 
     @SuppressWarnings("unchecked")

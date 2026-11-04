@@ -21,6 +21,7 @@ import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -55,13 +56,15 @@ public class MigrationLogService {
     private static final long POLL_MILLIS = 500;
     private static final int PAGE_SIZE_DEFAULT = 20;
     private static final int PAGE_SIZE_MAX = 200;
+    private static final long FLUSH_WAIT_SECONDS = 5;
 
     private final MigrationLogMapper mapper;
     private final MigrationTaskMapper taskMapper;
-    private final BlockingQueue<MigrationLog> queue = new ArrayBlockingQueue<>(QUEUE_CAPACITY);
+    /** Logs and flush barriers share one queue so a barrier stays behind exactly the lines offered before it. */
+    private final BlockingQueue<Queued> queue = new ArrayBlockingQueue<>(QUEUE_CAPACITY);
     private final ConcurrentHashMap<Long, AtomicLong> dropped = new ConcurrentHashMap<>();
     private final AtomicBoolean running = new AtomicBoolean(true);
-    private Thread writer;
+    private volatile Thread writer;
 
     public MigrationLogService(MigrationLogMapper mapper, MigrationTaskMapper taskMapper) {
         this.mapper = mapper;
@@ -83,7 +86,7 @@ public class MigrationLogService {
             return;
         }
         MigrationLog entry = new MigrationLog(taskId, LocalDateTime.now(), level, truncate(message));
-        if (!queue.offer(entry)) {
+        if (!queue.offer(new LogLine(entry))) {
             dropped.computeIfAbsent(taskId, key -> new AtomicLong()).incrementAndGet();
         }
     }
@@ -123,14 +126,28 @@ public class MigrationLogService {
     }
 
     /**
-     * Drains the buffer on the calling thread. Shutdown and tests use it; the read path does not,
-     * so a page request never waits behind a write.
+     * Makes every line offered before this call durable, in offer order.
+     *
+     * <p>While the writer thread is running, this waits for that thread to insert. Draining on the
+     * caller would race it: the caller can commit a later batch first, and {@code ORDER BY id} then
+     * puts those later lines on page one. Shutdown joins the writer and then drains here; tests that
+     * never start the writer drain here too. The read path does not flush, so a page request never
+     * waits behind a write.
      */
     public void flush() {
-        List<MigrationLog> batch = new ArrayList<>();
-        queue.drainTo(batch);
-        if (!batch.isEmpty()) {
-            write(batch);
+        Thread current = writer;
+        if (current == null || !current.isAlive() || Thread.currentThread() == current) {
+            drainOnCaller();
+            return;
+        }
+        FlushBarrier barrier = new FlushBarrier();
+        try {
+            queue.put(barrier);
+            if (!barrier.latch.await(FLUSH_WAIT_SECONDS, TimeUnit.SECONDS)) {
+                log.warn("Timed out waiting for the migration log buffer to flush");
+            }
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
         }
     }
 
@@ -151,20 +168,59 @@ public class MigrationLogService {
     private void drainLoop() {
         List<MigrationLog> batch = new ArrayList<>(BATCH_MAX);
         while (running.get() || !queue.isEmpty()) {
+            Queued first;
             try {
-                MigrationLog first = queue.poll(POLL_MILLIS, TimeUnit.MILLISECONDS);
-                if (first == null) {
-                    continue;
-                }
-                batch.add(first);
-                queue.drainTo(batch, BATCH_MAX - 1);
-                write(batch);
+                first = queue.poll(POLL_MILLIS, TimeUnit.MILLISECONDS);
             } catch (InterruptedException ex) {
                 Thread.currentThread().interrupt();
                 return;
-            } finally {
+            }
+            if (first == null) {
+                continue;
+            }
+            List<Queued> pending = new ArrayList<>(BATCH_MAX);
+            pending.add(first);
+            queue.drainTo(pending, BATCH_MAX - 1);
+            for (Queued item : pending) {
+                if (item instanceof FlushBarrier barrier) {
+                    if (!batch.isEmpty()) {
+                        write(batch);
+                        batch.clear();
+                    }
+                    barrier.latch.countDown();
+                } else if (item instanceof LogLine line) {
+                    batch.add(line.entry());
+                    if (batch.size() >= BATCH_MAX) {
+                        write(batch);
+                        batch.clear();
+                    }
+                }
+            }
+            if (!batch.isEmpty()) {
+                write(batch);
                 batch.clear();
             }
+        }
+    }
+
+    /** Used when the writer is not running, so there is nobody else to take the barrier. */
+    private void drainOnCaller() {
+        List<Queued> pending = new ArrayList<>();
+        queue.drainTo(pending);
+        List<MigrationLog> batch = new ArrayList<>();
+        for (Queued item : pending) {
+            if (item instanceof FlushBarrier barrier) {
+                if (!batch.isEmpty()) {
+                    write(batch);
+                    batch.clear();
+                }
+                barrier.latch.countDown();
+            } else if (item instanceof LogLine line) {
+                batch.add(line.entry());
+            }
+        }
+        if (!batch.isEmpty()) {
+            write(batch);
         }
     }
 
@@ -213,5 +269,16 @@ public class MigrationLogService {
 
     private static String truncate(String message) {
         return message.length() <= MESSAGE_MAX ? message : message.substring(0, MESSAGE_MAX);
+    }
+
+    /** One queue element. A barrier is ordered behind every line offered before {@link #flush}. */
+    private sealed interface Queued permits LogLine, FlushBarrier {
+    }
+
+    private record LogLine(MigrationLog entry) implements Queued {
+    }
+
+    private static final class FlushBarrier implements Queued {
+        private final CountDownLatch latch = new CountDownLatch(1);
     }
 }
