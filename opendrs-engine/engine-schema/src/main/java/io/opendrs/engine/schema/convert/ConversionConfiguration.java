@@ -2,6 +2,7 @@ package io.opendrs.engine.schema.convert;
 
 import io.opendrs.common.metadata.DatabaseType;
 import io.opendrs.common.naming.ColumnNamingStrategy;
+import io.opendrs.common.naming.SchemaNamingStrategy;
 import io.opendrs.common.naming.TableNamingStrategy;
 
 /**
@@ -22,6 +23,8 @@ public class ConversionConfiguration {
     private final boolean includeSecondaryIndexes;
     private final boolean includeForeignKeys;
     private final boolean includeComments;
+    private final boolean ifNotExists;
+    private final SchemaNamingStrategy schemaNamingStrategy;
 
     public ConversionConfiguration(TableNamingStrategy tableNamingStrategy, ColumnNamingStrategy columnNamingStrategy) {
         this(tableNamingStrategy, columnNamingStrategy, null, null);
@@ -41,6 +44,8 @@ public class ConversionConfiguration {
         this.includeSecondaryIndexes = true;
         this.includeForeignKeys = true;
         this.includeComments = true;
+        this.ifNotExists = false;
+        this.schemaNamingStrategy = null;
     }
 
     private ConversionConfiguration(Builder builder) {
@@ -53,6 +58,8 @@ public class ConversionConfiguration {
         this.includeSecondaryIndexes = builder.includeSecondaryIndexes;
         this.includeForeignKeys = builder.includeForeignKeys;
         this.includeComments = builder.includeComments;
+        this.ifNotExists = builder.ifNotExists;
+        this.schemaNamingStrategy = builder.schemaNamingStrategy;
     }
 
     public static Builder builder(
@@ -121,6 +128,28 @@ public class ConversionConfiguration {
         return includeComments;
     }
 
+    /**
+     * Whether {@code CREATE SCHEMA}, {@code CREATE TABLE} and {@code CREATE INDEX} gain an
+     * {@code IF NOT EXISTS}. Defaults to {@code false}.
+     *
+     * <p>This is a clause the converter adds, not a source element, which is why it is not an
+     * {@code include*} switch. Views are left alone: PostgreSQL has no {@code CREATE VIEW IF NOT
+     * EXISTS}. A structure migration turns it on so a re-run can meet objects that already exist;
+     * a one-shot conversion and incremental DDL leave it off.
+     */
+    public boolean ifNotExists() {
+        return ifNotExists;
+    }
+
+    /**
+     * Source schema name onto the target schema name written into {@code CREATE SCHEMA}.
+     * Unmapped schemas keep their name. Unqualified table DDL does not use this — the importer
+     * points the connection at the target schema instead.
+     */
+    public SchemaNamingStrategy getSchemaNamingStrategy() {
+        return schemaNamingStrategy == null ? schema -> schema : schemaNamingStrategy;
+    }
+
     public static final class Builder {
 
         private final TableNamingStrategy tableNamingStrategy;
@@ -132,6 +161,8 @@ public class ConversionConfiguration {
         private boolean includeSecondaryIndexes = true;
         private boolean includeForeignKeys = true;
         private boolean includeComments = true;
+        private boolean ifNotExists;
+        private SchemaNamingStrategy schemaNamingStrategy;
 
         private Builder(
                 TableNamingStrategy tableNamingStrategy, ColumnNamingStrategy columnNamingStrategy) {
@@ -167,6 +198,16 @@ public class ConversionConfiguration {
 
         public Builder includeComments(boolean includeComments) {
             this.includeComments = includeComments;
+            return this;
+        }
+
+        public Builder ifNotExists(boolean ifNotExists) {
+            this.ifNotExists = ifNotExists;
+            return this;
+        }
+
+        public Builder schemaNamingStrategy(SchemaNamingStrategy schemaNamingStrategy) {
+            this.schemaNamingStrategy = schemaNamingStrategy;
             return this;
         }
 

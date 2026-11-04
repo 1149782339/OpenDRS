@@ -40,6 +40,7 @@ public class DefaultObjectExporter implements ObjectExporter {
         TableSelection selection = Objects.requireNonNull(configuration.getSelection(), "selection");
         ExportResults results = new ExportResults();
         results.databaseType = databaseType;
+        results.schemas = exportSchemas(selection);
         results.tables = exportObjects(selection, ObjectType.TABLE);
         if (configuration.includeViews()) {
             results.views = exportObjects(selection, ObjectType.VIEW);
@@ -48,10 +49,29 @@ public class DefaultObjectExporter implements ObjectExporter {
         return results;
     }
 
+    /**
+     * One schema object per schema the selection touches. MySQL calls that object a database; the
+     * DDL is {@code CREATE DATABASE}, and every table or view exported from it depends on it.
+     */
+    private List<DatabaseObject> exportSchemas(TableSelection selection) throws SQLException {
+        List<DatabaseObject> schemas = new ArrayList<>();
+        for (String schema : candidateSchemas(selection)) {
+            if (selection.isSchemaExcluded(schema)) {
+                continue;
+            }
+            ObjectId id = ObjectId.schema(schema);
+            schemas.add(new DatabaseObject(id, dialect.getObjectDdl(connection, id)));
+        }
+        return schemas;
+    }
+
     /** Fills each object's dependencies and reports ones missing from this export as errors. */
     private void attachAndCheckDependencies(ExportResults results, boolean includeForeignKeys)
             throws SQLException {
         List<DatabaseObject> exported = new ArrayList<>();
+        if (results.schemas != null) {
+            exported.addAll(results.schemas);
+        }
         if (results.tables != null) {
             exported.addAll(results.tables);
         }
@@ -63,8 +83,12 @@ public class DefaultObjectExporter implements ObjectExporter {
             exportedIds.add(object.id());
         }
         for (DatabaseObject object : exported) {
-            List<ObjectId> dependencies =
-                    dialect.getObjectDependencies(connection, object.id(), !includeForeignKeys);
+            List<ObjectId> dependencies = new ArrayList<>();
+            if (object.id().type() != ObjectType.SCHEMA) {
+                dependencies.add(ObjectId.schema(object.id().schema()));
+            }
+            dependencies.addAll(
+                    dialect.getObjectDependencies(connection, object.id(), !includeForeignKeys));
             object.addDependencies(dependencies);
             for (ObjectId dependency : dependencies) {
                 if (!exportedIds.contains(dependency)) {
@@ -101,16 +125,16 @@ public class DefaultObjectExporter implements ObjectExporter {
     }
 
     private static boolean included(TableSelection selection, ObjectId id) {
-        if (selection.isSchemaExcluded(id.tableId().getSchema())
-                || selection.isTableExcluded(id.tableId().getSchema(), id.tableId().getTable())) {
+        if (selection.isSchemaExcluded(id.schema())
+                || selection.isTableExcluded(id.schema(), id.name())) {
             return false;
         }
         if (selection.isSchemaLevel()) {
             return true;
         }
         for (TableId table : selection.tables()) {
-            if (table.getSchema().equalsIgnoreCase(id.tableId().getSchema())
-                    && table.getTable().equalsIgnoreCase(id.tableId().getTable())) {
+            if (table.getSchema().equalsIgnoreCase(id.schema())
+                    && table.getTable().equalsIgnoreCase(id.name())) {
                 return true;
             }
         }

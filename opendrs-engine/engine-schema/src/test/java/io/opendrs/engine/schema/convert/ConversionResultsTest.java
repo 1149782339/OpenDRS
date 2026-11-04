@@ -3,10 +3,8 @@ package io.opendrs.engine.schema.convert;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import io.opendrs.common.metadata.TableId;
 import io.opendrs.engine.schema.meta.DatabaseObject;
 import io.opendrs.engine.schema.meta.ObjectId;
-import io.opendrs.engine.schema.meta.ObjectType;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -38,7 +36,7 @@ class ConversionResultsTest {
 
     private static DatabaseObject object(String name) {
         return new DatabaseObject(
-                new ObjectId(TableId.of("shop", name), ObjectType.TABLE), "CREATE TABLE shop.t (id int)");
+                ObjectId.table("shop", name), "CREATE TABLE shop.t (id int)");
     }
 
     private static ConversionResult succeeded() {

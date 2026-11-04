@@ -74,6 +74,9 @@ public class MigrationEngine {
         SQLConverter converter =
                 SQLConverters.create(config.getSourceDatabase(), config.getTargetDatabase(), config);
         List<DatabaseObject> objects = new ArrayList<>();
+        if (exportResults.getSchemas() != null) {
+            objects.addAll(exportResults.getSchemas());
+        }
         if (exportResults.getTables() != null) {
             objects.addAll(exportResults.getTables());
         }

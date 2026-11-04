@@ -1,6 +1,5 @@
 package io.opendrs.engine.schema.dialect;
 
-import io.opendrs.common.metadata.TableId;
 import io.opendrs.engine.schema.meta.ObjectId;
 import io.opendrs.engine.schema.meta.ObjectType;
 import java.sql.Connection;
@@ -35,6 +34,9 @@ public class PostgreSqlSchemaDialect implements SchemaDialect {
     @Override
     public List<ObjectId> getObjects(Connection connection, ObjectType type, String schema)
             throws SQLException {
+        if (type == ObjectType.SCHEMA) {
+            return List.of(ObjectId.schema(schema));
+        }
         String sql = type == ObjectType.VIEW
                 ? "SELECT viewname FROM pg_catalog.pg_views WHERE schemaname = ?"
                         + " UNION SELECT matviewname FROM pg_catalog.pg_matviews WHERE schemaname = ?"
@@ -48,7 +50,7 @@ public class PostgreSqlSchemaDialect implements SchemaDialect {
             }
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
-                    objects.add(new ObjectId(TableId.of(schema, rs.getString(1)), type));
+                    objects.add(relation(type, schema, rs.getString(1)));
                 }
             }
         }
@@ -58,6 +60,9 @@ public class PostgreSqlSchemaDialect implements SchemaDialect {
     @Override
     public List<ObjectId> getObjectDependencies(
             Connection connection, ObjectId id, boolean ignoreForeignKey) throws SQLException {
+        if (id.type() == ObjectType.SCHEMA) {
+            return List.of();
+        }
         if (id.type() == ObjectType.VIEW) {
             return viewReferences(connection, id);
         }
@@ -69,6 +74,9 @@ public class PostgreSqlSchemaDialect implements SchemaDialect {
 
     @Override
     public String getObjectDdl(Connection connection, ObjectId id) throws SQLException {
+        if (id.type() == ObjectType.SCHEMA) {
+            return "CREATE SCHEMA " + quoteIdent(id.schema());
+        }
         return id.type() == ObjectType.VIEW ? viewDdl(connection, id) : tableDdl(connection, id);
     }
 
@@ -83,11 +91,11 @@ public class PostgreSqlSchemaDialect implements SchemaDialect {
                         + " AND ccu.constraint_name = tc.constraint_name"
                         + " WHERE tc.constraint_type = 'FOREIGN KEY'"
                         + " AND tc.table_schema = ? AND tc.table_name = ?")) {
-            ps.setString(1, id.tableId().getSchema());
-            ps.setString(2, id.tableId().getTable());
+            ps.setString(1, id.schema());
+            ps.setString(2, id.name());
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
-                    references.add(new ObjectId(TableId.of(rs.getString(1), rs.getString(2)), ObjectType.TABLE));
+                    references.add(ObjectId.table(rs.getString(1), rs.getString(2)));
                 }
             }
         }
@@ -110,8 +118,8 @@ public class PostgreSqlSchemaDialect implements SchemaDialect {
                         + " AND d.refclassid = 'pg_class'::regclass"
                         + " AND d.deptype = 'n'"
                         + " AND ref.relkind IN ('r', 'p', 'v', 'm')")) {
-            ps.setString(1, id.tableId().getSchema());
-            ps.setString(2, id.tableId().getTable());
+            ps.setString(1, id.schema());
+            ps.setString(2, id.name());
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
                     ObjectType type =
@@ -119,7 +127,7 @@ public class PostgreSqlSchemaDialect implements SchemaDialect {
                                 case "v", "m" -> ObjectType.VIEW;
                                 default -> ObjectType.TABLE;
                             };
-                    references.add(new ObjectId(TableId.of(rs.getString(1), rs.getString(2)), type));
+                    references.add(relation(type, rs.getString(1), rs.getString(2)));
                 }
             }
         }
@@ -135,8 +143,8 @@ public class PostgreSqlSchemaDialect implements SchemaDialect {
                         + " FROM pg_catalog.pg_class rel"
                         + " JOIN pg_catalog.pg_namespace ns ON rel.relnamespace = ns.oid"
                         + " WHERE ns.nspname = ? AND rel.relname = ? AND rel.relkind IN ('v', 'm')")) {
-            ps.setString(1, id.tableId().getSchema());
-            ps.setString(2, id.tableId().getTable());
+            ps.setString(1, id.schema());
+            ps.setString(2, id.name());
             try (ResultSet rs = ps.executeQuery()) {
                 if (rs.next()) {
                     keyword = "m".equals(rs.getString(1)) ? "MATERIALIZED VIEW" : "VIEW";
@@ -172,8 +180,8 @@ public class PostgreSqlSchemaDialect implements SchemaDialect {
                         + " FROM information_schema.columns"
                         + " WHERE table_schema = ? AND table_name = ?"
                         + " ORDER BY ordinal_position")) {
-            ps.setString(1, id.tableId().getSchema());
-            ps.setString(2, id.tableId().getTable());
+            ps.setString(1, id.schema());
+            ps.setString(2, id.name());
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
                     elements.add(columnDdl(rs));
@@ -252,8 +260,8 @@ public class PostgreSqlSchemaDialect implements SchemaDialect {
                         + " WHERE ns.nspname = ? AND rel.relname = ?"
                         + " AND con.contype IN ('p', 'f', 'u', 'c')"
                         + " ORDER BY con.conname")) {
-            ps.setString(1, id.tableId().getSchema());
-            ps.setString(2, id.tableId().getTable());
+            ps.setString(1, id.schema());
+            ps.setString(2, id.name());
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
                     elements.add("CONSTRAINT "
@@ -278,8 +286,8 @@ public class PostgreSqlSchemaDialect implements SchemaDialect {
                         + " AND rel.relname = pg_indexes.tablename"
                         + " AND con.conname = pg_indexes.indexname)"
                         + " ORDER BY indexname")) {
-            ps.setString(1, id.tableId().getSchema());
-            ps.setString(2, id.tableId().getTable());
+            ps.setString(1, id.schema());
+            ps.setString(2, id.name());
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
                     ddl.append('\n').append(rs.getString(1)).append(';');
@@ -288,8 +296,12 @@ public class PostgreSqlSchemaDialect implements SchemaDialect {
         }
     }
 
+    private static ObjectId relation(ObjectType type, String schema, String name) {
+        return type == ObjectType.VIEW ? ObjectId.view(schema, name) : ObjectId.table(schema, name);
+    }
+
     private static String quote(ObjectId id) {
-        return quoteIdent(id.tableId().getSchema()) + "." + quoteIdent(id.tableId().getTable());
+        return quoteIdent(id.schema()) + "." + quoteIdent(id.name());
     }
 
     private static String quoteIdent(String ident) {

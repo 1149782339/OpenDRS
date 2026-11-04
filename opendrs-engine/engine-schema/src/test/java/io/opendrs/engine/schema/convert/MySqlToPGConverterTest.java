@@ -96,6 +96,52 @@ class MySqlToPGConverterTest {
         assertThat(joined).contains("\"inventory\"");
         assertThat(joined.toLowerCase()).doesNotContain("engine=innodb default");
         assertThat(joined).contains("/*");
+        assertThat(joined).doesNotContain("IF NOT EXISTS");
+    }
+
+    @Test
+    void convertsCreateDatabaseIntoCreateSchema() {
+        ConversionResult result = identityConverter().convert(
+                "CREATE DATABASE `shop` /*!40100 DEFAULT CHARACTER SET utf8mb4 */");
+
+        assertThat(result.getStatus()).isEqualTo(ConversionStatus.SUCCEEDED);
+        String sql = String.join("\n", result.getStatements());
+        assertThat(sql).contains("CREATE SCHEMA \"shop\"");
+        assertThat(sql).doesNotContain("`");
+        assertThat(sql).doesNotContain("IF NOT EXISTS");
+        assertThat(sql).contains("/*");
+    }
+
+    @Test
+    void writesTheMappedSchemaName() {
+        MySqlToPGConverter converter = new MySqlToPGConverter(
+                ConversionConfiguration.builder(tableId -> tableId, column -> column)
+                        .schemaNamingStrategy(schema -> "pg_" + schema)
+                        .build());
+
+        String sql = String.join("\n", converter.convert("CREATE DATABASE `shop`").getStatements());
+
+        assertThat(sql).contains("CREATE SCHEMA \"pg_shop\"");
+    }
+
+    @Test
+    void addsIfNotExistsToSchemaTableAndIndex() {
+        MySqlToPGConverter converter = new MySqlToPGConverter(
+                ConversionConfiguration.builder(tableId -> tableId, column -> column)
+                        .ifNotExists(true)
+                        .build());
+
+        String schema = String.join("\n", converter.convert("CREATE DATABASE `shop`").getStatements());
+        assertThat(schema).contains("CREATE SCHEMA IF NOT EXISTS \"shop\"");
+
+        String table = String.join("\n", converter.convert(
+                "CREATE TABLE `shop`.`t` ("
+                        + "`id` INT NOT NULL, "
+                        + "PRIMARY KEY (`id`), "
+                        + "KEY `idx_id` (`id`)"
+                        + ")").getStatements());
+        assertThat(table).contains("CREATE TABLE IF NOT EXISTS");
+        assertThat(table).contains("CREATE INDEX IF NOT EXISTS");
     }
 
     private static final String ORDERS_DDL =

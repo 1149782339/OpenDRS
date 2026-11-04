@@ -11,13 +11,11 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import io.opendrs.common.metadata.TableId;
 import io.opendrs.engine.schema.convert.ConversionResult;
 import io.opendrs.engine.schema.convert.ConversionResults;
 import io.opendrs.engine.schema.convert.ConversionStatus;
 import io.opendrs.engine.schema.meta.DatabaseObject;
 import io.opendrs.engine.schema.meta.ObjectId;
-import io.opendrs.engine.schema.meta.ObjectType;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.sql.Statement;
@@ -181,6 +179,21 @@ class DefaultObjectImporterTest {
     }
 
     @Test
+    void createsASchemaWithoutPointingTheConnectionAtIt() throws SQLException {
+        ConversionResults batch = new ConversionResults();
+        add(batch, ObjectId.schema("shop"), converted("CREATE SCHEMA \"shop\""));
+        add(batch, table("shop", "a"), converted("CREATE TABLE a (id int)"));
+
+        new DefaultObjectImporter(connection).importObjects(
+                batch, ImportConfiguration.builder().schemaNamingStrategy(schema -> schema).build());
+
+        InOrder order = inOrder(connection, statement);
+        order.verify(statement).execute("CREATE SCHEMA \"shop\"");
+        order.verify(connection).setSchema("shop");
+        order.verify(statement).execute("CREATE TABLE a (id int)");
+    }
+
+    @Test
     void leavesTheConnectionSchemaAloneWithoutAStrategy() throws SQLException {
         ConversionResults batch = new ConversionResults();
         add(batch, table("shop", "a"), converted("CREATE TABLE a (id int)"));
@@ -206,7 +219,7 @@ class DefaultObjectImporterTest {
     }
 
     private static ObjectId table(String schema, String table) {
-        return new ObjectId(TableId.of(schema, table), ObjectType.TABLE);
+        return ObjectId.table(schema, table);
     }
 
     private static ConversionResult converted(String... statements) {

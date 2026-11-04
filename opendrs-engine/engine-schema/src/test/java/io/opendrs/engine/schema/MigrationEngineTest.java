@@ -11,7 +11,6 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import io.opendrs.common.metadata.DatabaseType;
-import io.opendrs.common.metadata.TableId;
 import io.opendrs.common.selection.TableSelection;
 import io.opendrs.engine.schema.convert.ConversionResult;
 import io.opendrs.engine.schema.convert.ConversionResults;
@@ -22,7 +21,6 @@ import io.opendrs.engine.schema.imports.ImportConfiguration;
 import io.opendrs.engine.schema.imports.ImportResults;
 import io.opendrs.engine.schema.meta.DatabaseObject;
 import io.opendrs.engine.schema.meta.ObjectId;
-import io.opendrs.engine.schema.meta.ObjectType;
 import io.opendrs.jdbc.JdbcConnection;
 import io.opendrs.jdbc.JdbcConnectionConfig;
 import io.opendrs.jdbc.JdbcConnectionFactory;
@@ -79,8 +77,11 @@ class MigrationEngineTest {
         ExportResults results = new MigrationEngine(factory)
                 .exportObjects(config(DatabaseType.MYSQL), selectionConfiguration());
 
-        assertThat(results.getTables()).extracting(object -> object.id().tableId().getTable())
+        assertThat(results.getSchemas()).extracting(object -> object.id().schema())
+                .containsExactly("shop");
+        assertThat(results.getTables()).extracting(object -> object.id().name())
                 .containsExactly("customers");
+        assertThat(results.getTables().get(0).dependencies()).contains(ObjectId.schema("shop"));
         assertThat(results.getDatabaseType()).isEqualTo(DatabaseType.MYSQL);
         verify(jdbcConnection).close();
     }
@@ -92,7 +93,7 @@ class MigrationEngineTest {
         ConversionResults batch = new ConversionResults();
         batch.put(
                 new DatabaseObject(
-                        new ObjectId(TableId.of("shop", "customers"), ObjectType.TABLE),
+                        ObjectId.table("shop", "customers"),
                         "CREATE TABLE `shop`.`customers` (`id` int)"),
                 ConversionResult.builder()
                         .status(ConversionStatus.SUCCEEDED)

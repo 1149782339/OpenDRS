@@ -3,11 +3,9 @@ package io.opendrs.engine.schema.imports;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import io.opendrs.common.metadata.TableId;
 import io.opendrs.engine.schema.convert.ConversionResult;
 import io.opendrs.engine.schema.convert.ConversionStatus;
 import io.opendrs.engine.schema.meta.ObjectId;
-import io.opendrs.engine.schema.meta.ObjectType;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -39,7 +37,7 @@ class ImportResultsTest {
     }
 
     private static ObjectId table(String name) {
-        return new ObjectId(TableId.of("shop", name), ObjectType.TABLE);
+        return ObjectId.table("shop", name);
     }
 
     private static ConversionResult succeeded() {

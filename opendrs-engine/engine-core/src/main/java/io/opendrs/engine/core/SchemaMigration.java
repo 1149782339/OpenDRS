@@ -26,12 +26,15 @@ import io.opendrs.engine.schema.imports.ImportConfiguration;
 import io.opendrs.engine.schema.imports.ImportResults;
 import io.opendrs.engine.schema.meta.DatabaseObject;
 import io.opendrs.engine.schema.meta.ObjectId;
+import io.opendrs.engine.schema.meta.ObjectType;
 import io.opendrs.jdbc.JdbcConnection;
 import io.opendrs.jdbc.JdbcConnectionConfig;
 import io.opendrs.jdbc.JdbcConnectionFactory;
 import io.opendrs.jdbc.metadata.Table;
 import io.opendrs.jdbc.metadata.TableRef;
 import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
@@ -50,10 +53,10 @@ import java.util.Objects;
  * abort the batch: the importer records every outcome and the run fails at the end with the
  * collected failures, which is the only way to see all of them in one pass.
  *
- * <p>Schema remapping happens in two places on purpose. The table naming strategy rewrites the
- * qualified names the converter sees; the schema naming strategy points the target connection at
- * the right schema, which is what makes MySQL's unqualified {@code SHOW CREATE TABLE} output land
- * in the mapped target schema.
+ * <p>Schema remapping happens in two places on purpose. {@code CREATE SCHEMA} is rewritten to the
+ * mapped name, because that statement carries its own name. The schema naming strategy also points
+ * the target connection at that schema, which is what makes MySQL's unqualified {@code SHOW CREATE
+ * TABLE} output land in it. {@code IF NOT EXISTS} is on so a re-run can meet objects already there.
  */
 final class SchemaMigration {
 
@@ -133,6 +136,7 @@ final class SchemaMigration {
             ExportConfiguration structure) throws SchemaMigrationException {
         TableNamingStrategy tableNaming = new MappedTableNamingStrategy(mappingValidator, selection);
         ColumnNamingStrategy columnNaming = new DefaultColumnNamingStrategy();
+        SchemaNamingStrategy schemas = schemaNaming(selection);
 
         // One description of the run drives both stages: export decides what to read, convert decides
         // what to emit. Keeping them apart is how a table-only pass used to leak indexes into the DDL.
@@ -160,15 +164,23 @@ final class SchemaMigration {
                 exported,
                 ConversionConfiguration.builder(tableNaming, columnNaming)
                         .databases(source.getType(), target.getType())
+                        .schemaNamingStrategy(schemas)
+                        .ifNotExists(true)
                         .includePrimaryKey(structure.includePrimaryKey())
                         .includeUniqueKeys(structure.includeUniqueKeys())
                         .includeSecondaryIndexes(structure.includeSecondaryIndexes())
                         .includeForeignKeys(structure.includeForeignKeys())
                         .build());
 
-        List<ObjectId> existing = existingTargets(target, converted, tableNaming, columnNaming);
+        List<ObjectId> existing = existingTargets(target, converted, tableNaming, columnNaming, schemas);
         List<Table> skipped = new ArrayList<>();
         for (ObjectId id : existing) {
+            if (id.type() == ObjectType.SCHEMA) {
+                listener.emit(
+                        MigrationLogLevel.INFO,
+                        "target schema already exists, skipped: " + schemas.resolveSchemaName(id.schema()));
+                continue;
+            }
             Table table = targetTable(tableNaming, id);
             skipped.add(table);
             listener.emit(
@@ -194,7 +206,7 @@ final class SchemaMigration {
         List<String> failures = new ArrayList<>();
         for (Map.Entry<ObjectId, ConversionResult> entry : imported.entries()) {
             ConversionStatus status = entry.getValue().getStatus();
-            if (status == ConversionStatus.SUCCEEDED) {
+            if (status == ConversionStatus.SUCCEEDED && entry.getKey().type() != ObjectType.SCHEMA) {
                 created.add(targetTable(tableNaming, entry.getKey()));
             } else if (status == ConversionStatus.FAILED) {
                 failures.add(entry.getKey() + " — " + entry.getValue().getErrors());
@@ -235,14 +247,18 @@ final class SchemaMigration {
             JdbcConnectionConfig target,
             ConversionResults converted,
             TableNamingStrategy tableNaming,
-            ColumnNamingStrategy columnNaming) throws SchemaMigrationException {
+            ColumnNamingStrategy columnNaming,
+            SchemaNamingStrategy schemas) throws SchemaMigrationException {
         DatabaseDialect dialect = targetDialects.forTarget(target, tableNaming, columnNaming);
         List<ObjectId> existing = new ArrayList<>();
         try (JdbcConnection connection = factory.open(target)) {
             Connection raw = connection.unwrap();
             for (Map.Entry<DatabaseObject, ConversionResult> entry : converted.entries()) {
                 ObjectId id = entry.getKey().id();
-                if (dialect.tableExists(raw, tableNaming.resolveTableId(id.tableId()))) {
+                boolean present = id.type() == ObjectType.SCHEMA
+                        ? schemaExists(raw, schemas.resolveSchemaName(id.schema()))
+                        : dialect.tableExists(raw, tableNaming.resolveTableId(id.tableId()));
+                if (present) {
                     existing.add(id);
                 }
             }
@@ -251,6 +267,17 @@ final class SchemaMigration {
                     "checking which target tables already exist failed: " + ex.getMessage(), ex);
         }
         return existing;
+    }
+
+    /** {@code information_schema.schemata} names the schema on both PostgreSQL and MySQL. */
+    private static boolean schemaExists(Connection connection, String schema) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT 1 FROM information_schema.schemata WHERE schema_name = ?")) {
+            statement.setString(1, schema);
+            try (ResultSet rows = statement.executeQuery()) {
+                return rows.next();
+            }
+        }
     }
 
     private static DatabaseDialect createTargetDialect(
@@ -322,7 +349,7 @@ final class SchemaMigration {
     }
 
     private static String describe(ObjectId id, ConversionResult result) {
-        String name = id.tableId().getSchema() + "." + id.tableId().getTable();
+        String name = id.type() == ObjectType.SCHEMA ? id.schema() : id.schema() + "." + id.name();
         if (result.getStatus() == ConversionStatus.SUCCEEDED) {
             return "created " + name;
         }

@@ -7,6 +7,7 @@ import io.opendrs.engine.schema.convert.ConversionConfiguration;
 import io.opendrs.engine.schema.convert.parser.mysql.MySqlParser;
 import io.opendrs.engine.schema.convert.parser.mysql.MySqlParserBaseListener;
 import io.opendrs.common.naming.ColumnNamingStrategy;
+import io.opendrs.common.naming.SchemaNamingStrategy;
 import io.opendrs.common.naming.TableNamingStrategy;
 import io.opendrs.common.metadata.TableId;
 import io.opendrs.common.util.StringUtil;
@@ -92,6 +93,10 @@ public class MySqlToPGParserListener extends MySqlParserBaseListener {
 
     private final boolean includeComments;
 
+    private final boolean ifNotExists;
+
+    private final SchemaNamingStrategy schemaNamingStrategy;
+
     public MySqlToPGParserListener(TokenStream tokenStream, ConversionConfiguration configuration) {
         this.rewriter = new TokenStreamRewriter(tokenStream);
         this.message = new ConversionMessage();
@@ -102,6 +107,8 @@ public class MySqlToPGParserListener extends MySqlParserBaseListener {
         this.includeUniqueKeys = configuration.includeUniqueKeys();
         this.includeSecondaryIndexes = configuration.includeSecondaryIndexes();
         this.includeComments = configuration.includeComments();
+        this.ifNotExists = configuration.ifNotExists();
+        this.schemaNamingStrategy = configuration.getSchemaNamingStrategy();
     }
 
     public List<String> getStatements() {
@@ -123,7 +130,14 @@ public class MySqlToPGParserListener extends MySqlParserBaseListener {
         for (MySqlParser.CreateDatabaseOptionContext createDatabaseOptionContext : ctx.createDatabaseOption()) {
             comment(createDatabaseOptionContext.getStart(), createDatabaseOptionContext.getStop());
         }
-        rewriter.replace(ctx.DATABASE().getSymbol(), "SCHEMA");
+        Token keyword = ctx.dbFormat;
+        rewriter.replace(keyword, "SCHEMA");
+        if (ifNotExists && ctx.ifNotExists() == null) {
+            rewriter.insertAfter(keyword, " IF NOT EXISTS");
+        }
+        String sourceName = StringUtil.unquote(ctx.uid().getText(), '`');
+        String targetName = schemaNamingStrategy.resolveSchemaName(sourceName);
+        rewriter.replace(ctx.uid().getStart(), ctx.uid().getStop(), StringUtil.quote(targetName, '"'));
     }
 
     @Override
@@ -290,6 +304,9 @@ public class MySqlToPGParserListener extends MySqlParserBaseListener {
     @Override
     public void exitColumnCreateTable(MySqlParser.ColumnCreateTableContext ctx) {
         context.put(PARSE_RULE_CONTEXT, ctx);
+        if (ifNotExists && ctx.ifNotExists() == null) {
+            rewriter.insertAfter(ctx.TABLE().getSymbol(), " IF NOT EXISTS");
+        }
         TableId tableId = context.get(TABLE_ID);
         tableId = tableNamingStrategy.resolveTableId(tableId);
         rewriter.replace(ctx.tableName().getStart(), ctx.tableName().getStop(), tableId.toQuoted('"'));
@@ -550,7 +567,12 @@ public class MySqlToPGParserListener extends MySqlParserBaseListener {
         } else {
             indexName = StringUtil.quote(tableId.getTable() + "_" + columnName, '"');
         }
-        afterStatements.add(String.format(CREATE_INDEX_TEMPLATE, indexName, tableId.toQuoted('"'), columnParts));
+        afterStatements.add(indexStatement(indexName, tableId.toQuoted('"').toString(), columnParts));
+    }
+
+    private String indexStatement(String indexName, String table, String columns) {
+        String prefix = ifNotExists ? "CREATE INDEX IF NOT EXISTS " : "CREATE INDEX ";
+        return prefix + indexName + " ON " + table + "(" + columns + ")";
     }
 
     @Override

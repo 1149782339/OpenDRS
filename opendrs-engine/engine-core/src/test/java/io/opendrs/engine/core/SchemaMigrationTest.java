@@ -28,7 +28,6 @@ import io.opendrs.engine.schema.imports.ImportConfiguration;
 import io.opendrs.engine.schema.imports.ImportResults;
 import io.opendrs.engine.schema.meta.DatabaseObject;
 import io.opendrs.engine.schema.meta.ObjectId;
-import io.opendrs.engine.schema.meta.ObjectType;
 import io.opendrs.jdbc.JdbcConnection;
 import io.opendrs.jdbc.JdbcConnectionConfig;
 import io.opendrs.jdbc.JdbcConnectionFactory;
@@ -173,6 +172,7 @@ class SchemaMigrationTest {
         assertThat(converted.getValue().includeUniqueKeys()).isFalse();
         assertThat(converted.getValue().includeSecondaryIndexes()).isFalse();
         assertThat(converted.getValue().includeForeignKeys()).isFalse();
+        assertThat(converted.getValue().ifNotExists()).isTrue();
     }
 
     private void givenConverted(ObjectId... ids) throws SQLException {
@@ -213,7 +213,7 @@ class SchemaMigrationTest {
     }
 
     private static ObjectId object(String name) {
-        return new ObjectId(TableId.of("shop", name), ObjectType.TABLE);
+        return ObjectId.table("shop", name);
     }
 
     private static TableId tableId(String name) {

@@ -6,6 +6,7 @@ import io.opendrs.engine.schema.convert.ConversionResults;
 import io.opendrs.engine.schema.convert.ConversionStatus;
 import io.opendrs.engine.schema.meta.DatabaseObject;
 import io.opendrs.engine.schema.meta.ObjectId;
+import io.opendrs.engine.schema.meta.ObjectType;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.sql.Statement;
@@ -91,10 +92,12 @@ public class DefaultObjectImporter implements ObjectImporter {
      * configured and the answer differs from where the connection already is.
      */
     private void useSchemaOf(ObjectId id, SchemaNamingStrategy naming) throws SQLException {
-        if (naming == null) {
+        // CREATE SCHEMA names its target. search_path is how unqualified table DDL finds a schema,
+        // and pointing it at a schema that this statement is about to create does nothing useful.
+        if (naming == null || id.type() == ObjectType.SCHEMA) {
             return;
         }
-        String target = naming.resolveSchemaName(id.tableId().getSchema());
+        String target = naming.resolveSchemaName(id.schema());
         if (target == null || target.isBlank() || target.equals(currentSchema)) {
             return;
         }
