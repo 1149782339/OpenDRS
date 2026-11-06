@@ -97,7 +97,7 @@ public class FunctionRoutineTranslator {
         }
 
         String body = emitRoutineBody(ctx);
-        return header + " AS $$\n" + body + "\n$$ LANGUAGE plpgsql;";
+        return header + " AS $$\n" + body + "$$ LANGUAGE plpgsql;";
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -167,7 +167,7 @@ public class FunctionRoutineTranslator {
         for (MySqlParser.ProcedureSqlStatementContext stmt : ctx.procedureSqlStatement()) {
             emitProcStatement(stmt, sb, depth + 1);
         }
-        sb.append(ind).append("END;");
+        sb.append(ind).append("END;\n");
     }
 
     private void emitProcStatement(MySqlParser.ProcedureSqlStatementContext ctx, StringBuilder sb, int depth) {
