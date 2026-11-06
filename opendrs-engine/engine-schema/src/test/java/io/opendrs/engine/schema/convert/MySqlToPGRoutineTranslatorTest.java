@@ -78,7 +78,7 @@ class MySqlToPGRoutineTranslatorTest {
     }
 
     @Test
-    void reportsErrorAndCommentsOutUnsupportedHandler() {
+    void mapsContinueHandlerForSqlExceptionToExceptionWhenOthers() {
         ConversionResult result = identityConverter().convert(
                 "CREATE FUNCTION safe_div(a INT, b INT) RETURNS INT "
                         + "BEGIN "
@@ -87,14 +87,15 @@ class MySqlToPGRoutineTranslatorTest {
                         + "RETURN x; "
                         + "END");
 
-        // no approximate replacement exists for handlers: FAILED level
-        assertThat(result.getStatus()).isEqualTo(ConversionStatus.FAILED);
+        assertThat(result.getStatus()).isEqualTo(ConversionStatus.SUCCEEDED);
         String stmt = String.join("\n", result.getStatements());
-        assertThat(result.getErrors()).contains("HANDLER");
-        assertThat(stmt).contains("/* FAILED: DECLARE HANDLER");
-        // the rest of the body still translates
         assertThat(stmt).contains("x int := 0;");
+        assertThat(stmt).contains("EXCEPTION");
+        assertThat(stmt).contains("WHEN OTHERS THEN");
+        assertThat(stmt).contains("x := 1;");
         assertThat(stmt).contains("RETURN x;");
+        assertThat(stmt).doesNotContain("/* FAILED: DECLARE HANDLER");
+        assertThat(result.getWarnings()).anyMatch(m -> m.contains("CONTINUE HANDLER"));
     }
 
     @Test
@@ -172,17 +173,75 @@ class MySqlToPGRoutineTranslatorTest {
     }
 
     @Test
-    void nonNotFoundHandlersStillFail() {
+    void sqlWarningHandlerStillFails() {
         ConversionResult result = identityConverter().convert(
                 "CREATE FUNCTION f() RETURNS INT BEGIN "
                         + "DECLARE cur CURSOR FOR SELECT a FROM t; "
-                        + "DECLARE CONTINUE HANDLER FOR SQLEXCEPTION SET @x = 1; "
+                        + "DECLARE CONTINUE HANDLER FOR SQLWARNING SET x = 1; "
                         + "OPEN cur; CLOSE cur; RETURN 1; END");
 
         assertThat(result.getStatus()).isEqualTo(ConversionStatus.FAILED);
         String stmt = String.join("\n", result.getStatements());
         assertThat(stmt).contains("cur CURSOR FOR SELECT a FROM t;");
         assertThat(stmt).contains("/* FAILED: DECLARE HANDLER");
+    }
+
+    @Test
+    void mapsExitHandlerForSqlstateToExceptionWhen() {
+        ConversionResult result = identityConverter().convert(
+                "CREATE FUNCTION g(a INT) RETURNS INT BEGIN "
+                        + "DECLARE x INT DEFAULT 0; "
+                        + "DECLARE EXIT HANDLER FOR SQLSTATE '23000' SET x = -1; "
+                        + "SET x = a; "
+                        + "RETURN x; END");
+
+        assertThat(result.getStatus()).isEqualTo(ConversionStatus.SUCCEEDED);
+        String stmt = String.join("\n", result.getStatements());
+        assertThat(stmt).contains("EXCEPTION");
+        assertThat(stmt).contains("WHEN SQLSTATE '23000' THEN");
+        assertThat(stmt).contains("x := -1;");
+        assertThat(stmt).contains("x := a;");
+        assertThat(result.getErrors()).isEmpty();
+    }
+
+    @Test
+    void mapsHandlerForSqlExceptionAndSqlstateToOthers() {
+        ConversionResult result = identityConverter().convert(
+                "CREATE PROCEDURE p() BEGIN "
+                        + "DECLARE done INT DEFAULT 0; "
+                        + "DECLARE CONTINUE HANDLER FOR SQLEXCEPTION, SQLSTATE '42000' "
+                        + "BEGIN SET done = 1; END; "
+                        + "INSERT INTO t VALUES (1); "
+                        + "END");
+
+        assertThat(result.getStatus()).isEqualTo(ConversionStatus.SUCCEEDED);
+        String stmt = String.join("\n", result.getStatements());
+        assertThat(stmt).contains("WHEN OTHERS THEN");
+        assertThat(stmt).contains("done := 1;");
+        assertThat(stmt).contains("INSERT INTO t VALUES (1);");
+    }
+
+    @Test
+    void keepsNotFoundPathAlongsideSqlExceptionHandler() {
+        ConversionResult result = identityConverter().convert(
+                "CREATE FUNCTION sum_salaries() RETURNS INT BEGIN "
+                        + "DECLARE total INT DEFAULT 0; "
+                        + "DECLARE done INT DEFAULT 0; "
+                        + "DECLARE err INT DEFAULT 0; "
+                        + "DECLARE cur CURSOR FOR SELECT salary FROM employees; "
+                        + "DECLARE CONTINUE HANDLER FOR NOT FOUND SET done = 1; "
+                        + "DECLARE CONTINUE HANDLER FOR SQLEXCEPTION SET err = 1; "
+                        + "OPEN cur; "
+                        + "FETCH cur INTO total; "
+                        + "CLOSE cur; "
+                        + "RETURN total; END");
+
+        assertThat(result.getStatus()).isEqualTo(ConversionStatus.SUCCEEDED);
+        String stmt = String.join("\n", result.getStatements());
+        assertThat(stmt).contains("IF NOT FOUND THEN done := 1; END IF;");
+        assertThat(stmt).contains("WHEN OTHERS THEN");
+        assertThat(stmt).contains("err := 1;");
+        assertThat(stmt).doesNotContain("/* FAILED: DECLARE HANDLER");
     }
 
     @Test

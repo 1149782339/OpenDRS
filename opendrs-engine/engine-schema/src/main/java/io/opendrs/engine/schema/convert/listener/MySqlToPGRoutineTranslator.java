@@ -35,17 +35,25 @@ import org.antlr.v4.runtime.tree.ParseTree;
  * <p>Unsupported constructs are commented out with their original text and reported by severity:
  * <ul>
  *   <li><b>FAILED</b> — completely unsupported, no approximate replacement exists (DECLARE HANDLER
- *       beyond the NOT FOUND idiom, DECLARE CONDITION, user variables, AGGREGATE). The conversion
- *       result is FAILED; the comment preserves the original for manual repair.</li>
+ *       for SQLWARNING / named conditions / MySQL error codes / UNDO, DECLARE CONDITION, user
+ *       variables, AGGREGATE). The conversion result is FAILED; the comment preserves the original
+ *       for manual repair.</li>
  *   <li><b>WARNING</b> — approximated: most cases are covered but semantics are not fully equivalent
  *       (statements passed through untranslated, expressions carried over verbatim, dropped
- *       CHARSET/COLLATE, the NOT FOUND handler idiom mapped to IF NOT FOUND THEN after FETCH).</li>
+ *       CHARSET/COLLATE, the NOT FOUND handler idiom mapped to IF NOT FOUND THEN after FETCH,
+ *       CONTINUE HANDLER → EXCEPTION WHEN without resuming the next statement).</li>
  * </ul>
  *
  * <p>Cursors: {@code DECLARE cur CURSOR FOR <select>} maps to a PL/pgSQL bound cursor variable in
  * the DECLARE section; {@code FETCH}/{@code CLOSE} pass through; {@code OPEN} is dropped (bound
  * cursors open implicitly); {@code CONTINUE HANDLER FOR NOT FOUND SET done = x} maps to
  * {@code IF NOT FOUND THEN done := x; END IF;} after every FETCH.
+ *
+ * <p>Exception handlers: {@code DECLARE EXIT|CONTINUE HANDLER FOR SQLEXCEPTION|SQLSTATE '…'}
+ * maps to a PL/pgSQL {@code EXCEPTION WHEN OTHERS|SQLSTATE '…' THEN …} clause on the enclosing
+ * block. {@code CONTINUE} is approximated (WARNING): after the handler, control leaves the
+ * {@code BEGIN} block rather than resuming the next statement. {@code UNDO}, {@code SQLWARNING},
+ * named conditions, and MySQL error codes stay FAILED.
  *
  * <p>Scope (demo): scalar functions with a {@code blockStatement} body or a single
  * {@code RETURN} expression; IF/ELSIF/ELSE, WHILE/LOOP, REPEAT, CASE, LEAVE/ITERATE,
@@ -246,6 +254,7 @@ public class MySqlToPGRoutineTranslator {
             sb.append(ind).append("<<").append(ctx.uid().get(0).getText()).append(">>\n");
         }
         List<MySqlParser.DeclareVariableContext> vars = ctx.declareVariable();
+        List<ExceptionHandlerMapping> exceptionHandlers = new ArrayList<>();
         boolean hasDeclares = !vars.isEmpty()
                 || !ctx.declareCondition().isEmpty()
                 || !ctx.declareCursor().isEmpty()
@@ -276,16 +285,40 @@ public class MySqlToPGRoutineTranslator {
                             + assignment + "; END IF;' after each FETCH — approximation: in MySQL"
                             + " it fires on any NOT FOUND condition, here only at FETCH sites",
                             Level.WARNING);
-                } else {
-                    unsupported(decl, sb, depth + 1, "DECLARE HANDLER", Level.FAILED,
-                            "exception handlers have no approximate equivalent; rewrite with EXCEPTION blocks");
-                    sb.append('\n');
+                    continue;
                 }
+                ExceptionHandlerMapping mapped = tryMapExceptionHandler(decl);
+                if (mapped != null) {
+                    exceptionHandlers.add(mapped);
+                    if (mapped.continueAction) {
+                        message.report("CONTINUE HANDLER FOR " + mapped.whenClause
+                                + " mapped to EXCEPTION WHEN " + mapped.whenClause
+                                + " — approximation: PL/pgSQL does not resume the next statement"
+                                + " after the error; control leaves the BEGIN block after the handler",
+                                Level.WARNING);
+                    } else {
+                        message.report("EXIT HANDLER FOR " + mapped.whenClause
+                                + " mapped to EXCEPTION WHEN " + mapped.whenClause,
+                                Level.INFO);
+                    }
+                    continue;
+                }
+                unsupported(decl, sb, depth + 1, "DECLARE HANDLER", Level.FAILED,
+                        "SQLWARNING/named-condition/MySQL-error-code/UNDO handlers have no"
+                                + " approximate equivalent; rewrite with EXCEPTION blocks");
+                sb.append('\n');
             }
         }
         sb.append(ind).append("BEGIN\n");
         for (MySqlParser.ProcedureSqlStatementContext stmt : ctx.procedureSqlStatement()) {
             emitProcStatement(stmt, sb, depth + 1);
+        }
+        if (!exceptionHandlers.isEmpty()) {
+            sb.append(ind).append("EXCEPTION\n");
+            for (ExceptionHandlerMapping handler : exceptionHandlers) {
+                sb.append(ind).append("    WHEN ").append(handler.whenClause).append(" THEN\n");
+                emitHandlerBody(handler.body, sb, depth + 2);
+            }
         }
         sb.append(ind).append("END;\n");
     }
@@ -295,55 +328,7 @@ public class MySqlToPGRoutineTranslator {
             emitCompound(ctx.compoundStatement(), sb, depth);
             return;
         }
-        MySqlParser.SqlStatementContext sql = ctx.sqlStatement();
-        MySqlParser.SetStatementContext set =
-                sql.administrationStatement() != null ? sql.administrationStatement().setStatement() : null;
-        if (set instanceof MySqlParser.SetVariableContext
-                || set instanceof MySqlParser.SetNewValueInsideTriggerContext) {
-            emitSetAssignments(set, sb, depth);
-            return;
-        }
-        MySqlParser.UtilityStatementContext util = sql.utilityStatement();
-        if (util != null && util.signalStatement() != null) {
-            emitSignal(util.signalStatement(), sb, depth);
-            return;
-        }
-        if (util != null && util.resignalStatement() != null) {
-            emitResignal(util.resignalStatement(), sb, depth);
-            return;
-        }
-        MySqlParser.DmlStatementContext dml = sql.dmlStatement();
-        if (dml != null) {
-            if (dml.selectStatement() != null) {
-                MySqlParser.SelectStatementContext select = dml.selectStatement();
-                if (tryEmitSelectInto(select, sb, depth)) {
-                    return;
-                }
-                emitBareSelect(select, sb, depth);
-                return;
-            }
-            if (dml.insertStatement() != null) {
-                emitDmlWithExprRewrite(dml.insertStatement(), sb, depth, "INSERT");
-                return;
-            }
-            if (dml.updateStatement() != null) {
-                emitDmlWithExprRewrite(dml.updateStatement(), sb, depth, "UPDATE");
-                return;
-            }
-            if (dml.deleteStatement() != null) {
-                emitDmlWithExprRewrite(dml.deleteStatement(), sb, depth, "DELETE");
-                return;
-            }
-            if (dml.callStatement() != null) {
-                emitCall(dml.callStatement(), sb, depth);
-                return;
-            }
-            if (dml.doStatement() != null) {
-                emitDo(dml.doStatement(), sb, depth);
-                return;
-            }
-        }
-        passthrough(sql, sb, depth, "statement");
+        emitSqlStatement(ctx.sqlStatement(), sb, depth);
     }
 
     /** {@code SET a = x, b := y} → one PL/pgSQL assignment per pair. */
@@ -433,6 +418,107 @@ public class MySqlToPGRoutineTranslator {
             }
         }
         return null;
+    }
+
+    /**
+     * Maps {@code DECLARE EXIT|CONTINUE HANDLER FOR SQLEXCEPTION|SQLSTATE '…' …} to a PL/pgSQL
+     * {@code EXCEPTION WHEN …} clause. Returns {@code null} when the handler is not one of these
+     * common idioms (SQLWARNING, named condition, MySQL error code, UNDO, or mixed with NOT FOUND).
+     */
+    private ExceptionHandlerMapping tryMapExceptionHandler(MySqlParser.DeclareHandlerContext handler) {
+        if (handler.handlerAction == null || handler.handlerAction.getType() == MySqlParser.UNDO) {
+            return null;
+        }
+        boolean continueAction = handler.handlerAction.getType() == MySqlParser.CONTINUE;
+        if (!continueAction && handler.handlerAction.getType() != MySqlParser.EXIT) {
+            return null;
+        }
+        if (handler.routineBody() == null || handler.handlerConditionValue().isEmpty()) {
+            return null;
+        }
+        List<String> whenParts = new ArrayList<>();
+        boolean hasOthers = false;
+        for (MySqlParser.HandlerConditionValueContext cond : handler.handlerConditionValue()) {
+            if (cond instanceof MySqlParser.HandlerConditionExceptionContext) {
+                hasOthers = true;
+            } else if (cond instanceof MySqlParser.HandlerConditionStateContext state) {
+                whenParts.add("SQLSTATE " + state.STRING_LITERAL().getText());
+            } else {
+                // NOT FOUND / SQLWARNING / named condition / MySQL error code — not this path
+                return null;
+            }
+        }
+        String whenClause = hasOthers ? "OTHERS" : String.join(" OR ", whenParts);
+        if (whenClause.isEmpty()) {
+            return null;
+        }
+        return new ExceptionHandlerMapping(whenClause, handler.routineBody(), continueAction);
+    }
+
+    /** Emits the handler action body under {@code EXCEPTION WHEN … THEN}. */
+    private void emitHandlerBody(MySqlParser.RoutineBodyContext body, StringBuilder sb, int depth) {
+        if (body.blockStatement() != null) {
+            emitBlock(body.blockStatement(), sb, depth);
+            return;
+        }
+        if (body.sqlStatement() != null) {
+            emitSqlStatement(body.sqlStatement(), sb, depth);
+        }
+    }
+
+    /**
+     * Shared SQL-statement emitter used by procedure statements and exception-handler bodies.
+     * Mirrors the non-compound branch of {@link #emitProcStatement}.
+     */
+    private void emitSqlStatement(MySqlParser.SqlStatementContext sql, StringBuilder sb, int depth) {
+        MySqlParser.SetStatementContext set =
+                sql.administrationStatement() != null ? sql.administrationStatement().setStatement() : null;
+        if (set instanceof MySqlParser.SetVariableContext
+                || set instanceof MySqlParser.SetNewValueInsideTriggerContext) {
+            emitSetAssignments(set, sb, depth);
+            return;
+        }
+        MySqlParser.UtilityStatementContext util = sql.utilityStatement();
+        if (util != null && util.signalStatement() != null) {
+            emitSignal(util.signalStatement(), sb, depth);
+            return;
+        }
+        if (util != null && util.resignalStatement() != null) {
+            emitResignal(util.resignalStatement(), sb, depth);
+            return;
+        }
+        MySqlParser.DmlStatementContext dml = sql.dmlStatement();
+        if (dml != null) {
+            if (dml.selectStatement() != null) {
+                MySqlParser.SelectStatementContext select = dml.selectStatement();
+                if (tryEmitSelectInto(select, sb, depth)) {
+                    return;
+                }
+                emitBareSelect(select, sb, depth);
+                return;
+            }
+            if (dml.insertStatement() != null) {
+                emitDmlWithExprRewrite(dml.insertStatement(), sb, depth, "INSERT");
+                return;
+            }
+            if (dml.updateStatement() != null) {
+                emitDmlWithExprRewrite(dml.updateStatement(), sb, depth, "UPDATE");
+                return;
+            }
+            if (dml.deleteStatement() != null) {
+                emitDmlWithExprRewrite(dml.deleteStatement(), sb, depth, "DELETE");
+                return;
+            }
+            if (dml.callStatement() != null) {
+                emitCall(dml.callStatement(), sb, depth);
+                return;
+            }
+            if (dml.doStatement() != null) {
+                emitDo(dml.doStatement(), sb, depth);
+                return;
+            }
+        }
+        passthrough(sql, sb, depth, "statement");
     }
 
     /** {@code OPEN} is dropped (bound cursors open implicitly); {@code FETCH}/{@code CLOSE} pass through. */
@@ -1176,4 +1262,19 @@ public class MySqlToPGRoutineTranslator {
         }
         return sb.toString();
     }
+
+    /** One MySQL EXIT/CONTINUE HANDLER mapped onto a PL/pgSQL EXCEPTION WHEN clause. */
+    private static final class ExceptionHandlerMapping {
+        final String whenClause;
+        final MySqlParser.RoutineBodyContext body;
+        final boolean continueAction;
+
+        ExceptionHandlerMapping(String whenClause, MySqlParser.RoutineBodyContext body,
+                                boolean continueAction) {
+            this.whenClause = whenClause;
+            this.body = body;
+            this.continueAction = continueAction;
+        }
+    }
 }
+
