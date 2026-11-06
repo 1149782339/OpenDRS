@@ -13,6 +13,8 @@ import org.antlr.v4.runtime.Lexer;
 import org.antlr.v4.runtime.tree.ParseTree;
 import org.antlr.v4.runtime.tree.ParseTreeWalker;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.CancellationException;
 
 /**
@@ -45,12 +47,21 @@ public class MySqlToPGConverter extends CommonSQLConverter {
             error = e.getMessage();
         }
         ConversionMessage message = parserListener.getMessage();
+        // ERROR-level messages mark constructs that cannot be approximately replaced; the
+        // conversion is FAILED even though the remaining statements were still translated.
+        List<String> errors = new ArrayList<>(message.getErrorMessages());
+        if (status == ConversionStatus.FAILED && !error.isBlank()) {
+            errors.add(error);
+        }
+        if (!errors.isEmpty()) {
+            status = ConversionStatus.FAILED;
+        }
         return ConversionResult.builder()
             .statements(parserListener.getStatements())
             .status(status)
             .infos(message.getInfoMessages())
             .warnings(message.getWarningMessages())
-            .error(error)
+            .error(String.join("\n", errors))
             .build();
     }
 

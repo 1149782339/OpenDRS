@@ -27,6 +27,16 @@ import org.antlr.v4.runtime.tree.ParseTree;
  * says</i> is a token edit; anything that moves, wraps, or reorders subtrees is regenerated from
  * the subtree.
  *
+ * <p>Unsupported constructs are commented out with their original text and reported by severity:
+ * <ul>
+ *   <li><b>ERROR</b> — completely unsupported, no approximate replacement exists (DECLARE HANDLER,
+ *       cursors, user variables, AGGREGATE). The conversion result is FAILED; the comment preserves
+ *       the original for manual repair.</li>
+ *   <li><b>WARNING</b> — approximated: most cases are covered but semantics are not fully equivalent
+ *       (statements passed through untranslated, expressions carried over verbatim, dropped
+ *       CHARSET/COLLATE).</li>
+ * </ul>
+ *
  * <p>Scope (demo): scalar functions with a {@code blockStatement} body or a single
  * {@code RETURN} expression; IF/ELSIF/ELSE, WHILE/LOOP, REPEAT, CASE, LEAVE/ITERATE,
  * SET assignments, DECLARE variables. Handlers/cursors/conditions are reported and replaced
@@ -55,7 +65,10 @@ public class FunctionRoutineTranslator {
             message.report("DEFINER clause dropped: PostgreSQL has no per-function definer", Level.INFO);
         }
         if (ctx.AGGREGATE() != null) {
-            message.report("AGGREGATE functions are not supported by this translator", Level.WARNING);
+            message.report("AGGREGATE FUNCTION has no approximate PL/pgSQL equivalent"
+                    + " and cannot be translated: " + abbreviate(tokens.getText(ctx)), Level.ERROR);
+            return "/* ERROR: AGGREGATE FUNCTION not supported\n"
+                    + "   original: " + abbreviate(tokens.getText(ctx), 500) + " */";
         }
 
         StringBuilder header = new StringBuilder("CREATE FUNCTION ");
@@ -97,6 +110,9 @@ public class FunctionRoutineTranslator {
         }
         MySqlParser.RoutineBodyContext body = ctx.routineBody();
         if (body != null && body.blockStatement() != null) {
+            message.report("function body statements are re-emitted, but expressions are carried over"
+                    + " verbatim: verify function/operator semantics (e.g. ||, integer division, date"
+                    + " arithmetic) differ between MySQL and PostgreSQL", Level.WARNING);
             StringBuilder sb = new StringBuilder();
             emitBlock(body.blockStatement(), sb, 0);
             return sb.toString();
@@ -132,15 +148,18 @@ public class FunctionRoutineTranslator {
                 }
             }
             for (MySqlParser.DeclareConditionContext decl : ctx.declareCondition()) {
-                unsupported(decl, sb, depth + 1, "DECLARE CONDITION");
+                unsupported(decl, sb, depth + 1, "DECLARE CONDITION", Level.ERROR,
+                        "no PL/pgSQL equivalent; named conditions cannot be approximated");
                 sb.append('\n');
             }
             for (MySqlParser.DeclareCursorContext decl : ctx.declareCursor()) {
-                unsupported(decl, sb, depth + 1, "DECLARE CURSOR");
+                unsupported(decl, sb, depth + 1, "DECLARE CURSOR", Level.ERROR,
+                        "cursor translation is not implemented in this demo");
                 sb.append('\n');
             }
             for (MySqlParser.DeclareHandlerContext decl : ctx.declareHandler()) {
-                unsupported(decl, sb, depth + 1, "DECLARE HANDLER");
+                unsupported(decl, sb, depth + 1, "DECLARE HANDLER", Level.ERROR,
+                        "exception handlers have no approximate equivalent; rewrite with EXCEPTION blocks");
                 sb.append('\n');
             }
         }
@@ -182,7 +201,9 @@ public class FunctionRoutineTranslator {
             }
             String name = tokens.getText((ParserRuleContext) child);
             if (name.startsWith("@")) {
-                message.report("user variable '" + name + "' has no PL/pgSQL equivalent; passed through", Level.WARNING);
+                unsupported((ParserRuleContext) child, sb, depth, "user variable " + name, Level.ERROR,
+                        "PL/pgSQL has no session user variables; assignment dropped");
+                sb.append('\n');
                 continue;
             }
             String value = null;
@@ -267,7 +288,8 @@ public class FunctionRoutineTranslator {
         } else if (c.iterateStatement() != null) {
             sb.append(ind).append("CONTINUE ").append(c.iterateStatement().uid().getText()).append(";\n");
         } else if (c.cursorStatement() != null) {
-            unsupported(c.cursorStatement(), sb, depth, "cursor statement");
+            unsupported(c.cursorStatement(), sb, depth, "cursor statement", Level.ERROR,
+                    "cursor translation is not implemented in this demo");
             sb.append('\n');
         }
     }
@@ -310,7 +332,8 @@ public class FunctionRoutineTranslator {
                 sb.append(tokens.getText(s.lengthOneDimension()));
             }
             if (s.charSet() != null || s.collationName() != null) {
-                message.report("CHARSET/COLLATE clause dropped from function signature", Level.INFO);
+                message.report("CHARSET/COLLATE clause dropped from function signature;"
+                        + " comparison semantics may differ from MySQL", Level.WARNING);
             }
             return sb.toString();
         }
@@ -331,17 +354,30 @@ public class FunctionRoutineTranslator {
     // ---------------------------------------------------------------------------------------------
 
     private void passthrough(ParserRuleContext ctx, StringBuilder sb, int depth, String what) {
-        message.report(what + " passed through untranslated: " + abbreviate(tokens.getText(ctx)), Level.WARNING);
+        message.report(what + " passed through untranslated (approximation, verify semantics): "
+                + abbreviate(tokens.getText(ctx)), Level.WARNING);
         sb.append("    ".repeat(depth)).append(tokens.getText(ctx)).append(";\n");
     }
 
-    private void unsupported(ParserRuleContext ctx, StringBuilder sb, int depth, String what) {
-        message.report(what + " is not supported by this translator: " + abbreviate(tokens.getText(ctx)), Level.WARNING);
-        sb.append("    ".repeat(depth)).append("/* unsupported: ").append(what).append(" */");
+    /**
+     * Emits the unsupported fragment as a C-style comment preserving the original text,
+     * and reports it. ERROR marks conversions that cannot be approximately replaced; WARNING marks
+     * approximations whose semantics are not fully equivalent.
+     */
+    private void unsupported(ParserRuleContext ctx, StringBuilder sb, int depth, String what,
+                             Level severity, String explanation) {
+        message.report(what + " is not supported (" + severity + "): " + explanation
+                + " — original: " + abbreviate(tokens.getText(ctx)), severity);
+        sb.append("    ".repeat(depth)).append("/* ").append(severity).append(": ").append(what)
+                .append(" — original: ").append(abbreviate(tokens.getText(ctx), 120)).append(" */");
     }
 
     private String abbreviate(String text) {
-        return text.length() <= 60 ? text : text.substring(0, 57) + "...";
+        return abbreviate(text, 60);
+    }
+
+    private String abbreviate(String text, int max) {
+        return text.length() <= max ? text : text.substring(0, max - 3) + "...";
     }
 
     private String quotedUid(MySqlParser.UidContext uid) {

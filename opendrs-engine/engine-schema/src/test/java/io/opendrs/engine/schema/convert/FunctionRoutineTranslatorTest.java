@@ -78,7 +78,7 @@ class FunctionRoutineTranslatorTest {
     }
 
     @Test
-    void reportsAndPlaceholderUnsupportedHandler() {
+    void reportsErrorAndCommentsOutUnsupportedHandler() {
         ConversionResult result = identityConverter().convert(
                 "CREATE FUNCTION safe_div(a INT, b INT) RETURNS INT "
                         + "BEGIN "
@@ -87,13 +87,37 @@ class FunctionRoutineTranslatorTest {
                         + "RETURN x; "
                         + "END");
 
-        assertThat(result.getStatus()).isEqualTo(ConversionStatus.SUCCEEDED);
+        // no approximate replacement exists for handlers: ERROR, conversion FAILED
+        assertThat(result.getStatus()).isEqualTo(ConversionStatus.FAILED);
         String stmt = String.join("\n", result.getStatements());
-        assertThat(result.getWarnings()).anyMatch(m -> m.contains("HANDLER"));
-        assertThat(stmt).contains("unsupported: DECLARE HANDLER");
+        assertThat(result.getErrors()).contains("HANDLER");
+        assertThat(stmt).contains("/* ERROR: DECLARE HANDLER");
         // the rest of the body still translates
         assertThat(stmt).contains("x int := 0;");
         assertThat(stmt).contains("RETURN x;");
+    }
+
+    @Test
+    void commentsOutAggregateFunctionWithError() {
+        ConversionResult result = identityConverter().convert(
+                "CREATE AGGREGATE FUNCTION agg_sum(a INT) RETURNS INT RETURN a");
+
+        assertThat(result.getStatus()).isEqualTo(ConversionStatus.FAILED);
+        String stmt = String.join("\n", result.getStatements());
+        assertThat(stmt).startsWith("/* ERROR: AGGREGATE FUNCTION not supported");
+        assertThat(result.getErrors()).contains("AGGREGATE");
+    }
+
+    @Test
+    void reportsErrorForUserVariablesInSet() {
+        ConversionResult result = identityConverter().convert(
+                "CREATE FUNCTION touch_var(a INT) RETURNS INT BEGIN SET @x = a; RETURN a; END");
+
+        assertThat(result.getStatus()).isEqualTo(ConversionStatus.FAILED);
+        String stmt = String.join("\n", result.getStatements());
+        assertThat(stmt).contains("user variable @x");
+        assertThat(stmt).doesNotContain("SET ");
+        assertThat(result.getErrors()).contains("user variable");
     }
 
     @Test

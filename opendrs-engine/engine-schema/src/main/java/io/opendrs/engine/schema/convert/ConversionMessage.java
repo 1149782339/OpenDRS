@@ -11,10 +11,12 @@ import java.util.List;
 public class ConversionMessage {
     private final List<String> warnings;
     private final List<String> infos;
+    private final List<String> errors;
 
     public ConversionMessage() {
         this.warnings = new ArrayList<>();
         this.infos = new ArrayList<>();
+        this.errors = new ArrayList<>();
     }
 
     /**
@@ -37,6 +39,16 @@ public class ConversionMessage {
 
 
     /**
+     * Get error messages: constructs that cannot be converted or approximately replaced
+     *
+     * @return conversion error messages
+     */
+    public List<String> getErrorMessages() {
+        return Collections.unmodifiableList(errors);
+    }
+
+
+    /**
      * Put a message with the specified level
      *
      * @param  message conversion message
@@ -50,6 +62,10 @@ public class ConversionMessage {
             break;
             case WARNING: {
                 warnings.add(message);
+            }
+            break;
+            case ERROR: {
+                errors.add(message);
             }
             break;
             default:
@@ -67,8 +83,12 @@ public class ConversionMessage {
          */
         INFO,
         /**
-         * Warning level
+         * Warning level: approximated — most cases covered, semantics not fully equivalent
          */
-        WARNING
+        WARNING,
+        /**
+         * Error level: not supported, no approximate replacement exists
+         */
+        ERROR
     }
 }
