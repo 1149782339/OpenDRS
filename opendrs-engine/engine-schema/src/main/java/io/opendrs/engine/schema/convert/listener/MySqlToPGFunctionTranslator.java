@@ -50,7 +50,7 @@ import org.antlr.v4.runtime.tree.ParseTree;
  * with a warning. Expressions are carried over verbatim apart from a small function-name
  * whitelist ({@code IFNULL} → {@code COALESCE}).
  */
-public class FunctionRoutineTranslator {
+public class MySqlToPGFunctionTranslator {
 
     private final TokenStream tokens;
     private final ConversionMessage message;
@@ -58,7 +58,7 @@ public class FunctionRoutineTranslator {
     private final List<String> notFoundAssignments = new ArrayList<>();
     private String commentStatement;
 
-    public FunctionRoutineTranslator(TokenStream tokens, ConversionMessage message) {
+    public MySqlToPGFunctionTranslator(TokenStream tokens, ConversionMessage message) {
         this.tokens = tokens;
         this.message = message;
     }

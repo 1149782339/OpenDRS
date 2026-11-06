@@ -8,7 +8,7 @@ import org.junit.jupiter.api.Test;
 /**
  * Demo coverage for {@code CREATE FUNCTION} translation (MySQL → PL/pgSQL).
  */
-class FunctionRoutineTranslatorTest {
+class MySqlToPGFunctionTranslatorTest {
 
     private static MySqlToPGConverter identityConverter() {
         return new MySqlToPGConverter(
