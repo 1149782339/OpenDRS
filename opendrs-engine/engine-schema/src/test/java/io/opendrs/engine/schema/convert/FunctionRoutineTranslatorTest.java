@@ -1,0 +1,119 @@
+package io.opendrs.engine.schema.convert;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+import io.opendrs.engine.schema.convert.converters.MySqlToPGConverter;
+import org.junit.jupiter.api.Test;
+
+/**
+ * Demo coverage for {@code CREATE FUNCTION} translation (MySQL → PL/pgSQL).
+ */
+class FunctionRoutineTranslatorTest {
+
+    private static MySqlToPGConverter identityConverter() {
+        return new MySqlToPGConverter(
+                new ConversionConfiguration(tableId -> tableId, column -> column));
+    }
+
+    @Test
+    void translatesDefinerAndReturnExpression() {
+        ConversionResult result = identityConverter().convert(
+                "CREATE DEFINER=`root`@`localhost` FUNCTION add_two(a INT, b INT) "
+                        + "RETURNS INT DETERMINISTIC RETURN a + b");
+
+        assertThat(result.getStatus()).isEqualTo(ConversionStatus.SUCCEEDED);
+        String stmt = String.join("\n", result.getStatements());
+        // header keeps its shape; DEFINER and DETERMINISTIC are dropped, type tokens mapped
+        assertThat(stmt).contains("CREATE FUNCTION \"add_two\"(a int, b int) RETURNS int AS $$");
+        assertThat(stmt).contains("RETURN a + b;");
+        assertThat(stmt).contains("$$ LANGUAGE plpgsql;");
+        assertThat(stmt).doesNotContain("DEFINER");
+        assertThat(stmt).doesNotContain("DETERMINISTIC");
+        assertThat(result.getInfos()).anyMatch(m -> m.contains("DEFINER"));
+    }
+
+    @Test
+    void translatesDeclareSetAndIfElse() {
+        ConversionResult result = identityConverter().convert(
+                "CREATE FUNCTION calc_tax(amount DECIMAL(10,2)) RETURNS DECIMAL(10,2) "
+                        + "BEGIN "
+                        + "DECLARE tax DECIMAL(10,2) DEFAULT 0; "
+                        + "IF amount>100 THEN SET tax = amount*0.2; "
+                        + "ELSE SET tax = amount*0.1; "
+                        + "END IF; "
+                        + "RETURN tax; "
+                        + "END");
+
+        assertThat(result.getStatus()).isEqualTo(ConversionStatus.SUCCEEDED);
+        String stmt = String.join("\n", result.getStatements());
+        // DECLARE moves before BEGIN, SET becomes :=, IF/ELSE re-emitted
+        assertThat(stmt).contains("DECLARE\n    tax DECIMAL(10,2) := 0;");
+        assertThat(stmt).contains("IF amount>100 THEN");
+        assertThat(stmt).contains("tax := amount*0.2;");
+        assertThat(stmt).contains("ELSE");
+        assertThat(stmt).contains("tax := amount*0.1;");
+        assertThat(stmt).contains("END IF;");
+        assertThat(stmt).contains("RETURN tax;");
+        assertThat(stmt).doesNotContain("SET ");
+    }
+
+    @Test
+    void translatesWhileLoop() {
+        ConversionResult result = identityConverter().convert(
+                "CREATE FUNCTION sum_to(n INT) RETURNS INT "
+                        + "BEGIN "
+                        + "DECLARE s INT DEFAULT 0; "
+                        + "DECLARE i INT DEFAULT 1; "
+                        + "WHILE i<=n DO SET s=s+i; SET i=i+1; END WHILE; "
+                        + "RETURN s; "
+                        + "END");
+
+        assertThat(result.getStatus()).isEqualTo(ConversionStatus.SUCCEEDED);
+        String stmt = String.join("\n", result.getStatements());
+        assertThat(stmt).contains("WHILE i<=n LOOP");
+        assertThat(stmt).contains("s := s+i;");
+        assertThat(stmt).contains("i := i+1;");
+        assertThat(stmt).contains("END LOOP;");
+        assertThat(stmt).contains("RETURN s;");
+    }
+
+    @Test
+    void reportsAndPlaceholderUnsupportedHandler() {
+        ConversionResult result = identityConverter().convert(
+                "CREATE FUNCTION safe_div(a INT, b INT) RETURNS INT "
+                        + "BEGIN "
+                        + "DECLARE x INT DEFAULT 0; "
+                        + "DECLARE CONTINUE HANDLER FOR SQLEXCEPTION SET x = 1; "
+                        + "RETURN x; "
+                        + "END");
+
+        assertThat(result.getStatus()).isEqualTo(ConversionStatus.SUCCEEDED);
+        String stmt = String.join("\n", result.getStatements());
+        assertThat(result.getWarnings()).anyMatch(m -> m.contains("HANDLER"));
+        assertThat(stmt).contains("unsupported: DECLARE HANDLER");
+        // the rest of the body still translates
+        assertThat(stmt).contains("x int := 0;");
+        assertThat(stmt).contains("RETURN x;");
+    }
+
+    @Test
+    void emitsCommentOnFunctionForRoutineCommentOption() {
+        ConversionResult result = identityConverter().convert(
+                "CREATE FUNCTION note() RETURNS VARCHAR(64) COMMENT 'hello' RETURN 'x'");
+
+        assertThat(result.getStatements()).hasSize(2);
+        assertThat(result.getStatements().get(0))
+                .contains("CREATE FUNCTION \"note\"() RETURNS VARCHAR(64) AS $$");
+        assertThat(result.getStatements().get(1))
+                .isEqualTo("COMMENT ON FUNCTION \"note\" IS 'hello';");
+    }
+
+    @Test
+    void rewritesIfNullInExpressions() {
+        ConversionResult result = identityConverter().convert(
+                "CREATE FUNCTION coalesce_demo(a INT) RETURNS INT RETURN IFNULL(a, 0)");
+
+        String stmt = String.join("\n", result.getStatements());
+        assertThat(stmt).contains("RETURN COALESCE(a, 0);");
+    }
+}

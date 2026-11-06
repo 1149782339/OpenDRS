@@ -184,6 +184,21 @@ public class MySqlToPGParserListener extends MySqlParserBaseListener {
         }
     }
 
+    /**
+     * MySQL {@code CREATE FUNCTION} becomes a PL/pgSQL function. The routine header keeps its
+     * structure (token-level type mapping), while the procedural body is re-emitted clause by
+     * clause; see {@link FunctionRoutineTranslator}.
+     */
+    @Override
+    public void exitCreateFunction(MySqlParser.CreateFunctionContext ctx) {
+        FunctionRoutineTranslator translator = new FunctionRoutineTranslator(rewriter.getTokenStream(), message);
+        String translated = translator.translate(ctx);
+        rewriter.replace(ctx.getStart(), ctx.getStop(), translated);
+        if (translator.getCommentStatement() != null) {
+            afterStatements.add(translator.getCommentStatement());
+        }
+    }
+
     private void rewriteDimensionDataType(MySqlParser.DimensionDataTypeContext ctx) {
         int type = ctx.typeName.getType();
         if ((ctx.lengthOneDimension() != null) && (type == MySqlParser.TINYINT
