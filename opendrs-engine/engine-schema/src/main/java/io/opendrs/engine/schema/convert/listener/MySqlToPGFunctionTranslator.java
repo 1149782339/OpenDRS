@@ -48,8 +48,13 @@ import org.antlr.v4.runtime.tree.ParseTree;
  * SET assignments, DECLARE variables. DECLARE CONDITION is reported and replaced with a
  * comment placeholder. Anything else inside the body is passed through untranslated
  * with a warning. Expressions are carried over verbatim apart from a small function-name
- * whitelist ({@code IFNULL} → {@code COALESCE}).
+ * whitelist ({@code IFNULL} → {@code COALESCE}, {@code ISNULL(x)} → {@code (x IS NULL)},
+ * {@code IF(c,a,b)} → {@code CASE WHEN c THEN a ELSE b END}).
+ *
+ * <p>Also emits {@code SELECT … INTO} for PL/pgSQL targets, {@code SIGNAL}/{@code RESIGNAL}
+ * as {@code RAISE}, and preserves simple {@code CASE} subjects.
  */
+
 public class MySqlToPGFunctionTranslator {
 
     private final TokenStream tokens;
@@ -187,7 +192,6 @@ public class MySqlToPGFunctionTranslator {
     }
 
     private void emitProcStatement(MySqlParser.ProcedureSqlStatementContext ctx, StringBuilder sb, int depth) {
-        String ind = "    ".repeat(depth);
         if (ctx.compoundStatement() != null) {
             emitCompound(ctx.compoundStatement(), sb, depth);
             return;
@@ -195,13 +199,26 @@ public class MySqlToPGFunctionTranslator {
         MySqlParser.SqlStatementContext sql = ctx.sqlStatement();
         MySqlParser.SetStatementContext set =
                 sql.administrationStatement() != null ? sql.administrationStatement().setStatement() : null;
-        if (set instanceof MySqlParser.SetVariableContext) {
+        if (set instanceof MySqlParser.SetVariableContext
+                || set instanceof MySqlParser.SetNewValueInsideTriggerContext) {
             emitSetAssignments(set, sb, depth);
-        } else if (set instanceof MySqlParser.SetNewValueInsideTriggerContext) {
-            emitSetAssignments(set, sb, depth);
-        } else {
-            passthrough(sql, sb, depth, "statement");
+            return;
         }
+        MySqlParser.UtilityStatementContext util = sql.utilityStatement();
+        if (util != null && util.signalStatement() != null) {
+            emitSignal(util.signalStatement(), sb, depth);
+            return;
+        }
+        if (util != null && util.resignalStatement() != null) {
+            emitResignal(util.resignalStatement(), sb, depth);
+            return;
+        }
+        MySqlParser.SelectStatementContext select =
+                sql.dmlStatement() != null ? sql.dmlStatement().selectStatement() : null;
+        if (select != null && tryEmitSelectInto(select, sb, depth)) {
+            return;
+        }
+        passthrough(sql, sb, depth, "statement");
     }
 
     /** {@code SET a = x, b := y} → one PL/pgSQL assignment per pair. */
@@ -363,7 +380,14 @@ public class MySqlToPGFunctionTranslator {
             sb.append(ind).append("END LOOP;\n");
         } else if (c.caseStatement() != null) {
             MySqlParser.CaseStatementContext caseCtx = c.caseStatement();
-            sb.append(ind).append("CASE\n");
+            // Preserve simple-CASE subject (uid / expression); searched CASE has none.
+            if (caseCtx.uid() != null) {
+                sb.append(ind).append("CASE ").append(plainUid(caseCtx.uid())).append("\n");
+            } else if (caseCtx.expression() != null) {
+                sb.append(ind).append("CASE ").append(expression(caseCtx.expression())).append("\n");
+            } else {
+                sb.append(ind).append("CASE\n");
+            }
             for (MySqlParser.CaseAlternativeContext alt : caseCtx.caseAlternative()) {
                 String when = alt.constant() != null
                         ? tokens.getText(alt.constant())
@@ -437,9 +461,251 @@ public class MySqlToPGFunctionTranslator {
         return tokens.getText(ctx);
     }
 
-    /** Expression text is carried over verbatim, apart from a small function-name whitelist. */
+    /**
+     * Expression text is carried over verbatim, apart from a small function-name whitelist
+     * ({@code IFNULL}, {@code ISNULL}, {@code IF}).
+     */
     private String expression(ParserRuleContext ctx) {
-        return tokens.getText(ctx).replaceAll("(?i)\\bIFNULL\\s*\\(", "COALESCE(");
+        return rewriteExprFunctions(tokens.getText(ctx));
+    }
+
+    private String rewriteExprFunctions(String text) {
+        String out = text;
+        out = replaceNamedCall(out, "IFNULL", args -> "COALESCE(" + args + ")");
+        out = replaceNamedCall(out, "ISNULL", args -> "(" + args + " IS NULL)");
+        out = replaceNamedCall(out, "IF", args -> {
+            java.util.List<String> parts = splitTopLevelArgs(args);
+            if (parts.size() != 3) {
+                return "IF(" + args + ")";
+            }
+            return "(CASE WHEN " + parts.get(0) + " THEN " + parts.get(1)
+                    + " ELSE " + parts.get(2) + " END)";
+        });
+        return out;
+    }
+
+    @FunctionalInterface
+    private interface CallRewriter {
+        String rewrite(String args);
+    }
+
+    /**
+     * Replace {@code NAME(…)} calls with balanced parentheses, outer-to-inner safe via left scan.
+     */
+    private String replaceNamedCall(String text, String name, CallRewriter rewriter) {
+        StringBuilder sb = new StringBuilder();
+        int i = 0;
+        String upper = text.toUpperCase();
+        String needle = name.toUpperCase() + "(";
+        while (i < text.length()) {
+            int found = upper.indexOf(needle, i);
+            if (found < 0) {
+                sb.append(text, i, text.length());
+                break;
+            }
+            // require a word boundary before the name
+            if (found > 0 && Character.isLetterOrDigit(text.charAt(found - 1))) {
+                sb.append(text, i, found + 1);
+                i = found + 1;
+                continue;
+            }
+            int open = found + name.length();
+            if (open >= text.length() || text.charAt(open) != '(') {
+                sb.append(text, i, found + name.length());
+                i = found + name.length();
+                continue;
+            }
+            int close = matchingParen(text, open);
+            if (close < 0) {
+                sb.append(text, i, text.length());
+                break;
+            }
+            sb.append(text, i, found);
+            sb.append(rewriter.rewrite(text.substring(open + 1, close)));
+            i = close + 1;
+        }
+        return sb.toString();
+    }
+
+    private int matchingParen(String text, int openIdx) {
+        int depth = 0;
+        for (int i = openIdx; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c == '(') {
+                depth++;
+            } else if (c == ')') {
+                depth--;
+                if (depth == 0) {
+                    return i;
+                }
+            }
+        }
+        return -1;
+    }
+
+    private java.util.List<String> splitTopLevelArgs(String args) {
+        java.util.List<String> parts = new ArrayList<>();
+        int depth = 0;
+        int start = 0;
+        for (int i = 0; i < args.length(); i++) {
+            char c = args.charAt(i);
+            if (c == '(') {
+                depth++;
+            } else if (c == ')') {
+                depth--;
+            } else if (c == ',' && depth == 0) {
+                parts.add(args.substring(start, i).trim());
+                start = i + 1;
+            }
+        }
+        parts.add(args.substring(start).trim());
+        return parts;
+    }
+
+    /**
+     * {@code SELECT … INTO var[, …]} → PL/pgSQL {@code SELECT … INTO …}. DUMPFILE/OUTFILE are FAILED.
+     * Returns {@code true} when the statement was handled (including as unsupported).
+     */
+    private boolean tryEmitSelectInto(MySqlParser.SelectStatementContext select, StringBuilder sb, int depth) {
+        if (!(select instanceof MySqlParser.SimpleSelectContext simple)) {
+            return false;
+        }
+        MySqlParser.QuerySpecificationContext qs = simple.querySpecification();
+        MySqlParser.SelectIntoExpressionContext into = qs.selectIntoExpression();
+        if (into == null) {
+            return false;
+        }
+        if (into instanceof MySqlParser.SelectIntoDumpFileContext
+                || into instanceof MySqlParser.SelectIntoTextFileContext) {
+            unsupported(into, sb, depth, "SELECT INTO DUMPFILE/OUTFILE", Level.FAILED,
+                    "file exports have no PL/pgSQL equivalent inside a function");
+            sb.append('\n');
+            return true;
+        }
+        if (!(into instanceof MySqlParser.SelectIntoVariablesContext varsInto)) {
+            return false;
+        }
+
+        String ind = "    ".repeat(depth);
+        java.util.List<String> targets = new ArrayList<>();
+        for (MySqlParser.AssignmentFieldContext field : varsInto.assignmentField()) {
+            if (field.LOCAL_ID() != null) {
+                unsupported(field, sb, depth, "user variable " + field.LOCAL_ID().getText(), Level.FAILED,
+                        "PL/pgSQL has no session user variables; SELECT INTO dropped");
+                sb.append('\n');
+                return true;
+            }
+            targets.add(plainUid(field.uid()));
+        }
+
+        for (MySqlParser.SelectSpecContext spec : qs.selectSpec()) {
+            message.report("SELECT option '" + tokens.getText(spec)
+                    + "' dropped from SELECT INTO (no PL/pgSQL equivalent)", Level.INFO);
+        }
+
+        String elements = rewriteExprFunctions(tokens.getText(qs.selectElements()));
+        sb.append(ind).append("SELECT ").append(elements)
+                .append(" INTO ").append(String.join(", ", targets));
+        if (qs.fromClause() != null) {
+            sb.append(' ').append(tokens.getText(qs.fromClause()));
+        }
+        if (qs.groupByClause() != null) {
+            sb.append(' ').append(tokens.getText(qs.groupByClause()));
+        }
+        if (qs.havingClause() != null) {
+            sb.append(' ').append(tokens.getText(qs.havingClause()));
+        }
+        if (qs.windowClause() != null) {
+            sb.append(' ').append(tokens.getText(qs.windowClause()));
+        }
+        if (qs.orderByClause() != null) {
+            sb.append(' ').append(tokens.getText(qs.orderByClause()));
+        }
+        if (qs.limitClause() != null) {
+            sb.append(' ').append(tokens.getText(qs.limitClause()));
+        }
+        sb.append(";\n");
+        message.report("SELECT INTO re-emitted for PL/pgSQL; verify SELECT list / FROM clause"
+                + " MySQL-specific syntax on the PostgreSQL side", Level.WARNING);
+        return true;
+    }
+
+    /** {@code SIGNAL SQLSTATE '…' [SET MESSAGE_TEXT = '…']} → {@code RAISE EXCEPTION …}. */
+    private void emitSignal(MySqlParser.SignalStatementContext ctx, StringBuilder sb, int depth) {
+        if (ctx.ID() != null || ctx.REVERSE_QUOTE_ID() != null) {
+            unsupported(ctx, sb, depth, "SIGNAL named condition", Level.FAILED,
+                    "named conditions require DECLARE CONDITION which is not supported;"
+                            + " use SIGNAL SQLSTATE '…' instead");
+            sb.append('\n');
+            return;
+        }
+        emitRaise(sqlStateLiteral(ctx.stringLiteral()), messageTextFromSignal(ctx.signalConditionInformation()),
+                sb, depth, "SIGNAL");
+    }
+
+    /**
+     * Bare {@code RESIGNAL} → {@code RAISE;} (re-throw). With SQLSTATE/MESSAGE it maps like SIGNAL.
+     */
+    private void emitResignal(MySqlParser.ResignalStatementContext ctx, StringBuilder sb, int depth) {
+        if (ctx.ID() != null || ctx.REVERSE_QUOTE_ID() != null) {
+            unsupported(ctx, sb, depth, "RESIGNAL named condition", Level.FAILED,
+                    "named conditions require DECLARE CONDITION which is not supported");
+            sb.append('\n');
+            return;
+        }
+        String sqlstate = ctx.stringLiteral() != null ? sqlStateLiteral(ctx.stringLiteral()) : null;
+        String msg = messageTextFromSignal(ctx.signalConditionInformation());
+        if (sqlstate == null && msg == null) {
+            sb.append("    ".repeat(depth)).append("RAISE;\n");
+            message.report("RESIGNAL mapped to bare RAISE (re-throw current exception)", Level.WARNING);
+            return;
+        }
+        emitRaise(sqlstate, msg, sb, depth, "RESIGNAL");
+    }
+
+    private void emitRaise(String sqlstate, String messageLiteral, StringBuilder sb, int depth, String origin) {
+        String ind = "    ".repeat(depth);
+        if (messageLiteral != null && sqlstate != null) {
+            sb.append(ind).append("RAISE EXCEPTION ").append(messageLiteral)
+                    .append(" USING ERRCODE = '").append(sqlstate).append("';\n");
+        } else if (messageLiteral != null) {
+            sb.append(ind).append("RAISE EXCEPTION ").append(messageLiteral).append(";\n");
+        } else if (sqlstate != null) {
+            sb.append(ind).append("RAISE EXCEPTION USING ERRCODE = '").append(sqlstate).append("';\n");
+        } else {
+            sb.append(ind).append("RAISE;\n");
+        }
+        message.report(origin + " mapped to RAISE — approximation: MySQL condition items beyond"
+                + " MESSAGE_TEXT/SQLSTATE are dropped", Level.WARNING);
+    }
+
+    private String sqlStateLiteral(MySqlParser.StringLiteralContext lit) {
+        if (lit == null) {
+            return null;
+        }
+        String raw = tokens.getText(lit).trim();
+        if ((raw.startsWith("'") && raw.endsWith("'")) || (raw.startsWith("\"") && raw.endsWith("\""))) {
+            return raw.substring(1, raw.length() - 1);
+        }
+        return raw;
+    }
+
+    private String messageTextFromSignal(
+            java.util.List<MySqlParser.SignalConditionInformationContext> infos) {
+        String messageText = null;
+        for (MySqlParser.SignalConditionInformationContext info : infos) {
+            if (info.MESSAGE_TEXT() != null) {
+                if (info.stringLiteral() != null) {
+                    messageText = tokens.getText(info.stringLiteral());
+                } else {
+                    messageText = tokens.getText(info).replaceFirst("(?i)MESSAGE_TEXT\\s*=\\s*", "");
+                }
+            } else {
+                message.report("SIGNAL/RESIGNAL condition item '"
+                        + info.getChild(0).getText() + "' dropped (no RAISE mapping)", Level.INFO);
+            }
+        }
+        return messageText;
     }
 
     // ---------------------------------------------------------------------------------------------

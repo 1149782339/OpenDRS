@@ -184,4 +184,153 @@ class MySqlToPGFunctionTranslatorTest {
         assertThat(stmt).contains("cur CURSOR FOR SELECT a FROM t;");
         assertThat(stmt).contains("/* FAILED: DECLARE HANDLER");
     }
+
+    @Test
+    void translatesSimpleCaseWithSubject() {
+        ConversionResult result = identityConverter().convert(
+                "CREATE FUNCTION grade(score INT) RETURNS VARCHAR(8) BEGIN "
+                        + "DECLARE g VARCHAR(8); "
+                        + "CASE score "
+                        + "WHEN 100 THEN SET g = 'A'; "
+                        + "WHEN 90 THEN SET g = 'B'; "
+                        + "ELSE SET g = 'C'; "
+                        + "END CASE; "
+                        + "RETURN g; END");
+
+        assertThat(result.getStatus()).isEqualTo(ConversionStatus.SUCCEEDED);
+        String stmt = String.join("\n", result.getStatements());
+        assertThat(stmt).contains("CASE score");
+        assertThat(stmt).contains("WHEN 100 THEN");
+        assertThat(stmt).contains("g := 'A';");
+        assertThat(stmt).contains("END CASE;");
+    }
+
+    @Test
+    void translatesSearchedCaseWithoutSubject() {
+        ConversionResult result = identityConverter().convert(
+                "CREATE FUNCTION pick(n INT) RETURNS INT BEGIN "
+                        + "DECLARE r INT DEFAULT 0; "
+                        + "CASE "
+                        + "WHEN n > 0 THEN SET r = 1; "
+                        + "WHEN n < 0 THEN SET r = -1; "
+                        + "ELSE SET r = 0; "
+                        + "END CASE; "
+                        + "RETURN r; END");
+
+        assertThat(result.getStatus()).isEqualTo(ConversionStatus.SUCCEEDED);
+        String stmt = String.join("\n", result.getStatements());
+        // searched CASE must not invent a subject token between CASE and WHEN
+        assertThat(stmt).contains("CASE\n    WHEN n > 0 THEN");
+        assertThat(stmt).doesNotContain("CASE n");
+        assertThat(stmt).contains("r := 1;");
+        assertThat(stmt).contains("END CASE;");
+    }
+
+    @Test
+    void translatesSelectIntoVariables() {
+        ConversionResult result = identityConverter().convert(
+                "CREATE FUNCTION lookup_name(pid INT) RETURNS VARCHAR(64) BEGIN "
+                        + "DECLARE n VARCHAR(64); "
+                        + "SELECT name INTO n FROM people WHERE id = pid; "
+                        + "RETURN n; END");
+
+        assertThat(result.getStatus()).isEqualTo(ConversionStatus.SUCCEEDED);
+        String stmt = String.join("\n", result.getStatements());
+        assertThat(stmt).contains("SELECT name INTO n FROM people WHERE id = pid;");
+        assertThat(stmt).contains("RETURN n;");
+        assertThat(result.getWarnings()).anyMatch(m -> m.contains("SELECT INTO"));
+    }
+
+    @Test
+    void selectIntoUserVariableFails() {
+        ConversionResult result = identityConverter().convert(
+                "CREATE FUNCTION bad() RETURNS INT BEGIN "
+                        + "SELECT 1 INTO @x; "
+                        + "RETURN 1; END");
+
+        assertThat(result.getStatus()).isEqualTo(ConversionStatus.FAILED);
+        String stmt = String.join("\n", result.getStatements());
+        assertThat(stmt).contains("user variable @x");
+        assertThat(result.getErrors()).contains("user variable");
+    }
+
+    @Test
+    void translatesSignalToRaise() {
+        ConversionResult result = identityConverter().convert(
+                "CREATE FUNCTION must_positive(n INT) RETURNS INT BEGIN "
+                        + "IF n <= 0 THEN "
+                        + "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'n must be > 0'; "
+                        + "END IF; "
+                        + "RETURN n; END");
+
+        assertThat(result.getStatus()).isEqualTo(ConversionStatus.SUCCEEDED);
+        String stmt = String.join("\n", result.getStatements());
+        assertThat(stmt).contains("RAISE EXCEPTION 'n must be > 0' USING ERRCODE = '45000';");
+        assertThat(stmt).doesNotContain("SIGNAL ");
+        assertThat(result.getWarnings()).anyMatch(m -> m.contains("SIGNAL"));
+    }
+
+    @Test
+    void translatesBareResignalToRaise() {
+        ConversionResult result = identityConverter().convert(
+                "CREATE FUNCTION rethrow() RETURNS INT BEGIN "
+                        + "RESIGNAL; "
+                        + "RETURN 1; END");
+
+        assertThat(result.getStatus()).isEqualTo(ConversionStatus.SUCCEEDED);
+        String stmt = String.join("\n", result.getStatements());
+        assertThat(stmt).contains("RAISE;");
+        assertThat(stmt).doesNotContain("RESIGNAL");
+        assertThat(result.getWarnings()).anyMatch(m -> m.contains("RESIGNAL"));
+    }
+
+    @Test
+    void translatesLabeledLoopLeaveAndIterate() {
+        ConversionResult result = identityConverter().convert(
+                "CREATE FUNCTION loop_demo(n INT) RETURNS INT BEGIN "
+                        + "DECLARE i INT DEFAULT 0; "
+                        + "DECLARE s INT DEFAULT 0; "
+                        + "lp: LOOP "
+                        + "SET i = i + 1; "
+                        + "IF i > n THEN LEAVE lp; END IF; "
+                        + "IF i % 2 = 0 THEN ITERATE lp; END IF; "
+                        + "SET s = s + i; "
+                        + "END LOOP lp; "
+                        + "RETURN s; END");
+
+        assertThat(result.getStatus()).isEqualTo(ConversionStatus.SUCCEEDED);
+        String stmt = String.join("\n", result.getStatements());
+        assertThat(stmt).contains("<<lp>>");
+        assertThat(stmt).contains("LOOP");
+        assertThat(stmt).contains("EXIT lp;");
+        assertThat(stmt).contains("CONTINUE lp;");
+        assertThat(stmt).contains("END LOOP;");
+    }
+
+    @Test
+    void translatesRepeatUntil() {
+        ConversionResult result = identityConverter().convert(
+                "CREATE FUNCTION repeat_demo(n INT) RETURNS INT BEGIN "
+                        + "DECLARE i INT DEFAULT 0; "
+                        + "REPEAT SET i = i + 1; UNTIL i >= n END REPEAT; "
+                        + "RETURN i; END");
+
+        assertThat(result.getStatus()).isEqualTo(ConversionStatus.SUCCEEDED);
+        String stmt = String.join("\n", result.getStatements());
+        assertThat(stmt).contains("LOOP");
+        assertThat(stmt).contains("i := i + 1;");
+        assertThat(stmt).contains("EXIT WHEN i >= n;");
+        assertThat(stmt).contains("END LOOP;");
+    }
+
+    @Test
+    void rewritesIfAndIsNullInExpressions() {
+        ConversionResult result = identityConverter().convert(
+                "CREATE FUNCTION flags(a INT) RETURNS INT "
+                        + "RETURN IF(ISNULL(a), 0, a)");
+
+        String stmt = String.join("\n", result.getStatements());
+        assertThat(stmt).contains("RETURN (CASE WHEN (a IS NULL) THEN 0 ELSE a END);");
+    }
+
 }
