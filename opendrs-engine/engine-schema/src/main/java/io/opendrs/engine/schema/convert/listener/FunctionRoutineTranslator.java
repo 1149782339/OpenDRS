@@ -29,7 +29,7 @@ import org.antlr.v4.runtime.tree.ParseTree;
  *
  * <p>Unsupported constructs are commented out with their original text and reported by severity:
  * <ul>
- *   <li><b>ERROR</b> — completely unsupported, no approximate replacement exists (DECLARE HANDLER,
+ *   <li><b>FAILED</b> — completely unsupported, no approximate replacement exists (DECLARE HANDLER,
  *       cursors, user variables, AGGREGATE). The conversion result is FAILED; the comment preserves
  *       the original for manual repair.</li>
  *   <li><b>WARNING</b> — approximated: most cases are covered but semantics are not fully equivalent
@@ -66,8 +66,8 @@ public class FunctionRoutineTranslator {
         }
         if (ctx.AGGREGATE() != null) {
             message.report("AGGREGATE FUNCTION has no approximate PL/pgSQL equivalent"
-                    + " and cannot be translated: " + abbreviate(tokens.getText(ctx)), Level.ERROR);
-            return "/* ERROR: AGGREGATE FUNCTION not supported\n"
+                    + " and cannot be translated: " + abbreviate(tokens.getText(ctx)), Level.FAILED);
+            return "/* FAILED: AGGREGATE FUNCTION not supported\n"
                     + "   original: " + abbreviate(tokens.getText(ctx), 500) + " */";
         }
 
@@ -148,17 +148,17 @@ public class FunctionRoutineTranslator {
                 }
             }
             for (MySqlParser.DeclareConditionContext decl : ctx.declareCondition()) {
-                unsupported(decl, sb, depth + 1, "DECLARE CONDITION", Level.ERROR,
+                unsupported(decl, sb, depth + 1, "DECLARE CONDITION", Level.FAILED,
                         "no PL/pgSQL equivalent; named conditions cannot be approximated");
                 sb.append('\n');
             }
             for (MySqlParser.DeclareCursorContext decl : ctx.declareCursor()) {
-                unsupported(decl, sb, depth + 1, "DECLARE CURSOR", Level.ERROR,
+                unsupported(decl, sb, depth + 1, "DECLARE CURSOR", Level.FAILED,
                         "cursor translation is not implemented in this demo");
                 sb.append('\n');
             }
             for (MySqlParser.DeclareHandlerContext decl : ctx.declareHandler()) {
-                unsupported(decl, sb, depth + 1, "DECLARE HANDLER", Level.ERROR,
+                unsupported(decl, sb, depth + 1, "DECLARE HANDLER", Level.FAILED,
                         "exception handlers have no approximate equivalent; rewrite with EXCEPTION blocks");
                 sb.append('\n');
             }
@@ -201,7 +201,7 @@ public class FunctionRoutineTranslator {
             }
             String name = tokens.getText((ParserRuleContext) child);
             if (name.startsWith("@")) {
-                unsupported((ParserRuleContext) child, sb, depth, "user variable " + name, Level.ERROR,
+                unsupported((ParserRuleContext) child, sb, depth, "user variable " + name, Level.FAILED,
                         "PL/pgSQL has no session user variables; assignment dropped");
                 sb.append('\n');
                 continue;
@@ -288,7 +288,7 @@ public class FunctionRoutineTranslator {
         } else if (c.iterateStatement() != null) {
             sb.append(ind).append("CONTINUE ").append(c.iterateStatement().uid().getText()).append(";\n");
         } else if (c.cursorStatement() != null) {
-            unsupported(c.cursorStatement(), sb, depth, "cursor statement", Level.ERROR,
+            unsupported(c.cursorStatement(), sb, depth, "cursor statement", Level.FAILED,
                     "cursor translation is not implemented in this demo");
             sb.append('\n');
         }
@@ -361,7 +361,7 @@ public class FunctionRoutineTranslator {
 
     /**
      * Emits the unsupported fragment as a C-style comment preserving the original text,
-     * and reports it. ERROR marks conversions that cannot be approximately replaced; WARNING marks
+     * and reports it. FAILED marks conversions that cannot be approximately replaced; WARNING marks
      * approximations whose semantics are not fully equivalent.
      */
     private void unsupported(ParserRuleContext ctx, StringBuilder sb, int depth, String what,

@@ -87,11 +87,11 @@ class FunctionRoutineTranslatorTest {
                         + "RETURN x; "
                         + "END");
 
-        // no approximate replacement exists for handlers: ERROR, conversion FAILED
+        // no approximate replacement exists for handlers: FAILED level
         assertThat(result.getStatus()).isEqualTo(ConversionStatus.FAILED);
         String stmt = String.join("\n", result.getStatements());
         assertThat(result.getErrors()).contains("HANDLER");
-        assertThat(stmt).contains("/* ERROR: DECLARE HANDLER");
+        assertThat(stmt).contains("/* FAILED: DECLARE HANDLER");
         // the rest of the body still translates
         assertThat(stmt).contains("x int := 0;");
         assertThat(stmt).contains("RETURN x;");
@@ -104,7 +104,7 @@ class FunctionRoutineTranslatorTest {
 
         assertThat(result.getStatus()).isEqualTo(ConversionStatus.FAILED);
         String stmt = String.join("\n", result.getStatements());
-        assertThat(stmt).startsWith("/* ERROR: AGGREGATE FUNCTION not supported");
+        assertThat(stmt).startsWith("/* FAILED: AGGREGATE FUNCTION not supported");
         assertThat(result.getErrors()).contains("AGGREGATE");
     }
 

@@ -43,7 +43,7 @@ public class ConversionMessage {
      *
      * @return conversion error messages
      */
-    public List<String> getErrorMessages() {
+    public List<String> getFailedMessages() {
         return Collections.unmodifiableList(errors);
     }
 
@@ -64,7 +64,7 @@ public class ConversionMessage {
                 warnings.add(message);
             }
             break;
-            case ERROR: {
+            case FAILED: {
                 errors.add(message);
             }
             break;
@@ -89,6 +89,6 @@ public class ConversionMessage {
         /**
          * Error level: not supported, no approximate replacement exists
          */
-        ERROR
+        FAILED
     }
 }

@@ -47,9 +47,9 @@ public class MySqlToPGConverter extends CommonSQLConverter {
             error = e.getMessage();
         }
         ConversionMessage message = parserListener.getMessage();
-        // ERROR-level messages mark constructs that cannot be approximately replaced; the
+        // FAILED-level messages mark constructs that cannot be approximately replaced; the
         // conversion is FAILED even though the remaining statements were still translated.
-        List<String> errors = new ArrayList<>(message.getErrorMessages());
+        List<String> errors = new ArrayList<>(message.getFailedMessages());
         if (status == ConversionStatus.FAILED && !error.isBlank()) {
             errors.add(error);
         }
