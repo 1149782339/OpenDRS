@@ -61,6 +61,19 @@ import org.antlr.v4.runtime.tree.ParseTree;
  * <p>Also emits {@code SELECT … INTO} for PL/pgSQL targets, {@code SIGNAL}/{@code RESIGNAL}
  * as {@code RAISE}, preserves simple {@code CASE} subjects, and maps
  * {@code SQL SECURITY DEFINER|INVOKER} to PostgreSQL {@code SECURITY DEFINER|INVOKER}.
+ *
+ * <p>DML inside routines ({@code INSERT}/{@code UPDATE}/{@code DELETE}/{@code CALL}/{@code DO})
+ * is re-emitted with the expression-function whitelist applied — not whole-statement passthrough.
+ * {@code DO expr} becomes PL/pgSQL {@code PERFORM expr}.
+ *
+ * <p>Procedure result sets (MySQL bare {@code SELECT} without {@code INTO}): PostgreSQL
+ * {@code PROCEDURE} cannot stream client result sets the MySQL way, and {@code RETURN QUERY}
+ * only exists on set-returning {@code FUNCTION}s. This translator keeps {@code CREATE PROCEDURE}
+ * and maps each bare {@code SELECT} to {@code OPEN __opendrs_rs FOR SELECT …}, injecting
+ * {@code INOUT __opendrs_rs REFCURSOR} into the signature. Caller pattern:
+ * {@code CALL proc(..., 'cur'); FETCH ALL FROM cur;}. Multiple bare SELECTs reopen the same
+ * cursor (last wins) with a WARNING. Bare {@code SELECT} inside a {@code FUNCTION} is FAILED
+ * (MySQL forbids function result sets).
  */
 
 public class MySqlToPGRoutineTranslator {
@@ -69,6 +82,17 @@ public class MySqlToPGRoutineTranslator {
     private final ConversionMessage message;
     /** assignments collected from CONTINUE HANDLER FOR NOT FOUND, injected after each FETCH */
     private final List<String> notFoundAssignments = new ArrayList<>();
+    /**
+     * Injected OUT/INOUT cursor name for MySQL procedure result-set SELECTs.
+     * See class javadoc — REFCURSOR approach (not RETURN QUERY).
+     */
+    static final String RESULT_SET_CURSOR = "__opendrs_rs";
+    /** True while {@link #translateProcedure} is emitting a body. */
+    private boolean inProcedure;
+    /** Set when a bare SELECT in a procedure needs the injected REFCURSOR param. */
+    private boolean resultSetCursorNeeded;
+    /** Count of bare result-set SELECTs (for multi-result WARNING). */
+    private int resultSetSelectCount;
     private String commentStatement;
 
     public MySqlToPGRoutineTranslator(TokenStream tokens, ConversionMessage message) {
@@ -109,6 +133,9 @@ public class MySqlToPGRoutineTranslator {
 
         String security = collectRoutineOptions(ctx.routineOption(), "FUNCTION", ctx.fullId());
 
+        inProcedure = false;
+        resultSetCursorNeeded = false;
+        resultSetSelectCount = 0;
         String body;
         if (ctx.returnStatement() != null) {
             body = "BEGIN\n    RETURN " + expression(ctx.returnStatement().expression()) + ";\nEND;";
@@ -131,6 +158,13 @@ public class MySqlToPGRoutineTranslator {
             message.report("DEFINER clause dropped: PostgreSQL has no per-procedure definer", Level.INFO);
         }
 
+        // Emit body first so bare result-set SELECTs can request an injected REFCURSOR param.
+        inProcedure = true;
+        resultSetCursorNeeded = false;
+        resultSetSelectCount = 0;
+        String security = collectRoutineOptions(ctx.routineOption(), "PROCEDURE", ctx.fullId());
+        String body = emitRoutineBody(ctx.routineBody(), "procedure");
+
         StringBuilder header = new StringBuilder("CREATE PROCEDURE ");
         header.append(quotedFullId(ctx.fullId())).append('(');
         List<MySqlParser.ProcedureParameterContext> params = ctx.procedureParameter();
@@ -145,11 +179,14 @@ public class MySqlToPGRoutineTranslator {
                     .append(plainUid(param.uid())).append(' ')
                     .append(emitDataType(param.dataType()));
         }
+        if (resultSetCursorNeeded) {
+            if (!params.isEmpty()) {
+                header.append(", ");
+            }
+            // INOUT so the caller passes a cursor name string; see class javadoc.
+            header.append("INOUT ").append(RESULT_SET_CURSOR).append(" REFCURSOR");
+        }
         header.append(')');
-
-        String security = collectRoutineOptions(ctx.routineOption(), "PROCEDURE", ctx.fullId());
-
-        String body = emitRoutineBody(ctx.routineBody(), "procedure");
         if (security != null) {
             header.append(' ').append(security);
         }
@@ -275,10 +312,36 @@ public class MySqlToPGRoutineTranslator {
             emitResignal(util.resignalStatement(), sb, depth);
             return;
         }
-        MySqlParser.SelectStatementContext select =
-                sql.dmlStatement() != null ? sql.dmlStatement().selectStatement() : null;
-        if (select != null && tryEmitSelectInto(select, sb, depth)) {
-            return;
+        MySqlParser.DmlStatementContext dml = sql.dmlStatement();
+        if (dml != null) {
+            if (dml.selectStatement() != null) {
+                MySqlParser.SelectStatementContext select = dml.selectStatement();
+                if (tryEmitSelectInto(select, sb, depth)) {
+                    return;
+                }
+                emitBareSelect(select, sb, depth);
+                return;
+            }
+            if (dml.insertStatement() != null) {
+                emitDmlWithExprRewrite(dml.insertStatement(), sb, depth, "INSERT");
+                return;
+            }
+            if (dml.updateStatement() != null) {
+                emitDmlWithExprRewrite(dml.updateStatement(), sb, depth, "UPDATE");
+                return;
+            }
+            if (dml.deleteStatement() != null) {
+                emitDmlWithExprRewrite(dml.deleteStatement(), sb, depth, "DELETE");
+                return;
+            }
+            if (dml.callStatement() != null) {
+                emitCall(dml.callStatement(), sb, depth);
+                return;
+            }
+            if (dml.doStatement() != null) {
+                emitDo(dml.doStatement(), sb, depth);
+                return;
+            }
         }
         passthrough(sql, sb, depth, "statement");
     }
@@ -838,6 +901,80 @@ public class MySqlToPGRoutineTranslator {
         }
         parts.add(args.substring(start).trim());
         return parts;
+    }
+
+    /**
+     * Re-emit INSERT/UPDATE/DELETE with expression-function rewrite (not whole-stmt passthrough).
+     * MySQL-only clauses (IGNORE, ON DUPLICATE KEY, LIMIT on multi-table, …) are left in place and
+     * flagged WARNING for manual review.
+     */
+    private void emitDmlWithExprRewrite(ParserRuleContext ctx, StringBuilder sb, int depth, String kind) {
+        String ind = "    ".repeat(depth);
+        String rewritten = rewriteExprFunctions(tokens.getText(ctx));
+        sb.append(ind).append(rewritten).append(";\n");
+        message.report(kind + " re-emitted with expression rewrite — approximation: verify MySQL-only"
+                + " clauses (IGNORE, ON DUPLICATE KEY UPDATE, DELAYED, multi-table LIMIT, …)"
+                + " against PostgreSQL", Level.WARNING);
+    }
+
+    /** {@code CALL name(args)} → {@code CALL name(rewritten_args)} (PG 11+ procedure call). */
+    private void emitCall(MySqlParser.CallStatementContext ctx, StringBuilder sb, int depth) {
+        String ind = "    ".repeat(depth);
+        String rewritten = rewriteExprFunctions(tokens.getText(ctx));
+        sb.append(ind).append(rewritten).append(";\n");
+        message.report("CALL re-emitted with expression rewrite; confirm callee signature on PostgreSQL",
+                Level.WARNING);
+    }
+
+    /**
+     * MySQL {@code DO expr[, …]} evaluates expressions for side effects.
+     * PL/pgSQL equivalent is {@code PERFORM expr;} (one per top-level expression).
+     */
+    private void emitDo(MySqlParser.DoStatementContext ctx, StringBuilder sb, int depth) {
+        String ind = "    ".repeat(depth);
+        MySqlParser.ExpressionsContext exprs = ctx.expressions();
+        if (exprs == null || exprs.expression().isEmpty()) {
+            passthrough(ctx, sb, depth, "DO");
+            return;
+        }
+        for (MySqlParser.ExpressionContext expr : exprs.expression()) {
+            sb.append(ind).append("PERFORM ").append(expression(expr)).append(";\n");
+        }
+        message.report("DO mapped to PERFORM — approximation: DO side-effect semantics may differ",
+                Level.WARNING);
+    }
+
+    /**
+     * Bare {@code SELECT} (no {@code INTO}) inside a routine.
+     * <ul>
+     *   <li>Procedure → {@code OPEN __opendrs_rs FOR SELECT …} + inject
+     *       {@code INOUT __opendrs_rs REFCURSOR} (keeps PROCEDURE; not RETURN QUERY).</li>
+     *   <li>Function → FAILED (MySQL forbids result sets from functions).</li>
+     * </ul>
+     */
+    private void emitBareSelect(MySqlParser.SelectStatementContext select, StringBuilder sb, int depth) {
+        if (!inProcedure) {
+            unsupported(select, sb, depth, "SELECT result set in FUNCTION", Level.FAILED,
+                    "MySQL functions cannot return result sets; use RETURN or SELECT INTO");
+            sb.append('\n');
+            return;
+        }
+        resultSetCursorNeeded = true;
+        resultSetSelectCount++;
+        String ind = "    ".repeat(depth);
+        String rewritten = rewriteExprFunctions(tokens.getText(select));
+        sb.append(ind).append("OPEN ").append(RESULT_SET_CURSOR).append(" FOR ")
+                .append(rewritten).append(";\n");
+        if (resultSetSelectCount == 1) {
+            message.report("procedure result-set SELECT mapped to OPEN " + RESULT_SET_CURSOR
+                    + " FOR … with INOUT " + RESULT_SET_CURSOR + " REFCURSOR injected — caller:"
+                    + " CALL proc(..., 'cur'); FETCH ALL FROM cur;"
+                    + " (RETURN QUERY would require converting PROCEDURE→FUNCTION)", Level.WARNING);
+        } else {
+            message.report("multiple procedure result-set SELECTs reopen the same "
+                    + RESULT_SET_CURSOR + " cursor (last wins); MySQL multi-result-sets are not preserved",
+                    Level.WARNING);
+        }
     }
 
     /**

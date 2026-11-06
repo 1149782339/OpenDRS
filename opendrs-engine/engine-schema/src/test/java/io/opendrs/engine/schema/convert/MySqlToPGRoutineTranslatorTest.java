@@ -379,8 +379,10 @@ class MySqlToPGRoutineTranslatorTest {
                 "CREATE PROCEDURE note_proc() COMMENT 'hello' BEGIN SELECT 1; END");
 
         assertThat(result.getStatements()).hasSize(2);
+        // bare SELECT becomes OPEN __opendrs_rs FOR … and injects INOUT REFCURSOR
         assertThat(result.getStatements().get(0))
-                .contains("CREATE PROCEDURE \"note_proc\"() AS $$");
+                .contains("CREATE PROCEDURE \"note_proc\"(INOUT __opendrs_rs REFCURSOR) AS $$");
+        assertThat(result.getStatements().get(0)).contains("OPEN __opendrs_rs FOR SELECT 1;");
         assertThat(result.getStatements().get(1))
                 .isEqualTo("COMMENT ON PROCEDURE \"note_proc\" IS 'hello';");
     }
@@ -477,6 +479,77 @@ class MySqlToPGRoutineTranslatorTest {
 
         String stmt = String.join("\n", result.getStatements());
         assertThat(stmt).contains("RETURN NOW();");
+    }
+
+
+    @Test
+    void rewritesInsertUpdateDeleteCallAndDoInProcedure() {
+        ConversionResult result = identityConverter().convert(
+                "CREATE PROCEDURE mutate(IN pid INT, IN nm VARCHAR(64)) BEGIN "
+                        + "INSERT INTO people(id, name) VALUES (pid, IFNULL(nm, 'x')); "
+                        + "UPDATE people SET name = CONCAT(nm, '!') WHERE id = pid; "
+                        + "DELETE FROM people WHERE id = pid; "
+                        + "CALL other_proc(IFNULL(pid, 0)); "
+                        + "DO IFNULL(pid, 0); "
+                        + "END");
+
+        assertThat(result.getStatus()).isEqualTo(ConversionStatus.SUCCEEDED);
+        String stmt = String.join("\n", result.getStatements());
+        assertThat(stmt).contains("INSERT INTO people(id, name) VALUES (pid, COALESCE(nm, 'x'));");
+        assertThat(stmt).contains("UPDATE people SET name = CONCAT(nm, '!') WHERE id = pid;");
+        assertThat(stmt).contains("DELETE FROM people WHERE id = pid;");
+        assertThat(stmt).contains("CALL other_proc(COALESCE(pid, 0));");
+        assertThat(stmt).contains("PERFORM COALESCE(pid, 0);");
+        assertThat(stmt).doesNotContain("DO IFNULL");
+        assertThat(result.getWarnings()).anyMatch(m -> m.contains("INSERT re-emitted"));
+        assertThat(result.getWarnings()).anyMatch(m -> m.contains("UPDATE re-emitted"));
+        assertThat(result.getWarnings()).anyMatch(m -> m.contains("DELETE re-emitted"));
+        assertThat(result.getWarnings()).anyMatch(m -> m.contains("CALL re-emitted"));
+        assertThat(result.getWarnings()).anyMatch(m -> m.contains("DO mapped to PERFORM"));
+    }
+
+    @Test
+    void mapsProcedureBareSelectToRefcursorOpen() {
+        ConversionResult result = identityConverter().convert(
+                "CREATE PROCEDURE list_people(IN pid INT) BEGIN "
+                        + "SELECT id, IFNULL(name, '') FROM people WHERE id = pid; "
+                        + "END");
+
+        assertThat(result.getStatus()).isEqualTo(ConversionStatus.SUCCEEDED);
+        String stmt = String.join("\n", result.getStatements());
+        assertThat(stmt).contains(
+                "CREATE PROCEDURE \"list_people\"(IN pid int, INOUT __opendrs_rs REFCURSOR) AS $$");
+        assertThat(stmt).contains(
+                "OPEN __opendrs_rs FOR SELECT id, COALESCE(name, '') FROM people WHERE id = pid;");
+        assertThat(stmt).doesNotContain("RETURN QUERY");
+        assertThat(result.getWarnings()).anyMatch(m -> m.contains("REFCURSOR"));
+    }
+
+    @Test
+    void mapsMultipleProcedureBareSelectsWithWarning() {
+        ConversionResult result = identityConverter().convert(
+                "CREATE PROCEDURE multi_rs() BEGIN "
+                        + "SELECT 1; "
+                        + "SELECT 2; "
+                        + "END");
+
+        String stmt = String.join("\n", result.getStatements());
+        assertThat(stmt).contains("INOUT __opendrs_rs REFCURSOR");
+        assertThat(stmt).contains("OPEN __opendrs_rs FOR SELECT 1;");
+        assertThat(stmt).contains("OPEN __opendrs_rs FOR SELECT 2;");
+        assertThat(result.getWarnings()).anyMatch(m -> m.contains("multiple procedure result-set"));
+    }
+
+    @Test
+    void failsBareSelectInsideFunction() {
+        ConversionResult result = identityConverter().convert(
+                "CREATE FUNCTION bad_rs() RETURNS INT BEGIN SELECT 1; RETURN 1; END");
+
+        assertThat(result.getStatus()).isEqualTo(ConversionStatus.FAILED);
+        String stmt = String.join("\n", result.getStatements());
+        assertThat(stmt).contains("SELECT result set in FUNCTION");
+        assertThat(stmt).doesNotContain("OPEN __opendrs_rs");
+        assertThat(result.getErrors()).contains("SELECT result set");
     }
 
 }
