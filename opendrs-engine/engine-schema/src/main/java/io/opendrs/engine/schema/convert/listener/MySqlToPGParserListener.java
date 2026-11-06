@@ -187,12 +187,12 @@ public class MySqlToPGParserListener extends MySqlParserBaseListener {
     /**
      * MySQL {@code CREATE FUNCTION} becomes a PL/pgSQL function. The routine header keeps its
      * structure (token-level type mapping), while the procedural body is re-emitted clause by
-     * clause; see {@link MySqlToPGFunctionTranslator}.
+     * clause; see {@link MySqlToPGRoutineTranslator}.
      */
     @Override
     public void exitCreateFunction(MySqlParser.CreateFunctionContext ctx) {
-        MySqlToPGFunctionTranslator translator = new MySqlToPGFunctionTranslator(rewriter.getTokenStream(), message);
-        String translated = translator.translate(ctx);
+        MySqlToPGRoutineTranslator translator = new MySqlToPGRoutineTranslator(rewriter.getTokenStream(), message);
+        String translated = translator.translateFunction(ctx);
         rewriter.replace(ctx.getStart(), ctx.getStop(), translated);
         if (translator.getCommentStatement() != null) {
             afterStatements.add(translator.getCommentStatement());
@@ -842,13 +842,17 @@ public class MySqlToPGParserListener extends MySqlParserBaseListener {
     }
 
 
+    /**
+     * MySQL {@code CREATE PROCEDURE} becomes a PostgreSQL {@code CREATE PROCEDURE} with a shared
+     * PL/pgSQL body emitter; see {@link MySqlToPGRoutineTranslator#translateProcedure}.
+     */
     @Override
     public void exitCreateProcedure(MySqlParser.CreateProcedureContext ctx) {
-        ctx.procedureParameter();
-        MySqlParser.BlockStatementContext blockStatementContext = ctx.routineBody().blockStatement();
-        List<MySqlParser.DeclareVariableContext> declareVariableContexts = blockStatementContext.declareVariable();
-        for (MySqlParser.DeclareVariableContext declareVariableContext :  declareVariableContexts) {
-            declareVariableContext.dataType();
+        MySqlToPGRoutineTranslator translator = new MySqlToPGRoutineTranslator(rewriter.getTokenStream(), message);
+        String translated = translator.translateProcedure(ctx);
+        rewriter.replace(ctx.getStart(), ctx.getStop(), translated);
+        if (translator.getCommentStatement() != null) {
+            afterStatements.add(translator.getCommentStatement());
         }
     }
 

@@ -6,9 +6,9 @@ import io.opendrs.engine.schema.convert.converters.MySqlToPGConverter;
 import org.junit.jupiter.api.Test;
 
 /**
- * Demo coverage for {@code CREATE FUNCTION} translation (MySQL → PL/pgSQL).
+ * Coverage for {@code CREATE FUNCTION}/{@code CREATE PROCEDURE} translation (MySQL → PL/pgSQL).
  */
-class MySqlToPGFunctionTranslatorTest {
+class MySqlToPGRoutineTranslatorTest {
 
     private static MySqlToPGConverter identityConverter() {
         return new MySqlToPGConverter(
@@ -332,5 +332,75 @@ class MySqlToPGFunctionTranslatorTest {
         String stmt = String.join("\n", result.getStatements());
         assertThat(stmt).contains("RETURN (CASE WHEN (a IS NULL) THEN 0 ELSE a END);");
     }
+
+    @Test
+    void translatesProcedureWithInOutParamsAndBody() {
+        ConversionResult result = identityConverter().convert(
+                "CREATE DEFINER=`root`@`localhost` PROCEDURE bump(IN delta INT, OUT total INT) "
+                        + "BEGIN "
+                        + "DECLARE cur INT DEFAULT 0; "
+                        + "SET cur = cur + delta; "
+                        + "SET total = cur; "
+                        + "END");
+
+        assertThat(result.getStatus()).isEqualTo(ConversionStatus.SUCCEEDED);
+        String stmt = String.join("\n", result.getStatements());
+        assertThat(stmt).contains("CREATE PROCEDURE \"bump\"(IN delta int, OUT total int) AS $$");
+        assertThat(stmt).doesNotContain("RETURNS");
+        assertThat(stmt).contains("DECLARE\n    cur int := 0;");
+        assertThat(stmt).contains("cur := cur + delta;");
+        assertThat(stmt).contains("total := cur;");
+        assertThat(stmt).contains("$$ LANGUAGE plpgsql;");
+        assertThat(stmt).doesNotContain("DEFINER");
+        assertThat(result.getInfos()).anyMatch(m -> m.contains("DEFINER"));
+    }
+
+    @Test
+    void translatesProcedureInoutAndDefaultInDirection() {
+        ConversionResult result = identityConverter().convert(
+                "CREATE PROCEDURE swap(INOUT a INT, b INT) "
+                        + "BEGIN "
+                        + "DECLARE tmp INT; "
+                        + "SET tmp = a; SET a = b; SET b = tmp; "
+                        + "END");
+
+        assertThat(result.getStatus()).isEqualTo(ConversionStatus.SUCCEEDED);
+        String stmt = String.join("\n", result.getStatements());
+        // omitted MySQL direction becomes explicit IN
+        assertThat(stmt).contains("CREATE PROCEDURE \"swap\"(INOUT a int, IN b int) AS $$");
+        assertThat(stmt).contains("tmp := a;");
+        assertThat(stmt).contains("a := b;");
+        assertThat(stmt).contains("b := tmp;");
+    }
+
+    @Test
+    void emitsCommentOnProcedureForRoutineCommentOption() {
+        ConversionResult result = identityConverter().convert(
+                "CREATE PROCEDURE note_proc() COMMENT 'hello' BEGIN SELECT 1; END");
+
+        assertThat(result.getStatements()).hasSize(2);
+        assertThat(result.getStatements().get(0))
+                .contains("CREATE PROCEDURE \"note_proc\"() AS $$");
+        assertThat(result.getStatements().get(1))
+                .isEqualTo("COMMENT ON PROCEDURE \"note_proc\" IS 'hello';");
+    }
+
+    @Test
+    void translatesProcedureSelectIntoAndSignal() {
+        ConversionResult result = identityConverter().convert(
+                "CREATE PROCEDURE lookup(IN pid INT, OUT n VARCHAR(64)) BEGIN "
+                        + "SELECT name INTO n FROM people WHERE id = pid; "
+                        + "IF n IS NULL THEN "
+                        + "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'missing'; "
+                        + "END IF; "
+                        + "END");
+
+        assertThat(result.getStatus()).isEqualTo(ConversionStatus.SUCCEEDED);
+        String stmt = String.join("\n", result.getStatements());
+        assertThat(stmt).contains("CREATE PROCEDURE \"lookup\"(IN pid int, OUT n VARCHAR(64)) AS $$");
+        assertThat(stmt).contains("SELECT name INTO n FROM people WHERE id = pid;");
+        assertThat(stmt).contains("RAISE EXCEPTION 'missing' USING ERRCODE = '45000';");
+    }
+
 
 }

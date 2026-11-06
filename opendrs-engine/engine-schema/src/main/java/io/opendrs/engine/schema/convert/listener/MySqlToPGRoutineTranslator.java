@@ -12,7 +12,11 @@ import org.antlr.v4.runtime.TokenStream;
 import org.antlr.v4.runtime.tree.ParseTree;
 
 /**
- * MySQL {@code CREATE FUNCTION} → PostgreSQL PL/pgSQL translator (demo).
+ * MySQL {@code CREATE FUNCTION}/{@code CREATE PROCEDURE} → PostgreSQL PL/pgSQL translator.
+ *
+ * <p>Function and procedure share the same body emitter; only the header differs
+ * ({@code RETURNS} for functions, {@code IN}/{@code OUT}/{@code INOUT} for procedures,
+ * {@code COMMENT ON FUNCTION}/{@code COMMENT ON PROCEDURE}).
  *
  * <p>Hybrid strategy — token rewriting and clause re-emission are complementary, not alternatives:
  * <ul>
@@ -55,7 +59,7 @@ import org.antlr.v4.runtime.tree.ParseTree;
  * as {@code RAISE}, and preserves simple {@code CASE} subjects.
  */
 
-public class MySqlToPGFunctionTranslator {
+public class MySqlToPGRoutineTranslator {
 
     private final TokenStream tokens;
     private final ConversionMessage message;
@@ -63,17 +67,18 @@ public class MySqlToPGFunctionTranslator {
     private final List<String> notFoundAssignments = new ArrayList<>();
     private String commentStatement;
 
-    public MySqlToPGFunctionTranslator(TokenStream tokens, ConversionMessage message) {
+    public MySqlToPGRoutineTranslator(TokenStream tokens, ConversionMessage message) {
         this.tokens = tokens;
         this.message = message;
     }
 
-    /** The {@code COMMENT ON FUNCTION …} statement derived from the routine COMMENT option. */
+    /** The {@code COMMENT ON FUNCTION/PROCEDURE …} statement derived from the routine COMMENT option. */
     public String getCommentStatement() {
         return commentStatement;
     }
 
-    public String translate(MySqlParser.CreateFunctionContext ctx) {
+    /** MySQL {@code CREATE FUNCTION} → {@code CREATE FUNCTION … AS $$…$$ LANGUAGE plpgsql}. */
+    public String translateFunction(MySqlParser.CreateFunctionContext ctx) {
         if (ctx.ownerStatement() != null) {
             message.report("DEFINER clause dropped: PostgreSQL has no per-function definer", Level.INFO);
         }
@@ -98,32 +103,70 @@ public class MySqlToPGFunctionTranslator {
         }
         header.append(") RETURNS ").append(emitDataType(ctx.dataType()));
 
-        for (MySqlParser.RoutineOptionContext option : ctx.routineOption()) {
+        collectRoutineComment(ctx.routineOption(), "FUNCTION", ctx.fullId());
+
+        String body;
+        if (ctx.returnStatement() != null) {
+            body = "BEGIN\n    RETURN " + expression(ctx.returnStatement().expression()) + ";\nEND;";
+        } else {
+            body = emitRoutineBody(ctx.routineBody(), "function");
+        }
+        return header + " AS $$\n" + body + "$$ LANGUAGE plpgsql;";
+    }
+
+    /**
+     * MySQL {@code CREATE PROCEDURE} → PostgreSQL {@code CREATE PROCEDURE … AS $$…$$ LANGUAGE plpgsql}.
+     * Body emission is shared with {@link #translateFunction}; the header carries {@code IN}/{@code OUT}/
+     * {@code INOUT} and has no {@code RETURNS}.
+     */
+    public String translateProcedure(MySqlParser.CreateProcedureContext ctx) {
+        if (ctx.ownerStatement() != null) {
+            message.report("DEFINER clause dropped: PostgreSQL has no per-procedure definer", Level.INFO);
+        }
+
+        StringBuilder header = new StringBuilder("CREATE PROCEDURE ");
+        header.append(quotedFullId(ctx.fullId())).append('(');
+        List<MySqlParser.ProcedureParameterContext> params = ctx.procedureParameter();
+        for (int i = 0; i < params.size(); i++) {
+            if (i > 0) {
+                header.append(", ");
+            }
+            MySqlParser.ProcedureParameterContext param = params.get(i);
+            // MySQL omits direction → IN; always emit so PG signatures stay explicit
+            String direction = param.direction != null ? param.direction.getText().toUpperCase() : "IN";
+            header.append(direction).append(' ')
+                    .append(plainUid(param.uid())).append(' ')
+                    .append(emitDataType(param.dataType()));
+        }
+        header.append(')');
+
+        collectRoutineComment(ctx.routineOption(), "PROCEDURE", ctx.fullId());
+
+        String body = emitRoutineBody(ctx.routineBody(), "procedure");
+        return header + " AS $$\n" + body + "$$ LANGUAGE plpgsql;";
+    }
+
+    private void collectRoutineComment(List<MySqlParser.RoutineOptionContext> options,
+                                       String kind, MySqlParser.FullIdContext fullId) {
+        for (MySqlParser.RoutineOptionContext option : options) {
             if (option instanceof MySqlParser.RoutineCommentContext) {
                 String literal = ((MySqlParser.RoutineCommentContext) option).STRING_LITERAL().getText();
                 commentStatement =
-                        "COMMENT ON FUNCTION " + quotedFullId(ctx.fullId()) + " IS " + literal + ";";
+                        "COMMENT ON " + kind + " " + quotedFullId(fullId) + " IS " + literal + ";";
             } else {
                 message.report("routine option '" + tokens.getText(option)
                         + "' dropped (no PostgreSQL equivalent)", Level.INFO);
             }
         }
-
-        String body = emitRoutineBody(ctx);
-        return header + " AS $$\n" + body + "$$ LANGUAGE plpgsql;";
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Body: clause-level re-emission
+    // Body: clause-level re-emission (shared by FUNCTION and PROCEDURE)
     // ---------------------------------------------------------------------------------------------
 
-    private String emitRoutineBody(MySqlParser.CreateFunctionContext ctx) {
-        if (ctx.returnStatement() != null) {
-            return "BEGIN\n    RETURN " + expression(ctx.returnStatement().expression()) + ";\nEND;";
-        }
-        MySqlParser.RoutineBodyContext body = ctx.routineBody();
+    private String emitRoutineBody(MySqlParser.RoutineBodyContext body, String kind) {
         if (body != null && body.blockStatement() != null) {
-            message.report("function body statements are re-emitted, but expressions are carried over"
+            message.report(kind + " body statements are re-emitted, but expressions are carried over"
                     + " verbatim: verify function/operator semantics (e.g. ||, integer division, date"
                     + " arithmetic) differ between MySQL and PostgreSQL", Level.WARNING);
             notFoundAssignments.clear();
@@ -132,7 +175,7 @@ public class MySqlToPGFunctionTranslator {
             return sb.toString();
         }
         // Rare shape: body is a single plain SQL statement.
-        message.report("single-statement function body passed through untranslated", Level.WARNING);
+        message.report("single-statement " + kind + " body passed through untranslated", Level.WARNING);
         return "BEGIN\n" + tokens.getText(body) + ";\nEND;";
     }
 
@@ -449,7 +492,7 @@ public class MySqlToPGFunctionTranslator {
                 sb.append(tokens.getText(s.lengthOneDimension()));
             }
             if (s.charSet() != null || s.collationName() != null) {
-                message.report("CHARSET/COLLATE clause dropped from function signature;"
+                message.report("CHARSET/COLLATE clause dropped from routine signature;"
                         + " comparison semantics may differ from MySQL", Level.WARNING);
             }
             return sb.toString();
@@ -578,7 +621,7 @@ public class MySqlToPGFunctionTranslator {
         if (into instanceof MySqlParser.SelectIntoDumpFileContext
                 || into instanceof MySqlParser.SelectIntoTextFileContext) {
             unsupported(into, sb, depth, "SELECT INTO DUMPFILE/OUTFILE", Level.FAILED,
-                    "file exports have no PL/pgSQL equivalent inside a function");
+                    "file exports have no PL/pgSQL equivalent inside a routine");
             sb.append('\n');
             return true;
         }
