@@ -140,4 +140,48 @@ class FunctionRoutineTranslatorTest {
         String stmt = String.join("\n", result.getStatements());
         assertThat(stmt).contains("RETURN COALESCE(a, 0);");
     }
+
+    @Test
+    void translatesCursorLoopIdiomWithNotFoundHandler() {
+        ConversionResult result = identityConverter().convert(
+                "CREATE FUNCTION sum_salaries() RETURNS INT BEGIN "
+                        + "DECLARE total INT DEFAULT 0; "
+                        + "DECLARE done INT DEFAULT 0; "
+                        + "DECLARE cur CURSOR FOR SELECT salary FROM employees; "
+                        + "DECLARE CONTINUE HANDLER FOR NOT FOUND SET done = 1; "
+                        + "OPEN cur; "
+                        + "WHILE done = 0 DO "
+                        + "FETCH cur INTO total; "
+                        + "END WHILE; "
+                        + "CLOSE cur; "
+                        + "RETURN total; END");
+
+        assertThat(result.getStatus()).isEqualTo(ConversionStatus.SUCCEEDED);
+        String stmt = String.join("\n", result.getStatements());
+        // bound cursor variable in the DECLARE section
+        assertThat(stmt).contains("cur CURSOR FOR SELECT salary FROM employees;");
+        // OPEN dropped, FETCH/CLOSE pass through
+        assertThat(stmt).doesNotContain("OPEN cur");
+        assertThat(stmt).contains("FETCH cur INTO total;");
+        assertThat(stmt).contains("CLOSE cur;");
+        // NOT FOUND handler idiom injected after FETCH
+        assertThat(stmt).contains("IF NOT FOUND THEN done := 1; END IF;");
+        // approximation is reported as WARNING, not FAILED
+        assertThat(result.getErrors()).isEmpty();
+        assertThat(result.getWarnings()).anyMatch(m -> m.contains("NOT FOUND"));
+    }
+
+    @Test
+    void nonNotFoundHandlersStillFail() {
+        ConversionResult result = identityConverter().convert(
+                "CREATE FUNCTION f() RETURNS INT BEGIN "
+                        + "DECLARE cur CURSOR FOR SELECT a FROM t; "
+                        + "DECLARE CONTINUE HANDLER FOR SQLEXCEPTION SET @x = 1; "
+                        + "OPEN cur; CLOSE cur; RETURN 1; END");
+
+        assertThat(result.getStatus()).isEqualTo(ConversionStatus.FAILED);
+        String stmt = String.join("\n", result.getStatements());
+        assertThat(stmt).contains("cur CURSOR FOR SELECT a FROM t;");
+        assertThat(stmt).contains("/* FAILED: DECLARE HANDLER");
+    }
 }

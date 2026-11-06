@@ -4,6 +4,7 @@ import io.opendrs.common.util.StringUtil;
 import io.opendrs.engine.schema.convert.ConversionMessage;
 import io.opendrs.engine.schema.convert.ConversionMessage.Level;
 import io.opendrs.engine.schema.convert.parser.mysql.MySqlParser;
+import java.util.ArrayList;
 import java.util.List;
 import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.Token;
@@ -29,18 +30,23 @@ import org.antlr.v4.runtime.tree.ParseTree;
  *
  * <p>Unsupported constructs are commented out with their original text and reported by severity:
  * <ul>
- *   <li><b>FAILED</b> — completely unsupported, no approximate replacement exists (DECLARE HANDLER,
- *       cursors, user variables, AGGREGATE). The conversion result is FAILED; the comment preserves
- *       the original for manual repair.</li>
+ *   <li><b>FAILED</b> — completely unsupported, no approximate replacement exists (DECLARE HANDLER
+ *       beyond the NOT FOUND idiom, DECLARE CONDITION, user variables, AGGREGATE). The conversion
+ *       result is FAILED; the comment preserves the original for manual repair.</li>
  *   <li><b>WARNING</b> — approximated: most cases are covered but semantics are not fully equivalent
  *       (statements passed through untranslated, expressions carried over verbatim, dropped
- *       CHARSET/COLLATE).</li>
+ *       CHARSET/COLLATE, the NOT FOUND handler idiom mapped to IF NOT FOUND THEN after FETCH).</li>
  * </ul>
+ *
+ * <p>Cursors: {@code DECLARE cur CURSOR FOR <select>} maps to a PL/pgSQL bound cursor variable in
+ * the DECLARE section; {@code FETCH}/{@code CLOSE} pass through; {@code OPEN} is dropped (bound
+ * cursors open implicitly); {@code CONTINUE HANDLER FOR NOT FOUND SET done = x} maps to
+ * {@code IF NOT FOUND THEN done := x; END IF;} after every FETCH.
  *
  * <p>Scope (demo): scalar functions with a {@code blockStatement} body or a single
  * {@code RETURN} expression; IF/ELSIF/ELSE, WHILE/LOOP, REPEAT, CASE, LEAVE/ITERATE,
- * SET assignments, DECLARE variables. Handlers/cursors/conditions are reported and replaced
- * with a comment placeholder. Anything else inside the body is passed through untranslated
+ * SET assignments, DECLARE variables. DECLARE CONDITION is reported and replaced with a
+ * comment placeholder. Anything else inside the body is passed through untranslated
  * with a warning. Expressions are carried over verbatim apart from a small function-name
  * whitelist ({@code IFNULL} → {@code COALESCE}).
  */
@@ -48,6 +54,8 @@ public class FunctionRoutineTranslator {
 
     private final TokenStream tokens;
     private final ConversionMessage message;
+    /** assignments collected from CONTINUE HANDLER FOR NOT FOUND, injected after each FETCH */
+    private final List<String> notFoundAssignments = new ArrayList<>();
     private String commentStatement;
 
     public FunctionRoutineTranslator(TokenStream tokens, ConversionMessage message) {
@@ -113,6 +121,7 @@ public class FunctionRoutineTranslator {
             message.report("function body statements are re-emitted, but expressions are carried over"
                     + " verbatim: verify function/operator semantics (e.g. ||, integer division, date"
                     + " arithmetic) differ between MySQL and PostgreSQL", Level.WARNING);
+            notFoundAssignments.clear();
             StringBuilder sb = new StringBuilder();
             emitBlock(body.blockStatement(), sb, 0);
             return sb.toString();
@@ -153,14 +162,21 @@ public class FunctionRoutineTranslator {
                 sb.append('\n');
             }
             for (MySqlParser.DeclareCursorContext decl : ctx.declareCursor()) {
-                unsupported(decl, sb, depth + 1, "DECLARE CURSOR", Level.FAILED,
-                        "cursor translation is not implemented in this demo");
-                sb.append('\n');
+                emitDeclareCursor(decl, sb, depth + 1);
             }
             for (MySqlParser.DeclareHandlerContext decl : ctx.declareHandler()) {
-                unsupported(decl, sb, depth + 1, "DECLARE HANDLER", Level.FAILED,
-                        "exception handlers have no approximate equivalent; rewrite with EXCEPTION blocks");
-                sb.append('\n');
+                String assignment = tryMapNotFoundHandler(decl);
+                if (assignment != null) {
+                    notFoundAssignments.add(assignment);
+                    message.report("CONTINUE HANDLER FOR NOT FOUND mapped to 'IF NOT FOUND THEN "
+                            + assignment + "; END IF;' after each FETCH — approximation: in MySQL"
+                            + " it fires on any NOT FOUND condition, here only at FETCH sites",
+                            Level.WARNING);
+                } else {
+                    unsupported(decl, sb, depth + 1, "DECLARE HANDLER", Level.FAILED,
+                            "exception handlers have no approximate equivalent; rewrite with EXCEPTION blocks");
+                    sb.append('\n');
+                }
             }
         }
         sb.append(ind).append("BEGIN\n");
@@ -218,6 +234,85 @@ public class FunctionRoutineTranslator {
                 }
             }
             sb.append(ind).append(name).append(" := ").append(value).append(";\n");
+        }
+    }
+
+    /**
+     * {@code DECLARE cur CURSOR FOR <select>} → PL/pgSQL bound cursor variable in the DECLARE
+     * section. The SELECT itself is carried over verbatim.
+     */
+    private void emitDeclareCursor(MySqlParser.DeclareCursorContext ctx, StringBuilder sb, int depth) {
+        String ind = "    ".repeat(depth);
+        String name = plainUid(ctx.uid());
+        String select = tokens.getText(ctx.selectStatement());
+        message.report("cursor '" + name + "': SELECT statement carried over verbatim;"
+                + " verify MySQL-specific SELECT syntax in the PostgreSQL target", Level.WARNING);
+        sb.append(ind).append(name).append(" CURSOR FOR ").append(select).append(";\n");
+    }
+
+    /**
+     * Maps the dominant cursor-loop idiom {@code DECLARE CONTINUE HANDLER FOR NOT FOUND SET done = 1}
+     * to {@code done := 1} injected as {@code IF NOT FOUND THEN done := 1; END IF;} after each
+     * FETCH. Returns the assignment text, or {@code null} when the handler does not match the idiom.
+     */
+    private String tryMapNotFoundHandler(MySqlParser.DeclareHandlerContext handler) {
+        if (handler.handlerConditionValue().size() != 1
+                || !(handler.handlerConditionValue(0)
+                        instanceof MySqlParser.HandlerConditionNotfoundContext)
+                || handler.routineBody() == null
+                || handler.routineBody().sqlStatement() == null
+                || handler.routineBody().sqlStatement().administrationStatement() == null) {
+            return null;
+        }
+        MySqlParser.SetStatementContext set = handler.routineBody().sqlStatement()
+                .administrationStatement().setStatement();
+        if (!(set instanceof MySqlParser.SetVariableContext)) {
+            return null;
+        }
+        List<ParseTree> children = set.children;
+        for (int i = 0; i < children.size(); i++) {
+            ParseTree child = children.get(i);
+            if (child instanceof MySqlParser.VariableClauseContext
+                    || child instanceof MySqlParser.FullIdContext) {
+                String name = tokens.getText((ParserRuleContext) child);
+                if (name.startsWith("@")) {
+                    return null;
+                }
+                for (int j = i + 1; j < children.size(); j++) {
+                    ParseTree next = children.get(j);
+                    if (next instanceof MySqlParser.ExpressionContext) {
+                        return name + " := " + expression((ParserRuleContext) next);
+                    }
+                    if (",".equals(next.getText())) {
+                        return null;
+                    }
+                }
+                return null;
+            }
+        }
+        return null;
+    }
+
+    /** {@code OPEN} is dropped (bound cursors open implicitly); {@code FETCH}/{@code CLOSE} pass through. */
+    private void emitCursorStatement(MySqlParser.CursorStatementContext ctx, StringBuilder sb, int depth) {
+        String ind = "    ".repeat(depth);
+        if (ctx instanceof MySqlParser.OpenCursorContext open) {
+            message.report("OPEN " + plainUid(open.uid()) + " dropped: PostgreSQL bound cursor"
+                    + " variables open implicitly on first FETCH", Level.INFO);
+            return;
+        }
+        if (ctx instanceof MySqlParser.CloseCursorContext close) {
+            sb.append(ind).append("CLOSE ").append(plainUid(close.uid())).append(";\n");
+            return;
+        }
+        MySqlParser.FetchCursorContext fetch = (MySqlParser.FetchCursorContext) ctx;
+        String vars = fetch.uidList().uid().stream()
+                .map(this::plainUid)
+                .collect(java.util.stream.Collectors.joining(", "));
+        sb.append(ind).append("FETCH ").append(plainUid(fetch.uid())).append(" INTO ").append(vars)
+                .append(";\n");
+        for (String assignment : notFoundAssignments) {
+            sb.append(ind).append("IF NOT FOUND THEN ").append(assignment).append("; END IF;\n");
         }
     }
 
@@ -288,9 +383,7 @@ public class FunctionRoutineTranslator {
         } else if (c.iterateStatement() != null) {
             sb.append(ind).append("CONTINUE ").append(c.iterateStatement().uid().getText()).append(";\n");
         } else if (c.cursorStatement() != null) {
-            unsupported(c.cursorStatement(), sb, depth, "cursor statement", Level.FAILED,
-                    "cursor translation is not implemented in this demo");
-            sb.append('\n');
+            emitCursorStatement(c.cursorStatement(), sb, depth);
         }
     }
 
