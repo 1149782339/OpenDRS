@@ -51,12 +51,16 @@ import org.antlr.v4.runtime.tree.ParseTree;
  * {@code RETURN} expression; IF/ELSIF/ELSE, WHILE/LOOP, REPEAT, CASE, LEAVE/ITERATE,
  * SET assignments, DECLARE variables. DECLARE CONDITION is reported and replaced with a
  * comment placeholder. Anything else inside the body is passed through untranslated
- * with a warning. Expressions are carried over verbatim apart from a small function-name
+ * with a warning. Expressions are carried over verbatim apart from a function-name
  * whitelist ({@code IFNULL} → {@code COALESCE}, {@code ISNULL(x)} → {@code (x IS NULL)},
- * {@code IF(c,a,b)} → {@code CASE WHEN c THEN a ELSE b END}).
+ * {@code IF(c,a,b)} → {@code CASE WHEN c THEN a ELSE b END}, {@code LOCATE} → {@code strpos},
+ * {@code DATE_FORMAT} → {@code to_char}, {@code GROUP_CONCAT} → {@code string_agg},
+ * {@code LAST_INSERT_ID()} → {@code lastval()}, plus same-name passthroughs such as
+ * {@code CONCAT}/{@code SUBSTRING}/{@code NOW}).
  *
  * <p>Also emits {@code SELECT … INTO} for PL/pgSQL targets, {@code SIGNAL}/{@code RESIGNAL}
- * as {@code RAISE}, and preserves simple {@code CASE} subjects.
+ * as {@code RAISE}, preserves simple {@code CASE} subjects, and maps
+ * {@code SQL SECURITY DEFINER|INVOKER} to PostgreSQL {@code SECURITY DEFINER|INVOKER}.
  */
 
 public class MySqlToPGRoutineTranslator {
@@ -103,13 +107,16 @@ public class MySqlToPGRoutineTranslator {
         }
         header.append(") RETURNS ").append(emitDataType(ctx.dataType()));
 
-        collectRoutineComment(ctx.routineOption(), "FUNCTION", ctx.fullId());
+        String security = collectRoutineOptions(ctx.routineOption(), "FUNCTION", ctx.fullId());
 
         String body;
         if (ctx.returnStatement() != null) {
             body = "BEGIN\n    RETURN " + expression(ctx.returnStatement().expression()) + ";\nEND;";
         } else {
             body = emitRoutineBody(ctx.routineBody(), "function");
+        }
+        if (security != null) {
+            header.append(' ').append(security);
         }
         return header + " AS $$\n" + body + "$$ LANGUAGE plpgsql;";
     }
@@ -140,24 +147,36 @@ public class MySqlToPGRoutineTranslator {
         }
         header.append(')');
 
-        collectRoutineComment(ctx.routineOption(), "PROCEDURE", ctx.fullId());
+        String security = collectRoutineOptions(ctx.routineOption(), "PROCEDURE", ctx.fullId());
 
         String body = emitRoutineBody(ctx.routineBody(), "procedure");
+        if (security != null) {
+            header.append(' ').append(security);
+        }
         return header + " AS $$\n" + body + "$$ LANGUAGE plpgsql;";
     }
 
-    private void collectRoutineComment(List<MySqlParser.RoutineOptionContext> options,
-                                       String kind, MySqlParser.FullIdContext fullId) {
+    /**
+     * Collects {@code COMMENT} into {@link #commentStatement} and returns
+     * {@code SECURITY DEFINER}|{@code SECURITY INVOKER} when {@code SQL SECURITY} is present.
+     * Other MySQL routine options are dropped with INFO.
+     */
+    private String collectRoutineOptions(List<MySqlParser.RoutineOptionContext> options,
+                                         String kind, MySqlParser.FullIdContext fullId) {
+        String security = null;
         for (MySqlParser.RoutineOptionContext option : options) {
             if (option instanceof MySqlParser.RoutineCommentContext) {
                 String literal = ((MySqlParser.RoutineCommentContext) option).STRING_LITERAL().getText();
                 commentStatement =
                         "COMMENT ON " + kind + " " + quotedFullId(fullId) + " IS " + literal + ";";
+            } else if (option instanceof MySqlParser.RoutineSecurityContext sec) {
+                security = "SECURITY " + sec.context.getText().toUpperCase();
             } else {
                 message.report("routine option '" + tokens.getText(option)
                         + "' dropped (no PostgreSQL equivalent)", Level.INFO);
             }
         }
+        return security;
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -505,8 +524,10 @@ public class MySqlToPGRoutineTranslator {
     }
 
     /**
-     * Expression text is carried over verbatim, apart from a small function-name whitelist
-     * ({@code IFNULL}, {@code ISNULL}, {@code IF}).
+     * Expression text is carried over verbatim, apart from a function-name whitelist
+     * ({@code IFNULL}, {@code ISNULL}, {@code IF}, {@code LOCATE}, {@code DATE_FORMAT},
+     * {@code GROUP_CONCAT}, {@code LAST_INSERT_ID}, {@code ROW_COUNT}; {@code CONCAT}/
+     * {@code SUBSTRING}/{@code NOW} keep PostgreSQL-compatible names).
      */
     private String expression(ParserRuleContext ctx) {
         return rewriteExprFunctions(tokens.getText(ctx));
@@ -524,7 +545,221 @@ public class MySqlToPGRoutineTranslator {
             return "(CASE WHEN " + parts.get(0) + " THEN " + parts.get(1)
                     + " ELSE " + parts.get(2) + " END)";
         });
+        // CONCAT / SUBSTRING / NOW exist in PostgreSQL with compatible call shapes — leave names.
+        out = replaceNamedCall(out, "LOCATE", this::rewriteLocate);
+        out = replaceNamedCall(out, "DATE_FORMAT", this::rewriteDateFormat);
+        out = replaceNamedCall(out, "GROUP_CONCAT", this::rewriteGroupConcat);
+        out = replaceNamedCall(out, "LAST_INSERT_ID", this::rewriteLastInsertId);
+        out = replaceNamedCall(out, "ROW_COUNT", this::rewriteRowCount);
         return out;
+    }
+
+    /** {@code LOCATE(substr, str[, pos])} → {@code strpos} (argument order swapped). */
+    private String rewriteLocate(String args) {
+        java.util.List<String> parts = splitTopLevelArgs(args);
+        if (parts.size() == 2) {
+            return "strpos(" + parts.get(1) + ", " + parts.get(0) + ")";
+        }
+        if (parts.size() == 3) {
+            message.report("LOCATE(substr, str, pos) approximated with strpos/substr;"
+                    + " verify edge cases around missing matches", Level.WARNING);
+            return "(CASE WHEN strpos(substr(" + parts.get(1) + ", " + parts.get(2) + "), "
+                    + parts.get(0) + ") = 0 THEN 0 ELSE strpos(substr(" + parts.get(1) + ", "
+                    + parts.get(2) + "), " + parts.get(0) + ") + (" + parts.get(2) + ") - 1 END)";
+        }
+        return "LOCATE(" + args + ")";
+    }
+
+    /** {@code DATE_FORMAT(date, fmt)} → {@code to_char(date, mapped_fmt)}. */
+    private String rewriteDateFormat(String args) {
+        java.util.List<String> parts = splitTopLevelArgs(args);
+        if (parts.size() != 2) {
+            return "DATE_FORMAT(" + args + ")";
+        }
+        String fmt = mapMysqlDateFormat(parts.get(1));
+        message.report("DATE_FORMAT mapped to to_char; verify MySQL format codes against"
+                + " PostgreSQL to_char patterns", Level.WARNING);
+        return "to_char(" + parts.get(0) + ", " + fmt + ")";
+    }
+
+    /**
+     * Maps common MySQL {@code DATE_FORMAT} percent-codes inside a quoted literal to
+     * PostgreSQL {@code to_char} patterns. Non-literals are left unchanged.
+     */
+    private String mapMysqlDateFormat(String fmtArg) {
+        String trimmed = fmtArg.trim();
+        if (trimmed.length() < 2) {
+            return fmtArg;
+        }
+        char q = trimmed.charAt(0);
+        if ((q != '\'' && q != '"') || trimmed.charAt(trimmed.length() - 1) != q) {
+            return fmtArg;
+        }
+        String inner = trimmed.substring(1, trimmed.length() - 1);
+        StringBuilder mapped = new StringBuilder();
+        for (int i = 0; i < inner.length(); i++) {
+            char c = inner.charAt(i);
+            if (c == '%' && i + 1 < inner.length()) {
+                char code = inner.charAt(++i);
+                switch (code) {
+                    case 'Y' -> mapped.append("YYYY");
+                    case 'y' -> mapped.append("YY");
+                    case 'm' -> mapped.append("MM");
+                    case 'c' -> mapped.append("FMMM");
+                    case 'd' -> mapped.append("DD");
+                    case 'e' -> mapped.append("FMDD");
+                    case 'H' -> mapped.append("HH24");
+                    case 'h', 'I' -> mapped.append("HH12");
+                    case 'i' -> mapped.append("MI");
+                    case 's', 'S' -> mapped.append("SS");
+                    case 'f' -> mapped.append("US");
+                    case 'T' -> mapped.append("HH24:MI:SS");
+                    case 'r' -> mapped.append("HH12:MI:SS AM");
+                    case 'p' -> mapped.append("AM");
+                    case 'W' -> mapped.append("Day");
+                    case 'a' -> mapped.append("Dy");
+                    case 'M' -> mapped.append("Month");
+                    case 'b' -> mapped.append("Mon");
+                    case '%' -> mapped.append('%');
+                    default -> mapped.append('%').append(code);
+                }
+            } else {
+                mapped.append(c);
+            }
+        }
+        return q + mapped.toString() + q;
+    }
+
+    /**
+     * {@code GROUP_CONCAT([DISTINCT] expr [ORDER BY …] [SEPARATOR sep])} →
+     * {@code string_agg([DISTINCT] expr::text, sep [ORDER BY …])}.
+     */
+    private String rewriteGroupConcat(String args) {
+        String sep = "','";
+        String core = args.trim();
+        int sepAt = indexOfKeyword(core, "SEPARATOR");
+        if (sepAt >= 0) {
+            String after = core.substring(sepAt + "SEPARATOR".length()).trim();
+            int consumed = 0;
+            if (!after.isEmpty() && (after.charAt(0) == '\'' || after.charAt(0) == '"')) {
+                char q = after.charAt(0);
+                int close = after.indexOf(q, 1);
+                if (close > 0) {
+                    sep = after.substring(0, close + 1);
+                    consumed = close + 1;
+                }
+            } else {
+                int sp = 0;
+                while (sp < after.length() && !Character.isWhitespace(after.charAt(sp))) {
+                    sp++;
+                }
+                sep = after.substring(0, sp);
+                consumed = sp;
+            }
+            core = core.substring(0, sepAt).trim();
+            // trailing junk after separator is ignored
+            if (consumed == 0) {
+                sep = "','";
+            }
+        }
+        boolean distinct = false;
+        if (core.regionMatches(true, 0, "DISTINCT ", 0, 9)) {
+            distinct = true;
+            core = core.substring(9).trim();
+        }
+        String orderBy = null;
+        int orderAt = indexOfKeyword(core, "ORDER");
+        if (orderAt >= 0) {
+            String afterOrder = core.substring(orderAt + "ORDER".length()).trim();
+            if (afterOrder.regionMatches(true, 0, "BY ", 0, 3)
+                    || afterOrder.regionMatches(true, 0, "BY\t", 0, 3)) {
+                orderBy = afterOrder.substring(2).trim();
+                core = core.substring(0, orderAt).trim();
+            }
+        }
+        message.report("GROUP_CONCAT mapped to string_agg — approximation: NULL/empty-group"
+                + " and charset semantics may differ", Level.WARNING);
+        StringBuilder sb = new StringBuilder("string_agg(");
+        if (distinct) {
+            sb.append("DISTINCT ");
+        }
+        sb.append(core).append("::text, ").append(sep);
+        if (orderBy != null) {
+            sb.append(" ORDER BY ").append(orderBy);
+        }
+        sb.append(')');
+        return sb.toString();
+    }
+
+    /** Case-insensitive top-level keyword search (ignores text inside quotes / parentheses). */
+    private int indexOfKeyword(String text, String keyword) {
+        String upper = text.toUpperCase();
+        String needle = keyword.toUpperCase();
+        int depth = 0;
+        boolean inSingle = false;
+        boolean inDouble = false;
+        for (int i = 0; i <= text.length() - needle.length(); i++) {
+            char c = text.charAt(i);
+            if (inSingle) {
+                if (c == '\'' && (i + 1 >= text.length() || text.charAt(i + 1) != '\'')) {
+                    inSingle = false;
+                } else if (c == '\'' && i + 1 < text.length() && text.charAt(i + 1) == '\'') {
+                    i++;
+                }
+                continue;
+            }
+            if (inDouble) {
+                if (c == '"') {
+                    inDouble = false;
+                }
+                continue;
+            }
+            if (c == '\'') {
+                inSingle = true;
+                continue;
+            }
+            if (c == '"') {
+                inDouble = true;
+                continue;
+            }
+            if (c == '(') {
+                depth++;
+                continue;
+            }
+            if (c == ')') {
+                depth--;
+                continue;
+            }
+            if (depth != 0) {
+                continue;
+            }
+            if (upper.startsWith(needle, i)) {
+                boolean leftOk = i == 0 || !Character.isLetterOrDigit(text.charAt(i - 1));
+                int end = i + needle.length();
+                boolean rightOk = end >= text.length() || !Character.isLetterOrDigit(text.charAt(end));
+                if (leftOk && rightOk) {
+                    return i;
+                }
+            }
+        }
+        return -1;
+    }
+
+    private String rewriteLastInsertId(String args) {
+        if (!args.trim().isEmpty()) {
+            message.report("LAST_INSERT_ID(expr) has no PostgreSQL equivalent; left unchanged",
+                    Level.WARNING);
+            return "LAST_INSERT_ID(" + args + ")";
+        }
+        message.report("LAST_INSERT_ID() mapped to lastval() — approximation: requires a prior"
+                + " nextval() in this session, not MySQL AUTO_INCREMENT semantics", Level.WARNING);
+        return "lastval()";
+    }
+
+    private String rewriteRowCount(String args) {
+        message.report("ROW_COUNT() has no expression-level equivalent in PostgreSQL;"
+                + " use GET DIAGNOSTICS … = ROW_COUNT after DML — left unchanged", Level.WARNING);
+        return "ROW_COUNT(" + args + ")";
     }
 
     @FunctionalInterface
@@ -650,19 +885,19 @@ public class MySqlToPGRoutineTranslator {
         sb.append(ind).append("SELECT ").append(elements)
                 .append(" INTO ").append(String.join(", ", targets));
         if (qs.fromClause() != null) {
-            sb.append(' ').append(tokens.getText(qs.fromClause()));
+            sb.append(' ').append(rewriteExprFunctions(tokens.getText(qs.fromClause())));
         }
         if (qs.groupByClause() != null) {
-            sb.append(' ').append(tokens.getText(qs.groupByClause()));
+            sb.append(' ').append(rewriteExprFunctions(tokens.getText(qs.groupByClause())));
         }
         if (qs.havingClause() != null) {
-            sb.append(' ').append(tokens.getText(qs.havingClause()));
+            sb.append(' ').append(rewriteExprFunctions(tokens.getText(qs.havingClause())));
         }
         if (qs.windowClause() != null) {
             sb.append(' ').append(tokens.getText(qs.windowClause()));
         }
         if (qs.orderByClause() != null) {
-            sb.append(' ').append(tokens.getText(qs.orderByClause()));
+            sb.append(' ').append(rewriteExprFunctions(tokens.getText(qs.orderByClause())));
         }
         if (qs.limitClause() != null) {
             sb.append(' ').append(tokens.getText(qs.limitClause()));

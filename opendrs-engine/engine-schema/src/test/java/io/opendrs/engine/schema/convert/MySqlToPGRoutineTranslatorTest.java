@@ -403,4 +403,80 @@ class MySqlToPGRoutineTranslatorTest {
     }
 
 
+
+    @Test
+    void mapsSqlSecurityDefinerOnFunction() {
+        ConversionResult result = identityConverter().convert(
+                "CREATE FUNCTION secured(a INT) RETURNS INT "
+                        + "SQL SECURITY DEFINER "
+                        + "RETURN a");
+
+        assertThat(result.getStatus()).isEqualTo(ConversionStatus.SUCCEEDED);
+        String stmt = String.join("\n", result.getStatements());
+        assertThat(stmt).contains("CREATE FUNCTION \"secured\"(a int) RETURNS int SECURITY DEFINER AS $$");
+        assertThat(stmt).doesNotContain("SQL SECURITY");
+        assertThat(result.getInfos()).noneMatch(m -> m.contains("SQL SECURITY"));
+    }
+
+    @Test
+    void mapsSqlSecurityInvokerOnProcedure() {
+        ConversionResult result = identityConverter().convert(
+                "CREATE PROCEDURE secured_proc(IN a INT) "
+                        + "SQL SECURITY INVOKER "
+                        + "BEGIN SET a = a + 1; END");
+
+        assertThat(result.getStatus()).isEqualTo(ConversionStatus.SUCCEEDED);
+        String stmt = String.join("\n", result.getStatements());
+        assertThat(stmt).contains("CREATE PROCEDURE \"secured_proc\"(IN a int) SECURITY INVOKER AS $$");
+        assertThat(stmt).doesNotContain("SQL SECURITY");
+    }
+
+    @Test
+    void rewritesLocateDateFormatConcatSubstringAndLastInsertId() {
+        ConversionResult result = identityConverter().convert(
+                "CREATE FUNCTION expr_demo(s VARCHAR(64), d DATETIME) RETURNS VARCHAR(64) BEGIN "
+                        + "DECLARE outv VARCHAR(64); "
+                        + "SET outv = CONCAT(SUBSTRING(s, 1, 3), DATE_FORMAT(d, '%Y-%m-%d')); "
+                        + "IF LOCATE('x', s) > 0 THEN SET outv = CONCAT(outv, 'x'); END IF; "
+                        + "SET outv = IFNULL(outv, LAST_INSERT_ID()); "
+                        + "RETURN outv; END");
+
+        assertThat(result.getStatus()).isEqualTo(ConversionStatus.SUCCEEDED);
+        String stmt = String.join("\n", result.getStatements());
+        assertThat(stmt).contains("CONCAT(SUBSTRING(s, 1, 3), to_char(d, 'YYYY-MM-DD'))");
+        assertThat(stmt).contains("strpos(s, 'x')");
+        assertThat(stmt).contains("COALESCE(outv, lastval())");
+        assertThat(stmt).doesNotContain("DATE_FORMAT(");
+        assertThat(stmt).doesNotContain("LOCATE(");
+        assertThat(stmt).doesNotContain("LAST_INSERT_ID()");
+        assertThat(result.getWarnings()).anyMatch(m -> m.contains("DATE_FORMAT"));
+        assertThat(result.getWarnings()).anyMatch(m -> m.contains("LAST_INSERT_ID"));
+    }
+
+    @Test
+    void rewritesGroupConcatWithOrderByAndReportsRowCount() {
+        ConversionResult result = identityConverter().convert(
+                "CREATE FUNCTION agg_demo() RETURNS VARCHAR(255) BEGIN "
+                        + "DECLARE s VARCHAR(255); "
+                        + "SELECT GROUP_CONCAT(name ORDER BY name SEPARATOR ';') INTO s FROM people; "
+                        + "IF ROW_COUNT() = 0 THEN SET s = ''; END IF; "
+                        + "RETURN s; END");
+
+        assertThat(result.getStatus()).isEqualTo(ConversionStatus.SUCCEEDED);
+        String stmt = String.join("\n", result.getStatements());
+        assertThat(stmt).contains("string_agg(name::text, ';' ORDER BY name)");
+        assertThat(stmt).contains("ROW_COUNT()");
+        assertThat(result.getWarnings()).anyMatch(m -> m.contains("GROUP_CONCAT"));
+        assertThat(result.getWarnings()).anyMatch(m -> m.contains("ROW_COUNT"));
+    }
+
+    @Test
+    void keepsNowInExpressions() {
+        ConversionResult result = identityConverter().convert(
+                "CREATE FUNCTION now_demo() RETURNS DATETIME RETURN NOW()");
+
+        String stmt = String.join("\n", result.getStatements());
+        assertThat(stmt).contains("RETURN NOW();");
+    }
+
 }
