@@ -467,7 +467,11 @@ public class MySqlToPGParserListener extends MySqlParserBaseListener {
             }
             return;
         }
-        rewriter.replace(ctx.UNIQUE().getSymbol(), "UNIQUE KEY");
+        // PostgreSQL table constraints are UNIQUE (...), not UNIQUE KEY (...). MySQL's optional
+        // INDEX/KEY after UNIQUE must be dropped or we emit the illegal "UNIQUE KEY KEY (...)".
+        if (ctx.indexFormat != null) {
+            rewriter.replace(ctx.UNIQUE().getSymbol(), ctx.indexFormat, "UNIQUE");
+        }
         for (MySqlParser.IndexOptionContext indexOptionContext : ctx.indexOption()) {
             comment(indexOptionContext.getStart(), indexOptionContext.getStop());
         }
@@ -503,8 +507,19 @@ public class MySqlToPGParserListener extends MySqlParserBaseListener {
         List<String> refColumnNames = getColumnNamesFromIndexColumnNameContext(referenceDefinitionContext.indexColumnNames(), false);
         List<String> foreignColumnNames = getColumnNamesFromIndexColumnNameContext(ctx.indexColumnNames(), false);
         String tableName = tableId.toQuoted('"').toString();
+        // Anonymous FOREIGN KEY (no CONSTRAINT name) is common in MySQL dumps; generate a
+        // default like ALTER ... ADD FOREIGN KEY already does. Prefer CONSTRAINT name, then
+        // the optional index uid after FOREIGN KEY.
+        String constraintName;
+        if (ctx.name != null) {
+            constraintName = quoteIdent(ctx.name.getText());
+        } else if (ctx.index != null) {
+            constraintName = quoteIdent(ctx.index.getText());
+        } else {
+            constraintName = StringUtil.quote(tableId.getTable() + "_fkey", '"');
+        }
         String sql = String.format(ALTER_TABLE_FOREIGN_KEY, tableName,
-                StringUtil.quote(ctx.name.simpleId().getText(), '"'),
+                constraintName,
                 String.join(",", foreignColumnNames), refTableId.toQuoted('"'),
                 String.join(",", refColumnNames));
         afterStatements.add(sql);

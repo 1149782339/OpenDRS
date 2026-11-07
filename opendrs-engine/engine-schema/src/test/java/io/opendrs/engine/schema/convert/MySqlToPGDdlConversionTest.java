@@ -459,6 +459,70 @@ class MySqlToPGDdlConversionTest {
         assertThat(firstPartitionOf).isLessThan(indexStmt);
     }
 
+    // --- anonymous FK / UNIQUE KEY fixes ---
+
+    @Test
+    void createTableAnonymousForeignKeyGetsDefaultConstraintName() {
+        ConversionResult result = identityConverter().convert(
+                "CREATE TABLE `shop`.`orders` ("
+                        + "`id` INT NOT NULL, "
+                        + "`user_id` INT NOT NULL, "
+                        + "PRIMARY KEY (`id`), "
+                        + "FOREIGN KEY (`user_id`) REFERENCES `shop`.`users` (`user_id`)"
+                        + ")");
+        assertThat(result.getStatus()).isEqualTo(ConversionStatus.SUCCEEDED);
+        assertThat(result.getStatements()).contains(
+                "ALTER TABLE \"shop\".\"orders\" ADD CONSTRAINT \"orders_fkey\" FOREIGN KEY(\"user_id\") "
+                        + "REFERENCES \"shop\".\"users\"(\"user_id\")");
+        assertThat(result.getStatements().get(0))
+                .doesNotContain("FOREIGN KEY")
+                .contains("PRIMARY KEY");
+    }
+
+    @Test
+    void createTableForeignKeyIndexUidUsedWhenConstraintNameMissing() {
+        ConversionResult result = identityConverter().convert(
+                "CREATE TABLE `shop`.`orders` ("
+                        + "`id` INT NOT NULL, "
+                        + "`user_id` INT NOT NULL, "
+                        + "FOREIGN KEY `fk_orders_user` (`user_id`) REFERENCES `users` (`user_id`)"
+                        + ")");
+        assertThat(result.getStatus()).isEqualTo(ConversionStatus.SUCCEEDED);
+        assertThat(result.getStatements()).contains(
+                "ALTER TABLE \"shop\".\"orders\" ADD CONSTRAINT \"fk_orders_user\" FOREIGN KEY(\"user_id\") "
+                        + "REFERENCES \"users\"(\"user_id\")");
+    }
+
+    @Test
+    void createTableAnonymousUniqueKeyDoesNotEmitUniqueKeyKey() {
+        ConversionResult result = identityConverter().convert(
+                "CREATE TABLE `departments` ("
+                        + "`dept_no` CHAR(4) NOT NULL, "
+                        + "`dept_name` VARCHAR(40) NOT NULL, "
+                        + "PRIMARY KEY (`dept_no`), "
+                        + "UNIQUE KEY (`dept_name`)"
+                        + ")");
+        assertThat(result.getStatus()).isEqualTo(ConversionStatus.SUCCEEDED);
+        assertThat(result.getStatements()).hasSize(1);
+        String create = result.getStatements().get(0);
+        assertThat(create).contains("UNIQUE (\"dept_name\")");
+        assertThat(create).doesNotContain("UNIQUE KEY");
+        assertThat(create).doesNotContain("KEY KEY");
+    }
+
+    @Test
+    void createTableAnonymousUniqueWithoutKeyKeywordStaysUnique() {
+        ConversionResult result = identityConverter().convert(
+                "CREATE TABLE `t` ("
+                        + "`id` INT NOT NULL, "
+                        + "`code` VARCHAR(16) NOT NULL, "
+                        + "UNIQUE (`code`)"
+                        + ")");
+        assertThat(result.getStatus()).isEqualTo(ConversionStatus.SUCCEEDED);
+        assertThat(result.getStatements().get(0)).contains("UNIQUE (\"code\")");
+        assertThat(result.getStatements().get(0)).doesNotContain("UNIQUE KEY");
+    }
+
     private static int indexOfPrefix(List<String> stmts, String prefix) {
         for (int i = 0; i < stmts.size(); i++) {
             if (stmts.get(i).startsWith(prefix)) {
