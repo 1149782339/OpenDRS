@@ -380,12 +380,50 @@ class MySqlToPGDdlConversionTest {
     }
 
     @Test
-    void alterAddPartitionIsDropped() {
+    void alterAddRangePartitionIsDropped() {
         ConversionResult result = identityConverter().convert(
                 "ALTER TABLE `shop`.`t` ADD PARTITION (PARTITION `p5` VALUES LESS THAN (2026))");
         assertThat(result.getStatus()).isEqualTo(ConversionStatus.SUCCEEDED);
         assertThat(result.getStatements()).isEmpty();
         assertThat(result.getInfos()).anyMatch(m -> m.contains("partition clause dropped"));
+    }
+
+    @Test
+    void alterAddListPartitionBecomesCreatePartitionOf() {
+        assertConverts(
+                "ALTER TABLE `shop`.`t` ADD PARTITION ("
+                        + "PARTITION `us` VALUES IN ('US','CA'), "
+                        + "PARTITION `uk` VALUES IN ('UK')"
+                        + ")",
+                "CREATE TABLE \"shop\".\"t_us\" PARTITION OF \"shop\".\"t\" "
+                        + "FOR VALUES IN ('US', 'CA')",
+                "CREATE TABLE \"shop\".\"t_uk\" PARTITION OF \"shop\".\"t\" "
+                        + "FOR VALUES IN ('UK')");
+    }
+
+    @Test
+    void alterDropPartitionBecomesDropTableChildren() {
+        assertConverts(
+                "ALTER TABLE `shop`.`orders` DROP PARTITION `p2023`, `p2024`",
+                "DROP TABLE \"shop\".\"orders_p2023\"",
+                "DROP TABLE \"shop\".\"orders_p2024\"");
+    }
+
+    @Test
+    void alterTruncatePartitionBecomesTruncateTableChildren() {
+        assertConverts(
+                "ALTER TABLE `shop`.`orders` TRUNCATE PARTITION `p2023`, `pmax`",
+                "TRUNCATE TABLE \"shop\".\"orders_p2023\"",
+                "TRUNCATE TABLE \"shop\".\"orders_pmax\"");
+    }
+
+    @Test
+    void alterTruncatePartitionAllIsDropped() {
+        ConversionResult result = identityConverter().convert(
+                "ALTER TABLE `shop`.`orders` TRUNCATE PARTITION ALL");
+        assertThat(result.getStatus()).isEqualTo(ConversionStatus.SUCCEEDED);
+        assertThat(result.getStatements()).isEmpty();
+        assertThat(result.getInfos()).anyMatch(m -> m.contains("TRUNCATE PARTITION ALL"));
     }
 
     @Test

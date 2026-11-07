@@ -770,6 +770,18 @@ public class MySqlToPGParserListener extends MySqlParserBaseListener {
             rewriter.delete(spec.getStart(), spec.getStop());
             return false;
         }
+        if (spec instanceof MySqlParser.AlterByAddPartitionContext) {
+            return rewriteAlterByAddPartition(
+                    tableId, (MySqlParser.AlterByAddPartitionContext) spec);
+        }
+        if (spec instanceof MySqlParser.AlterByDropPartitionContext) {
+            return rewriteAlterByDropPartition(
+                    tableId, (MySqlParser.AlterByDropPartitionContext) spec);
+        }
+        if (spec instanceof MySqlParser.AlterByTruncatePartitionContext) {
+            return rewriteAlterByTruncatePartition(
+                    tableId, (MySqlParser.AlterByTruncatePartitionContext) spec);
+        }
         if (isPartitionAlterSpecification(spec)) {
             rewriter.delete(spec.getStart(), spec.getStop());
             message.report(
@@ -1357,11 +1369,9 @@ public class MySqlToPGParserListener extends MySqlParserBaseListener {
     }
 
     private static boolean isPartitionAlterSpecification(MySqlParser.AlterSpecificationContext spec) {
-        return spec instanceof MySqlParser.AlterByAddPartitionContext
-                || spec instanceof MySqlParser.AlterByDropPartitionContext
-                || spec instanceof MySqlParser.AlterByDiscardPartitionContext
+        // ADD/DROP/TRUNCATE PARTITION are handled explicitly in rewriteAlterSpecification.
+        return spec instanceof MySqlParser.AlterByDiscardPartitionContext
                 || spec instanceof MySqlParser.AlterByImportPartitionContext
-                || spec instanceof MySqlParser.AlterByTruncatePartitionContext
                 || spec instanceof MySqlParser.AlterByCoalescePartitionContext
                 || spec instanceof MySqlParser.AlterByReorganizePartitionContext
                 || spec instanceof MySqlParser.AlterByExchangePartitionContext
@@ -1374,7 +1384,86 @@ public class MySqlToPGParserListener extends MySqlParserBaseListener {
                 || spec instanceof MySqlParser.AlterByUpgradePartitioningContext;
     }
 
-    private void stripPartitioning(MySqlParser.PartitionDefinitionsContext ctx, String warning) {
+    /**
+     * P1: {@code ADD PARTITION} with LIST {@code VALUES IN} → {@code CREATE TABLE … PARTITION OF … FOR VALUES IN}.
+     * RANGE/HASH (and anything else) stay dropped with INFO — RANGE needs catalog for FROM bounds.
+     */
+    private boolean rewriteAlterByAddPartition(
+            TableId tableId, MySqlParser.AlterByAddPartitionContext ctx) {
+        rewriter.delete(ctx.getStart(), ctx.getStop());
+        List<MySqlParser.PartitionDefinitionContext> defs = ctx.partitionDefinition();
+        for (MySqlParser.PartitionDefinitionContext def : defs) {
+            if (!(def instanceof MySqlParser.PartitionListAtomContext)
+                    && !(def instanceof MySqlParser.PartitionListVectorContext)) {
+                message.report(
+                        "unsupported ALTER TABLE partition clause dropped: "
+                                + abbreviateSql(ctx.getText()),
+                        Level.INFO);
+                return false;
+            }
+        }
+        boolean notedOptions = false;
+        String parent = quotedTable(tableId);
+        for (MySqlParser.PartitionDefinitionContext def : defs) {
+            List<? extends MySqlParser.PartitionOptionContext> options = partitionOptionsOf(def);
+            if (!notedOptions && options != null && !options.isEmpty()) {
+                message.report(
+                        "partition-level ENGINE/DIRECTORY/TABLESPACE options dropped", Level.INFO);
+                notedOptions = true;
+            }
+            if (def instanceof MySqlParser.PartitionListAtomContext) {
+                MySqlParser.PartitionListAtomContext atom = (MySqlParser.PartitionListAtomContext) def;
+                String uid = StringUtil.unquote(atom.uid().getText(), '`');
+                afterStatements.add("CREATE TABLE " + childPartitionTable(tableId, uid)
+                        + " PARTITION OF " + parent
+                        + " FOR VALUES IN (" + formatPartitionBound(atom.partitionDefinerAtom()) + ")");
+            } else {
+                MySqlParser.PartitionListVectorContext vector =
+                        (MySqlParser.PartitionListVectorContext) def;
+                String uid = StringUtil.unquote(vector.uid().getText(), '`');
+                List<String> tuples = new ArrayList<>();
+                for (MySqlParser.PartitionDefinerVectorContext v : vector.partitionDefinerVector()) {
+                    tuples.add("(" + formatPartitionBound(v.partitionDefinerAtom()) + ")");
+                }
+                afterStatements.add("CREATE TABLE " + childPartitionTable(tableId, uid)
+                        + " PARTITION OF " + parent
+                        + " FOR VALUES IN (" + String.join(", ", tuples) + ")");
+            }
+        }
+        return false;
+    }
+
+    /** P1: {@code DROP PARTITION uid[,…]} → {@code DROP TABLE} each child named like P0 CREATE. */
+    private boolean rewriteAlterByDropPartition(
+            TableId tableId, MySqlParser.AlterByDropPartitionContext ctx) {
+        rewriter.delete(ctx.getStart(), ctx.getStop());
+        for (MySqlParser.UidContext uid : ctx.uidList().uid()) {
+            String name = StringUtil.unquote(uid.getText(), '`');
+            afterStatements.add("DROP TABLE " + childPartitionTable(tableId, name));
+        }
+        return false;
+    }
+
+    /**
+     * P1: {@code TRUNCATE PARTITION uid[,…]} → {@code TRUNCATE TABLE} each child.
+     * {@code ALL} stays INFO-dropped (no catalog to enumerate children).
+     */
+    private boolean rewriteAlterByTruncatePartition(
+            TableId tableId, MySqlParser.AlterByTruncatePartitionContext ctx) {
+        rewriter.delete(ctx.getStart(), ctx.getStop());
+        if (ctx.ALL() != null) {
+            message.report(
+                    "TRUNCATE PARTITION ALL dropped (no catalog to enumerate children)", Level.INFO);
+            return false;
+        }
+        for (MySqlParser.UidContext uid : ctx.uidList().uid()) {
+            String name = StringUtil.unquote(uid.getText(), '`');
+            afterStatements.add("TRUNCATE TABLE " + childPartitionTable(tableId, name));
+        }
+        return false;
+    }
+
+        private void stripPartitioning(MySqlParser.PartitionDefinitionsContext ctx, String warning) {
         notePartitionOptions(ctx);
         rewriter.delete(ctx.getStart(), ctx.getStop());
         message.report(warning, Level.WARNING);
