@@ -8,6 +8,7 @@ import io.opendrs.engine.replay.GtidLoopConfig;
 import io.opendrs.common.selection.TableSelection;
 import io.opendrs.engine.replay.metrics.ReplayDirection;
 import io.opendrs.engine.replay.metrics.ReplayMetrics;
+import io.opendrs.engine.capture.transport.TransportSpec;
 import java.util.List;
 import java.util.Properties;
 import java.util.regex.Pattern;
@@ -302,11 +303,17 @@ public final class DebeziumEngineConfig {
              * connector stops by itself, no P0 involved (a full-only task implies a quiesced
              * source). Only valid with those two strategies. Null/empty means a normal full load.
              */
-            java.util.Set<String> resumeTables) {
+            java.util.Set<String> resumeTables,
+            /**
+             * Capture→replay transport. Null keeps {@link TransportSpec#direct()} so existing
+             * callers stay on apply→mark without Kafka.
+             */
+            TransportSpec transport) {
 
         public EngineSpec {
             direction = direction == null ? ReplayDirection.FORWARD : direction;
             snapshotStrategy = snapshotStrategy == null ? SnapshotStrategy.INITIAL : snapshotStrategy;
+            transport = transport == null ? TransportSpec.direct() : transport;
             if (resumeTables != null && !resumeTables.isEmpty()
                     && snapshotStrategy != SnapshotStrategy.INITIAL
                     && snapshotStrategy != SnapshotStrategy.INITIAL_ONLY) {
@@ -314,12 +321,15 @@ public final class DebeziumEngineConfig {
                         "resumeTables is only valid with the INITIAL or INITIAL_ONLY snapshot strategy, got "
                                 + snapshotStrategy);
             }
+            if (transport.isKafka() && transport.kafka() == null) {
+                throw new IllegalStateException("KAFKA transport requires KafkaTransportConfig");
+            }
         }
 
         /** Compact form for callers without a persisted pipeline; the task id stands in as pipeline id. */
         public EngineSpec(long taskId, JdbcConnectionConfig source, List<Table> tables, Long databaseServerId) {
             this(taskId, taskId, source, tables, databaseServerId, null, null,
-                    ReplayMetrics.NONE, null, ReplayDirection.FORWARD, null, null, null, null, null, null);
+                    ReplayMetrics.NONE, null, ReplayDirection.FORWARD, null, null, null, null, null, null, null);
         }
 
         public EngineSpec(
@@ -330,7 +340,7 @@ public final class DebeziumEngineConfig {
                 JdbcConnectionConfig target,
                 TableSelection tableSelection) {
             this(taskId, taskId, source, tables, databaseServerId, target, tableSelection,
-                    ReplayMetrics.NONE, null, ReplayDirection.FORWARD, null, null, null, null, null, null);
+                    ReplayMetrics.NONE, null, ReplayDirection.FORWARD, null, null, null, null, null, null, null);
         }
 
         public EngineSpec(
@@ -342,7 +352,7 @@ public final class DebeziumEngineConfig {
                 TableSelection tableSelection,
                 ReplayMetrics metrics) {
             this(taskId, taskId, source, tables, databaseServerId, target, tableSelection,
-                    metrics, null, ReplayDirection.FORWARD, null, null, null, null, null, null);
+                    metrics, null, ReplayDirection.FORWARD, null, null, null, null, null, null, null);
         }
 
         public EngineSpec(
@@ -355,7 +365,7 @@ public final class DebeziumEngineConfig {
                 TableSelection tableSelection,
                 ReplayMetrics metrics) {
             this(taskId, pipelineId, source, tables, databaseServerId, target, tableSelection,
-                    metrics, null, ReplayDirection.FORWARD, null, null, null, null, null, null);
+                    metrics, null, ReplayDirection.FORWARD, null, null, null, null, null, null, null);
         }
 
         public EngineSpec(
@@ -369,7 +379,7 @@ public final class DebeziumEngineConfig {
                 ReplayMetrics metrics,
                 GtidLoopConfig gtidLoop) {
             this(taskId, pipelineId, source, tables, databaseServerId, target, tableSelection,
-                    metrics, gtidLoop, ReplayDirection.FORWARD, null, null, null, null, null, null);
+                    metrics, gtidLoop, ReplayDirection.FORWARD, null, null, null, null, null, null, null);
         }
     }
 }

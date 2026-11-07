@@ -127,7 +127,7 @@ class DebeziumEngineConfigTest {
                 7L, 7L, mysql(), tables(), 85744L, null, TableSelection.all(),
                 io.opendrs.engine.replay.metrics.ReplayMetrics.NONE, null,
                 io.opendrs.engine.replay.metrics.ReplayDirection.FORWARD,
-                null, null, 8, 4, null, null);
+                null, null, 8, 4, null, null, null);
         Properties props = DebeziumEngineConfig.capture(spec);
 
         assertThat(props.getProperty("snapshot.max.threads")).isEqualTo("8");
@@ -161,7 +161,7 @@ class DebeziumEngineConfigTest {
                 7L, 7L, mysql(), tables(), 85744L, null, TableSelection.all(),
                 io.opendrs.engine.replay.metrics.ReplayMetrics.NONE, null,
                 io.opendrs.engine.replay.metrics.ReplayDirection.FORWARD,
-                null, null, null, null, strategy, null);
+                null, null, null, null, strategy, null, null);
         return DebeziumEngineConfig.capture(spec).getProperty("snapshot.mode");
     }
 
@@ -172,7 +172,7 @@ class DebeziumEngineConfigTest {
                 io.opendrs.engine.replay.metrics.ReplayMetrics.NONE, null,
                 io.opendrs.engine.replay.metrics.ReplayDirection.FORWARD,
                 null, null, null, null, null,
-                java.util.Set.of("hr.emp", "hr.dept", "sales.orders"));
+                java.util.Set.of("hr.emp", "hr.dept", "sales.orders"), null);
 
         Properties props = DebeziumEngineConfig.capture(spec);
 
@@ -211,7 +211,7 @@ class DebeziumEngineConfigTest {
                 io.opendrs.engine.replay.metrics.ReplayMetrics.NONE, null,
                 io.opendrs.engine.replay.metrics.ReplayDirection.FORWARD,
                 null, null, null, null, io.opendrs.engine.replay.SnapshotStrategy.NO_DATA,
-                java.util.Set.of("hr.emp")))
+                java.util.Set.of("hr.emp"), null))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("resumeTables");
     }
@@ -221,7 +221,7 @@ class DebeziumEngineConfigTest {
                 7L, 7L, mysql(), tables(), 85744L, null, TableSelection.all(),
                 io.opendrs.engine.replay.metrics.ReplayMetrics.NONE, null,
                 io.opendrs.engine.replay.metrics.ReplayDirection.FORWARD,
-                null, null, null, null, null, resumeTables);
+                null, null, null, null, null, resumeTables, null);
     }
 
     private static EngineSpec spec(long taskId, TableSelection selection) {

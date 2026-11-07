@@ -10,6 +10,13 @@ import io.opendrs.common.progress.FullLoadCheckpointListener;
 import io.opendrs.common.progress.MigrationLagListener;
 import io.opendrs.jdbc.JdbcConnectionFactory;
 import io.opendrs.engine.replay.ReplayConfig;
+import io.opendrs.engine.capture.transport.AppliedOffsetStore;
+import io.opendrs.engine.capture.transport.JdbcAppliedOffsetStore;
+import io.opendrs.engine.capture.transport.KafkaProduceChangeConsumer;
+import io.opendrs.engine.capture.transport.KafkaReplayRunner;
+import io.opendrs.engine.capture.transport.KafkaTransportConfig;
+import io.opendrs.engine.capture.transport.TransportChannel;
+import io.opendrs.engine.capture.transport.TransportSpec;
 import io.opendrs.engine.replay.mapping.MappingValidator;
 import io.opendrs.engine.replay.naming.DefaultColumnNamingStrategy;
 import io.opendrs.engine.replay.naming.MappedTableNamingStrategy;
@@ -96,13 +103,59 @@ public class DebeziumCdcEngineFactory implements CdcEngineFactory {
                             new LoggingChangeConsumer(spec.taskId()), onSnapshotCompleted, listener),
                     null);
         }
+        TransportSpec transport = spec.transport() == null ? TransportSpec.direct() : spec.transport();
+        if (transport.channel() == TransportChannel.KAFKA) {
+            return buildKafka(
+                    spec, onSnapshotCompleted, listener, lagListener, checkpointListener, transport);
+        }
         ReplayApplyChangeConsumer applyConsumer = applyConsumer(spec, listener, lagListener, checkpointListener);
         return build(
                 DebeziumEngineConfig.capture(spec),
                 spec.taskId(),
-                new SnapshotCompletionConsumer(
-                        new LagTrackingConsumer(applyConsumer, lagListener), onSnapshotCompleted, listener),
+                new SnapshotCompletionConsumer(applyConsumer, onSnapshotCompleted, listener),
                 applyConsumer);
+    }
+
+    /**
+     * KAFKA path: Debezium produces envelopes to the pipeline topic (offsets mark produce
+     * progress); a sibling {@link KafkaReplayRunner} consumes, applies via
+     * {@link BatchApplyHandler}, and writes {@code pipeline_applied_offsets}.
+     */
+    private CdcEngine buildKafka(
+            DebeziumEngineConfig.EngineSpec spec,
+            Runnable onSnapshotCompleted,
+            MigrationLogListener logListener,
+            MigrationLagListener lagListener,
+            FullLoadCheckpointListener checkpointListener,
+            TransportSpec transport) {
+        KafkaTransportConfig kafka = transport.kafka();
+        ReplayConfig config = replayConfig(spec);
+        KafkaProduceChangeConsumer produceConsumer =
+                new KafkaProduceChangeConsumer(spec.taskId(), config, kafka);
+        BatchApplyHandler applyHandler = new BatchApplyHandler(
+                spec.taskId(),
+                spec.pipelineId(),
+                replayConfig(spec),
+                logListener,
+                lagListener,
+                checkpointListener);
+        AppliedOffsetStore appliedStore = new JdbcAppliedOffsetStore(metadataDataSource);
+        KafkaReplayRunner replayRunner =
+                new KafkaReplayRunner(spec.pipelineId(), kafka, applyHandler, appliedStore);
+        replayRunner.start();
+        AutoCloseable resources = () -> {
+            try {
+                produceConsumer.close();
+            }
+            finally {
+                replayRunner.close();
+            }
+        };
+        return build(
+                DebeziumEngineConfig.capture(spec),
+                spec.taskId(),
+                new SnapshotCompletionConsumer(produceConsumer, onSnapshotCompleted, logListener),
+                resources);
     }
 
     /**
@@ -125,6 +178,12 @@ public class DebeziumCdcEngineFactory implements CdcEngineFactory {
             MigrationLogListener logListener,
             MigrationLagListener positionListener,
             FullLoadCheckpointListener checkpointListener) {
+        return new ReplayApplyChangeConsumer(
+                spec.taskId(), spec.pipelineId(), replayConfig(spec),
+                logListener, positionListener, checkpointListener);
+    }
+
+    private ReplayConfig replayConfig(DebeziumEngineConfig.EngineSpec spec) {
         ReplayConfig.Builder configBuilder = ReplayConfig.builder()
                 // Stateless provider: every call opens a fresh physical connection, so each
                 // parallel applier worker (via its own JdbcConnection) gets its own connection.
@@ -143,10 +202,7 @@ public class DebeziumCdcEngineFactory implements CdcEngineFactory {
         if (spec.tableApplierConcurrency() != null) {
             configBuilder.tableApplierConcurrency(spec.tableApplierConcurrency());
         }
-        ReplayConfig config = configBuilder.build();
-        return new ReplayApplyChangeConsumer(
-                spec.taskId(), spec.pipelineId(), config,
-                logListener, positionListener, checkpointListener);
+        return configBuilder.build();
     }
 
     private MappedTableNamingStrategy specTableNaming(DebeziumEngineConfig.EngineSpec spec) {

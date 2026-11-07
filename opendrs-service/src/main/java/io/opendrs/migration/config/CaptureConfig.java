@@ -10,6 +10,7 @@ import io.opendrs.engine.replay.mapping.MappingValidator;
 import io.opendrs.migration.metrics.MicrometerReplayMetrics;
 import io.opendrs.migration.service.JdbcFullLoadCheckpointListener;
 import javax.sql.DataSource;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -18,6 +19,7 @@ import org.springframework.context.annotation.Configuration;
  * modules carry no Spring annotations, so the service wires the instances it calls.
  */
 @Configuration
+@EnableConfigurationProperties(OpenDrsTransportProperties.class)
 public class CaptureConfig {
 
     /** Used directly by task creation validation; also passed into the engine. */
