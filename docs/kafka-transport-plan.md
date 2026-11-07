@@ -4,6 +4,7 @@
 > 范围：MySQL → PostgreSQL 增量路径；引入 Kafka + Apicurio 作缓冲，保留 DIRECT | KAFKA 双通道。  
 > **全量旁路**：KAFKA 通道下 snapshot/FULL 仍 DIRECT apply→mark；仅 INCREMENTAL/streaming produce→Kafka→replay。  
 > **位点刷盘**：KAFKA 下 capture（`debezium_offsets`）与 replay（applied + consumer offset）均按**纯定时 3s**刷写；DIRECT 仍 `OffsetCommitPolicy.always()`。
+> **通道选择**：枚举 `CdcTransportSpec`（DIRECT|KAFKA）；任务 `options.cdcTransportSpec` 优先，否则全局 `OPENDRS_TRANSPORT_CHANNEL`，再否则 DIRECT。解析结果为 `ResolvedCdcTransport`。
 
 ---
 
@@ -49,7 +50,7 @@ Embedded Debezium → BatchApply → applier.apply(batch) → markProcessed → 
 
 1. **DIRECT 继续**：`apply` 成功 → 才 `markProcessed` → 写 `debezium_offsets`。行为不回归。
 2. **KAFKA capture**：`produce` 成功 → 才 mark `debezium_offsets`。语义变成「已入 Kafka」。每批仍 `markProcessed`/`markBatchFinished`；真正落库由 `OffsetCommitPolicy.periodic`（**3s**）合并刷写。
-3. **Replay 读进度**：交给 Kafka consumer group，不塞进 `debezium_offsets`。消费侧同样 **3s** 定时 `saveApplied` + `commitAsync`（停任务强制 `commitSync`）；顺序恒为 apply → applied → commit。
+3. **Replay 读进度**：交给 Kafka consumer group，不塞进 `debezium_offsets`。消费侧同样 **3s** 定时 `saveApplied` + `commitAsync`（停任务强制 `commitSync`）；顺序恒为 apply → applied → commit。 `commitAsync` **成功回调**后才清内存 pending；失败保留，下次间隔或 close 的 `commitSync` 再刷。
 4. **必须另记 applied**：at-least-once 下可能「已 commit 读位点但 apply 失败」；也要区分「Kafka 里有了但还没 apply」和「两边都完了」。  
    **同表语义变化（produce 后 mark ≠ applied）正是拆第二套位点的原因。**
 
@@ -146,3 +147,4 @@ Embedded Debezium → BatchApply → applier.apply(batch) → markProcessed → 
 | 2026-11-07 | 初稿：汇总近期讨论（DIRECT 位点语义、Kafka 引入后双位点、pipeline `public_id` 隔离、实施顺序与非目标） |
 | 2026-11-07 | 开干：BatchApplyHandler、public_id 迁移、KAFKA produce/consume、applied 表、Connect JSON envelope（非 demo flat Avro）；Apicurio URL 配置预留，schema 注册策略后续细化 |
 | 2026-11-07 | KAFKA 位点刷盘改为纯定时 3s：capture `OffsetCommitPolicy.periodic`（`offset.flush.interval.ms=3000`）；replay `saveApplied`+`commitAsync` 同间隔，停任务 `commitSync` 收口 |
+| 2026-11-07 | replay `commitAsync` 成功回调后再清 pending；`TransportChannel`→`CdcTransportSpec`，`TransportSpec`→`ResolvedCdcTransport`；`MigrationOptions.cdcTransportSpec` 任务级覆盖全局通道 |

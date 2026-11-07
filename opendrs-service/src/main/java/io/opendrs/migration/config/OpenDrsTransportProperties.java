@@ -1,6 +1,6 @@
 package io.opendrs.migration.config;
 
-import io.opendrs.engine.capture.transport.TransportChannel;
+import io.opendrs.engine.capture.transport.CdcTransportSpec;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 /**
@@ -42,7 +42,7 @@ public class OpenDrsTransportProperties {
         this.schemaRegistryUrl = schemaRegistryUrl;
     }
 
-    public TransportChannel channelEnum() {
-        return TransportChannel.fromConfig(channel);
+    public CdcTransportSpec channelEnum() {
+        return CdcTransportSpec.fromConfig(channel);
     }
 }

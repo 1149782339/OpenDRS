@@ -23,8 +23,8 @@ import io.opendrs.migration.mapper.MigrationTaskMapper;
 import io.opendrs.migration.service.MappingRequests;
 import io.opendrs.migration.config.OpenDrsTransportProperties;
 import io.opendrs.engine.capture.transport.KafkaTransportConfig;
-import io.opendrs.engine.capture.transport.TransportChannel;
-import io.opendrs.engine.capture.transport.TransportSpec;
+import io.opendrs.engine.capture.transport.CdcTransportSpec;
+import io.opendrs.engine.capture.transport.ResolvedCdcTransport;
 import io.opendrs.migration.service.ServerIdAllocator;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
@@ -495,7 +495,7 @@ public class MigrationCoordinator implements Runnable {
                 .snapshotThreadsMultiplier(snapshotThreadsMultiplier)
                 .snapshotStrategy(strategyOf(mode))
                 .resumeTables(resumeTablesOf(task, pipeline, source, target, direction))
-                .transport(transportOf(pipeline))
+                .transport(transportOf(task, pipeline))
                 .phaseListener(phase -> onTaskPhase(phase, pipeline))
                 .logListener(logListener)
                 .lagListener(lagListenerFactory.apply(pipeline.getId()))
@@ -503,23 +503,42 @@ public class MigrationCoordinator implements Runnable {
     }
 
     /**
-     * Builds the transport spec for one pipeline. DIRECT when unset; KAFKA requires
-     * {@code pipeline.public_id} to derive topic/group.
+     * Builds the resolved CDC transport for one pipeline.
+     * Channel priority: task {@code options.cdcTransportSpec} → global
+     * {@code opendrs.transport.channel} → {@link CdcTransportSpec#DIRECT}.
+     * KAFKA requires {@code pipeline.public_id} to derive topic/group; bootstrap/registry stay global.
      */
-    private TransportSpec transportOf(io.opendrs.migration.domain.TaskPipeline pipeline) {
-        if (transportProperties == null
-                || transportProperties.channelEnum() == TransportChannel.DIRECT) {
-            return TransportSpec.direct();
+    private ResolvedCdcTransport transportOf(
+            MigrationTask task, io.opendrs.migration.domain.TaskPipeline pipeline) {
+        CdcTransportSpec channel = resolveCdcTransportSpec(task);
+        if (channel == CdcTransportSpec.DIRECT) {
+            return ResolvedCdcTransport.direct();
         }
         String publicId = pipeline.getPublicId();
         if (publicId == null || publicId.isBlank()) {
             throw new IllegalStateException(
                     "KAFKA transport requires task_pipelines.public_id for pipeline " + pipeline.getId());
         }
-        return TransportSpec.kafka(new KafkaTransportConfig(
+        if (transportProperties == null) {
+            throw new IllegalStateException(
+                    "KAFKA transport requires opendrs.transport.kafka-bootstrap-servers");
+        }
+        return ResolvedCdcTransport.kafka(new KafkaTransportConfig(
                 transportProperties.getKafkaBootstrapServers(),
                 transportProperties.getSchemaRegistryUrl(),
                 publicId));
+    }
+
+    /** Task options override global channel; null/blank options inherit global then DIRECT. */
+    private CdcTransportSpec resolveCdcTransportSpec(MigrationTask task) {
+        MigrationOptions options = task == null ? null : task.getOptionsJson();
+        if (options != null && options.cdcTransportSpec() != null) {
+            return options.cdcTransportSpec();
+        }
+        if (transportProperties != null) {
+            return transportProperties.channelEnum();
+        }
+        return CdcTransportSpec.DIRECT;
     }
 
     /**

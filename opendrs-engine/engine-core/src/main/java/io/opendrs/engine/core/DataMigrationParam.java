@@ -6,7 +6,7 @@ import io.opendrs.engine.replay.GtidLoopConfig;
 import io.opendrs.engine.replay.SnapshotStrategy;
 import io.opendrs.common.selection.TableSelection;
 import io.opendrs.engine.replay.metrics.ReplayDirection;
-import io.opendrs.engine.capture.transport.TransportSpec;
+import io.opendrs.engine.capture.transport.ResolvedCdcTransport;
 import io.opendrs.jdbc.JdbcConnectionConfig;
 import java.util.Objects;
 import java.util.function.Consumer;
@@ -85,9 +85,9 @@ public record DataMigrationParam(
          */
         java.util.Set<String> resumeTables,
         /**
-         * Capture→replay transport. Null keeps {@link TransportSpec#direct()}.
+         * Capture→replay transport. Null keeps {@link ResolvedCdcTransport#direct()}.
          */
-        TransportSpec transport)
+        ResolvedCdcTransport transport)
         implements MigrationParam {
 
     public DataMigrationParam {
@@ -97,7 +97,7 @@ public record DataMigrationParam(
         lagListener = lagListener == null ? MigrationLagListener.NONE : lagListener;
         direction = direction == null ? ReplayDirection.FORWARD : direction;
         snapshotStrategy = snapshotStrategy == null ? SnapshotStrategy.INITIAL : snapshotStrategy;
-        transport = transport == null ? TransportSpec.direct() : transport;
+        transport = transport == null ? ResolvedCdcTransport.direct() : transport;
     }
 
     /** Compact factory for the classic single-direction run. */
@@ -139,7 +139,7 @@ public record DataMigrationParam(
         private Integer snapshotThreadsMultiplier;
         private SnapshotStrategy snapshotStrategy;
         private java.util.Set<String> resumeTables;
-        private TransportSpec transport;
+        private ResolvedCdcTransport transport;
 
         private Builder() {
         }
@@ -259,7 +259,7 @@ public record DataMigrationParam(
         }
 
         /** Capture→replay transport; null keeps DIRECT. */
-        public Builder transport(TransportSpec transport) {
+        public Builder transport(ResolvedCdcTransport transport) {
             this.transport = transport;
             return this;
         }

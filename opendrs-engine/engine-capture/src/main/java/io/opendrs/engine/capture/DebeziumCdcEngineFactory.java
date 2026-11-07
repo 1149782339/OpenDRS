@@ -15,8 +15,8 @@ import io.opendrs.engine.capture.transport.JdbcAppliedOffsetStore;
 import io.opendrs.engine.capture.transport.KafkaProduceChangeConsumer;
 import io.opendrs.engine.capture.transport.KafkaReplayRunner;
 import io.opendrs.engine.capture.transport.KafkaTransportConfig;
-import io.opendrs.engine.capture.transport.TransportChannel;
-import io.opendrs.engine.capture.transport.TransportSpec;
+import io.opendrs.engine.capture.transport.CdcTransportSpec;
+import io.opendrs.engine.capture.transport.ResolvedCdcTransport;
 import io.opendrs.engine.replay.mapping.MappingValidator;
 import io.opendrs.engine.replay.naming.DefaultColumnNamingStrategy;
 import io.opendrs.engine.replay.naming.MappedTableNamingStrategy;
@@ -109,8 +109,8 @@ public class DebeziumCdcEngineFactory implements CdcEngineFactory {
                             new LoggingChangeConsumer(spec.taskId()), onSnapshotCompleted, listener),
                     null);
         }
-        TransportSpec transport = spec.transport() == null ? TransportSpec.direct() : spec.transport();
-        if (transport.channel() == TransportChannel.KAFKA) {
+        ResolvedCdcTransport transport = spec.transport() == null ? ResolvedCdcTransport.direct() : spec.transport();
+        if (transport.channel() == CdcTransportSpec.KAFKA) {
             return buildKafka(
                     spec, onSnapshotCompleted, listener, lagListener, checkpointListener, transport);
         }
@@ -134,7 +134,7 @@ public class DebeziumCdcEngineFactory implements CdcEngineFactory {
             MigrationLogListener logListener,
             MigrationLagListener lagListener,
             FullLoadCheckpointListener checkpointListener,
-            TransportSpec transport) {
+            ResolvedCdcTransport transport) {
         KafkaTransportConfig kafka = transport.kafka();
         ReplayConfig config = replayConfig(spec);
         // FULL: same apply→mark semantics as DIRECT (checkpoints land here).

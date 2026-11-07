@@ -8,11 +8,15 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import org.apache.kafka.clients.consumer.Consumer;
 import org.apache.kafka.clients.consumer.MockConsumer;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
+import org.apache.kafka.clients.consumer.OffsetCommitCallback;
 import org.apache.kafka.clients.consumer.OffsetResetStrategy;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.errors.TimeoutException;
 import org.junit.jupiter.api.Test;
 
 class KafkaReplayRunnerTest {
@@ -91,9 +95,54 @@ class KafkaReplayRunnerTest {
         assertThat(store.saves).hasSize(1);
     }
 
+    @Test
+    void commitAsyncFailureKeepsPending_forceThenCommitSync() {
+        AtomicLong clock = new AtomicLong(0L);
+        RecordingStore store = new RecordingStore();
+        FailingAsyncMockConsumer consumer = new FailingAsyncMockConsumer();
+        consumer.assign(List.of(TP));
+        consumer.updateBeginningOffsets(Map.of(TP, 0L));
+
+        KafkaReplayRunner runner = newRunner(store, consumer, clock);
+        runner.notePendingForTest(TOPIC, 0, 7L, "{\"pos\":7}");
+
+        clock.set(Duration.ofSeconds(3).toNanos());
+        runner.flushIfDue(false);
+
+        assertThat(store.saves).hasSize(1);
+        assertThat(consumer.asyncAttempts.get()).isEqualTo(1);
+        // Failed async must not have advanced the committed map.
+        assertThat(consumer.committed(Set.of(TP))).doesNotContainKey(TP);
+
+        // Pending kept → force (close path) retries with commitSync.
+        runner.flushIfDue(true);
+        assertThat(store.saves).hasSize(2);
+        assertThat(consumer.committed(Set.of(TP)).get(TP).offset()).isEqualTo(8L);
+    }
+
+    @Test
+    void commitAsyncSuccessClearsPendingSoForceIsNoop() {
+        AtomicLong clock = new AtomicLong(0L);
+        RecordingStore store = new RecordingStore();
+        MockConsumer<String, byte[]> consumer = new MockConsumer<>(OffsetResetStrategy.EARLIEST);
+        consumer.assign(List.of(TP));
+        consumer.updateBeginningOffsets(Map.of(TP, 0L));
+
+        KafkaReplayRunner runner = newRunner(store, consumer, clock);
+        runner.notePendingForTest(TOPIC, 0, 3L, "{\"pos\":3}");
+        clock.set(Duration.ofSeconds(3).toNanos());
+        runner.flushIfDue(false);
+
+        assertThat(store.saves).hasSize(1);
+        assertThat(consumer.committed(Set.of(TP)).get(TP).offset()).isEqualTo(4L);
+
+        runner.flushIfDue(true);
+        assertThat(store.saves).hasSize(1);
+    }
+
     private static KafkaReplayRunner newRunner(
             AppliedOffsetStore store,
-            MockConsumer<String, byte[]> consumer,
+            Consumer<String, byte[]> consumer,
             AtomicLong clock) {
         return new KafkaReplayRunner(
                 42L,
@@ -125,6 +174,45 @@ class KafkaReplayRunnerTest {
         @Override
         public AppliedOffset find(long pipelineId) {
             return saves.isEmpty() ? null : saves.get(saves.size() - 1);
+        }
+    }
+
+    /**
+     * {@link MockConsumer} whose {@code commitAsync} reports failure (and skips the commit map).
+     * {@code commitSync} still commits — MockConsumer routes sync through async, so we briefly
+     * disable the failure for the sync/close path under test.
+     */
+    private static final class FailingAsyncMockConsumer extends MockConsumer<String, byte[]> {
+        final AtomicInteger asyncAttempts = new AtomicInteger();
+        private boolean failAsync = true;
+
+        FailingAsyncMockConsumer() {
+            super(OffsetResetStrategy.EARLIEST);
+        }
+
+        @Override
+        public synchronized void commitAsync(
+                Map<TopicPartition, OffsetAndMetadata> offsets, OffsetCommitCallback callback) {
+            if (failAsync) {
+                asyncAttempts.incrementAndGet();
+                if (callback != null) {
+                    callback.onComplete(offsets, new TimeoutException("induced async commit failure"));
+                }
+                return;
+            }
+            super.commitAsync(offsets, callback);
+        }
+
+        @Override
+        public synchronized void commitSync(Map<TopicPartition, OffsetAndMetadata> offsets) {
+            boolean previous = failAsync;
+            failAsync = false;
+            try {
+                super.commitSync(offsets);
+            }
+            finally {
+                failAsync = previous;
+            }
         }
     }
 }

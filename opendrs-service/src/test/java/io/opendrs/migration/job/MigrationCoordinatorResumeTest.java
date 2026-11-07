@@ -259,6 +259,7 @@ class MigrationCoordinatorResumeTest {
                         new SelectedTable("hr", "emp"), new SelectedTable("hr", "dept"))),
                 MigrationOptions.FullSettings.defaults(),
                 MigrationOptions.IncrementalSettings.defaults(),
+                null,
                 null));
         return task;
     }

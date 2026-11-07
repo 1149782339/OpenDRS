@@ -5,21 +5,21 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import org.junit.jupiter.api.Test;
 
-class TransportSpecTest {
+class ResolvedCdcTransportTest {
 
     @Test
     void directIsDefaultSafePath() {
-        assertThat(TransportSpec.direct().channel()).isEqualTo(TransportChannel.DIRECT);
-        assertThat(TransportSpec.direct().isKafka()).isFalse();
+        assertThat(ResolvedCdcTransport.direct().channel()).isEqualTo(CdcTransportSpec.DIRECT);
+        assertThat(ResolvedCdcTransport.direct().isKafka()).isFalse();
     }
 
     @Test
     void kafkaRequiresConfig() {
-        assertThatThrownBy(() -> new TransportSpec(TransportChannel.KAFKA, null))
+        assertThatThrownBy(() -> new ResolvedCdcTransport(CdcTransportSpec.KAFKA, null))
                 .isInstanceOf(IllegalArgumentException.class);
         KafkaTransportConfig cfg = new KafkaTransportConfig(
                 "127.0.0.1:9092", "http://127.0.0.1:8081", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
-        TransportSpec spec = TransportSpec.kafka(cfg);
+        ResolvedCdcTransport spec = ResolvedCdcTransport.kafka(cfg);
         assertThat(spec.isKafka()).isTrue();
         assertThat(spec.kafka().topic()).isEqualTo(
                 "opendrs.pipeline.aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");

@@ -30,7 +30,9 @@ import org.slf4j.LoggerFactory;
  * <p>Commits are <strong>time-based only</strong> (default {@link #COMMIT_INTERVAL} = 3s): after a
  * successful apply the offsets stay in memory until the interval elapses (or {@link #close()}
  * forces a final {@code commitSync}). Order is always apply → saveApplied → commit; the consumer
- * is touched only from this runner's thread.
+ * is touched only from this runner's thread. For the async path, {@code pending} is cleared only
+ * after a successful {@code commitAsync} callback — a failed commit keeps pending for the next
+ * interval (or the shutdown {@code commitSync}).
  */
 public final class KafkaReplayRunner implements AutoCloseable, Runnable {
 
@@ -178,6 +180,10 @@ public final class KafkaReplayRunner implements AutoCloseable, Runnable {
     /**
      * Persist pending applied row then commit consumer offsets. {@code force=true} uses
      * {@code commitSync} (shutdown); otherwise {@code commitAsync} after {@link #COMMIT_INTERVAL}.
+     *
+     * <p>Async path clears {@code pending*} only in the <em>success</em> callback so a failed
+     * commit can be retried on the next tick or by the final sync flush. If newer applies land
+     * while a commit is in flight, only the offsets that match the committed map are dropped.
      */
     void flushIfDue(boolean force) {
         if (pendingApplied == null || pendingOffsets.isEmpty()) {
@@ -187,27 +193,48 @@ public final class KafkaReplayRunner implements AutoCloseable, Runnable {
         if (!force && Duration.ofNanos(now - lastFlushNanos).compareTo(COMMIT_INTERVAL) < 0) {
             return;
         }
+        PendingApplied toFlush = pendingApplied;
+        Map<TopicPartition, OffsetAndMetadata> toCommit = Map.copyOf(pendingOffsets);
         appliedOffsetStore.saveApplied(
                 pipelineId,
-                pendingApplied.sourceOffsetJson(),
-                pendingApplied.topic(),
-                pendingApplied.partition(),
-                pendingApplied.offset());
-        Map<TopicPartition, OffsetAndMetadata> toCommit = Map.copyOf(pendingOffsets);
+                toFlush.sourceOffsetJson(),
+                toFlush.topic(),
+                toFlush.partition(),
+                toFlush.offset());
+        lastFlushNanos = now;
         if (force) {
             consumer.commitSync(toCommit);
+            clearPendingAfterCommitSuccess(toFlush, toCommit);
+            return;
         }
-        else {
-            consumer.commitAsync(toCommit, (offsets, exception) -> {
-                if (exception != null) {
-                    log.warn("KAFKA replay commitAsync failed pipelineId={}: {}",
-                            pipelineId, exception.toString());
-                }
-            });
+        consumer.commitAsync(toCommit, (offsets, exception) -> {
+            if (exception != null) {
+                log.warn("KAFKA replay commitAsync failed pipelineId={}: {}",
+                        pipelineId, exception.toString());
+                // Keep pending so the next interval (or close/force) can retry.
+                return;
+            }
+            clearPendingAfterCommitSuccess(toFlush, toCommit);
+        });
+    }
+
+    /**
+     * Drop pending state that this commit covered. If {@link #pendingApplied} moved forward while
+     * the async commit was in flight, only remove partition offsets that still match.
+     */
+    private void clearPendingAfterCommitSuccess(
+            PendingApplied flushed, Map<TopicPartition, OffsetAndMetadata> committed) {
+        if (pendingApplied == flushed) {
+            pendingOffsets.clear();
+            pendingApplied = null;
+            return;
         }
-        pendingOffsets.clear();
-        pendingApplied = null;
-        lastFlushNanos = now;
+        for (Map.Entry<TopicPartition, OffsetAndMetadata> entry : committed.entrySet()) {
+            OffsetAndMetadata current = pendingOffsets.get(entry.getKey());
+            if (current != null && current.offset() == entry.getValue().offset()) {
+                pendingOffsets.remove(entry.getKey());
+            }
+        }
     }
 
     @Override

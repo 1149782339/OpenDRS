@@ -123,6 +123,7 @@ class TaskOffsetBackingStoreTest {
                         List.of(new io.opendrs.migration.api.request.SelectedTable("hr", "emp"))),
                 MigrationOptions.FullSettings.defaults(),
                 MigrationOptions.IncrementalSettings.defaults(),
+                null,
                 null));
         taskMapper.insert(task);
         return task.getId();

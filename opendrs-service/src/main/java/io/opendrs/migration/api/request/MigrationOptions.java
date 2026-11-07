@@ -1,6 +1,7 @@
 package io.opendrs.migration.api.request;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import io.opendrs.engine.capture.transport.CdcTransportSpec;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
@@ -24,7 +25,14 @@ public record MigrationOptions(
         @Valid Selection selection,
         @Valid FullSettings full,
         @Valid IncrementalSettings incremental,
-        Bidirectional bidirectional
+        Bidirectional bidirectional,
+        /**
+         * Incremental CDC transport for this task: {@code DIRECT} or {@code KAFKA}.
+         * Null means inherit the process-wide {@code opendrs.transport.channel} /
+         * {@code OPENDRS_TRANSPORT_CHANNEL} (itself defaulting to DIRECT). Full-load always
+         * stays in-process regardless of this value.
+         */
+        CdcTransportSpec cdcTransportSpec
 ) {
     public enum Topology {
         ONE_WAY,
@@ -59,6 +67,7 @@ public record MigrationOptions(
                 Selection.all(),
                 FullSettings.defaults(),
                 IncrementalSettings.defaults(),
+                null,
                 null);
     }
 
@@ -68,12 +77,14 @@ public record MigrationOptions(
         FullSettings fullSettings = full != null ? full.withDefaults() : FullSettings.defaults();
         IncrementalSettings incrementalSettings =
                 incremental != null ? incremental.withDefaults() : IncrementalSettings.defaults();
+        // cdcTransportSpec stays as given (including null = inherit global); do not invent a default.
         return new MigrationOptions(
                 topology != null ? topology : Topology.ONE_WAY,
                 sel,
                 fullSettings,
                 incrementalSettings,
-                bidirectional);
+                bidirectional,
+                cdcTransportSpec);
     }
 
     /** Bidirectional bookkeeping, generating the GTID namespaces on first use (task creation). */
@@ -83,7 +94,8 @@ public record MigrationOptions(
         }
         return new MigrationOptions(
                 topology, selection, full, incremental,
-                new Bidirectional(UUID.randomUUID().toString(), UUID.randomUUID().toString()));
+                new Bidirectional(UUID.randomUUID().toString(), UUID.randomUUID().toString()),
+                cdcTransportSpec);
     }
 
     /**

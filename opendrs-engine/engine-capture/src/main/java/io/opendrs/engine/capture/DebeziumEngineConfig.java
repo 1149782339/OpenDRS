@@ -8,7 +8,7 @@ import io.opendrs.engine.replay.GtidLoopConfig;
 import io.opendrs.common.selection.TableSelection;
 import io.opendrs.engine.replay.metrics.ReplayDirection;
 import io.opendrs.engine.replay.metrics.ReplayMetrics;
-import io.opendrs.engine.capture.transport.TransportSpec;
+import io.opendrs.engine.capture.transport.ResolvedCdcTransport;
 import java.util.List;
 import java.util.Properties;
 import java.util.regex.Pattern;
@@ -305,15 +305,15 @@ public final class DebeziumEngineConfig {
              */
             java.util.Set<String> resumeTables,
             /**
-             * Capture→replay transport. Null keeps {@link TransportSpec#direct()} so existing
+             * Capture→replay transport. Null keeps {@link ResolvedCdcTransport#direct()} so existing
              * callers stay on apply→mark without Kafka.
              */
-            TransportSpec transport) {
+            ResolvedCdcTransport transport) {
 
         public EngineSpec {
             direction = direction == null ? ReplayDirection.FORWARD : direction;
             snapshotStrategy = snapshotStrategy == null ? SnapshotStrategy.INITIAL : snapshotStrategy;
-            transport = transport == null ? TransportSpec.direct() : transport;
+            transport = transport == null ? ResolvedCdcTransport.direct() : transport;
             if (resumeTables != null && !resumeTables.isEmpty()
                     && snapshotStrategy != SnapshotStrategy.INITIAL
                     && snapshotStrategy != SnapshotStrategy.INITIAL_ONLY) {

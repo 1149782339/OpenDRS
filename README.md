@@ -203,12 +203,15 @@ CDC 嵌入 [Debezium](https://debezium.io)（Apache 2.0）。第三方归属见 
 
 ## Kafka 传输通道（可选）
 
-默认仍是 **DIRECT**（apply 后才 mark `debezium_offsets`）。若要走 Kafka 缓冲：
+默认仍是 **DIRECT**（apply 后才 mark `debezium_offsets`）。若要走 Kafka 缓冲（**仅增量 CDC**；全量/snapshot 始终进程内 DIRECT）：
 
 1. `deploy/docker-compose.yml` 已包含 `opendrs-kafka`（9092）与 `opendrs-apicurio`（8081，官方镜像）。
-2. 设置 `OPENDRS_TRANSPORT_CHANNEL=KAFKA`（或 `opendrs.transport.channel=KAFKA`）。
-3. topic / group 由 `task_pipelines.public_id` 派生：`opendrs.pipeline.{id}` / `opendrs.replay.{id}`。
+2. 通道选择（`CdcTransportSpec`：`DIRECT` | `KAFKA`）：
+   - **任务级**：`options.cdcTransportSpec`（可空；创建时写入 `options_json`）
+   - 否则 **全局**：`OPENDRS_TRANSPORT_CHANNEL` / `opendrs.transport.channel`（默认 `DIRECT`）
+3. topic / group 由 `task_pipelines.public_id` 派生：`opendrs.pipeline.{id}` / `opendrs.replay.{id}`；bootstrap / schema registry 仍用全局配置。
 4. 序列化为 Connect JSON envelope（保真 Debezium `SourceRecord`），**不是** demo 的 flat Avro。
+5. KAFKA 位点刷盘为纯定时 3s；replay 的 `commitAsync` 仅在成功回调后清 pending，失败留待下次或停任务 `commitSync`。
 
 详见 [`docs/kafka-transport-plan.md`](docs/kafka-transport-plan.md)。
 
