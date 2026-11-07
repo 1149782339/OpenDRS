@@ -68,7 +68,10 @@ public final class DdlStatements {
 
     /**
      * Splits a MySQL DDL script on semicolons outside quotes / backticks / comments.
-     * Not a full MySQL client parser — enough for structure-migration CREATE/ALTER scripts.
+     * Semicolons inside {@code BEGIN … END} compound bodies (routines / triggers) are kept —
+     * a naive split there would shatter DECLARE / SET / RETURN fragments and break ANTLR.
+     * Not a full MySQL client parser — enough for structure-migration CREATE/ALTER scripts and
+     * single-routine DDL that still contains internal {@code ;}.
      */
     public static List<String> splitStatements(String sql) {
         List<String> statements = new ArrayList<>();
@@ -81,6 +84,7 @@ public final class DdlStatements {
         boolean inBacktick = false;
         boolean inLineComment = false;
         boolean inBlockComment = false;
+        int beginDepth = 0;
         for (int i = 0; i < sql.length(); i++) {
             char c = sql.charAt(i);
             char next = i + 1 < sql.length() ? sql.charAt(i + 1) : '\0';
@@ -118,7 +122,26 @@ public final class DdlStatements {
                     inBlockComment = true;
                     continue;
                 }
-                if (c == ';') {
+                if (isIdentStart(c)) {
+                    int start = i;
+                    int end = i + 1;
+                    while (end < sql.length() && isIdentPart(sql.charAt(end))) {
+                        end++;
+                    }
+                    String word = sql.substring(start, end);
+                    String upper = word.toUpperCase(Locale.ROOT);
+                    if ("BEGIN".equals(upper)) {
+                        beginDepth++;
+                    } else if ("END".equals(upper) && !isEndCloserKeyword(sql, end)) {
+                        if (beginDepth > 0) {
+                            beginDepth--;
+                        }
+                    }
+                    current.append(word);
+                    i = end - 1;
+                    continue;
+                }
+                if (c == ';' && beginDepth == 0) {
                     String stmt = current.toString().trim();
                     if (!stmt.isEmpty()) {
                         statements.add(stmt);
@@ -146,6 +169,40 @@ public final class DdlStatements {
             statements.add(tail);
         }
         return statements;
+    }
+
+    private static boolean isIdentStart(char c) {
+        return (c >= 'A' && c <= 'Z')
+                || (c >= 'a' && c <= 'z')
+                || c == '_';
+    }
+
+    private static boolean isIdentPart(char c) {
+        return isIdentStart(c) || (c >= '0' && c <= '9');
+    }
+
+    /**
+     * {@code END IF} / {@code END LOOP} / {@code END WHILE} / {@code END REPEAT} / {@code END CASE}
+     * close those constructs, not a {@code BEGIN} block — leave {@code beginDepth} alone.
+     */
+    private static boolean isEndCloserKeyword(String sql, int afterEnd) {
+        int i = afterEnd;
+        while (i < sql.length() && Character.isWhitespace(sql.charAt(i))) {
+            i++;
+        }
+        if (i >= sql.length() || !isIdentStart(sql.charAt(i))) {
+            return false;
+        }
+        int end = i + 1;
+        while (end < sql.length() && isIdentPart(sql.charAt(end))) {
+            end++;
+        }
+        String word = sql.substring(i, end).toUpperCase(Locale.ROOT);
+        return "IF".equals(word)
+                || "LOOP".equals(word)
+                || "WHILE".equals(word)
+                || "REPEAT".equals(word)
+                || "CASE".equals(word);
     }
 
     /**
