@@ -115,7 +115,15 @@ public class MySqlToPGParserListener extends MySqlParserBaseListener {
         List<String> statements = new ArrayList<>(beforeStatements.size() + afterStatements.size() + 1 );
         statements.addAll(beforeStatements);
         if (!rewrittenTextDiscarded) {
-            statements.add(rewriter.getText());
+            String rewritten = rewriter.getText().trim();
+            // Deleting ALTER clauses leaves doubled spaces from the original gaps; collapse those
+            // only for ALTER TABLE so routine / CREATE TABLE indentation stays intact.
+            if (rewritten.length() >= 11 && rewritten.regionMatches(true, 0, "ALTER TABLE", 0, 11)) {
+                rewritten = rewritten.replaceAll(" {2,}", " ");
+            }
+            if (!rewritten.isEmpty()) {
+                statements.add(rewritten);
+            }
         }
         statements.addAll(afterStatements);
         return Collections.unmodifiableList(statements);
@@ -592,11 +600,12 @@ public class MySqlToPGParserListener extends MySqlParserBaseListener {
 
     @Override
     public void exitTableOptionEngine(MySqlParser.TableOptionEngineContext ctx) {
-        comment(ctx.getStart(), ctx.getStop());
+        dropOrCommentTableOption(ctx);
     }
 
     @Override
     public void exitTableOptionCollate(MySqlParser.TableOptionCollateContext ctx) {
+        // COLLATE is meaningless on PostgreSQL for both CREATE and ALTER.
         rewriter.delete(ctx.getStart(), ctx.getStop());
     }
 
@@ -624,24 +633,396 @@ public class MySqlToPGParserListener extends MySqlParserBaseListener {
             rewrittenTextDiscarded = true;
             return;
         }
+        if (ctx.intimeAction != null) {
+            rewriter.delete(ctx.intimeAction);
+        }
+        if (ctx.IGNORE() != null) {
+            rewriter.delete(ctx.IGNORE().getSymbol());
+        }
+        if (ctx.waitNowaitClause() != null) {
+            rewriter.delete(ctx.waitNowaitClause().getStart(), ctx.waitNowaitClause().getStop());
+        }
         rewriter.replace(ctx.tableName().getStart(), ctx.tableName().getStop(), tableId.toQuoted('"').identifier());
-        for (MySqlParser.AlterSpecificationContext alterSpecificationContext : alterSpecificationContexts) {
-            if (alterSpecificationContext instanceof MySqlParser.AlterByModifyColumnContext) {
-                rewriteAlterByModifyColumn((MySqlParser.AlterByModifyColumnContext) alterSpecificationContext);
-            }
-            if (alterSpecificationContext instanceof MySqlParser.AlterByChangeColumnContext) {
-                rewriteAlterByChangeColumn((MySqlParser.AlterByChangeColumnContext) alterSpecificationContext);
-            }
-            if (alterSpecificationContext instanceof MySqlParser.AlterByAddColumnContext) {
-                rewriteAlterByAddColumn((MySqlParser.AlterByAddColumnContext) alterSpecificationContext);
-            }
-            if (alterSpecificationContext instanceof MySqlParser.AlterByDropColumnContext) {
-                rewriteAlterByDropColumn((MySqlParser.AlterByDropColumnContext) alterSpecificationContext);
-            }
-            if (alterSpecificationContext instanceof MySqlParser.AlterByAddColumnsContext) {
-                rewriteAlterByAddColumns((MySqlParser.AlterByAddColumnsContext) alterSpecificationContext);
+
+        boolean[] keepInAlter = new boolean[alterSpecificationContexts.size()];
+        for (int i = 0; i < alterSpecificationContexts.size(); i++) {
+            MySqlParser.AlterSpecificationContext spec = alterSpecificationContexts.get(i);
+            keepInAlter[i] = rewriteAlterSpecification(tableId, spec);
+        }
+        compactAlterSpecifications(ctx, keepInAlter);
+
+        boolean anyKept = false;
+        for (boolean kept : keepInAlter) {
+            if (kept) {
+                anyKept = true;
+                break;
             }
         }
+        if (!anyKept) {
+            // Every clause became a follow-up statement, a comment, or was dropped.
+            rewrittenTextDiscarded = true;
+        }
+    }
+
+    /**
+     * Rewrites one ALTER TABLE clause. Returns {@code true} when the clause should remain inside
+     * the original {@code ALTER TABLE} text; {@code false} when it was deleted / extracted to
+     * {@link #afterStatements} / discarded.
+     */
+    private boolean rewriteAlterSpecification(TableId tableId, MySqlParser.AlterSpecificationContext spec) {
+        if (spec instanceof MySqlParser.AlterByModifyColumnContext) {
+            rewriteAlterByModifyColumn((MySqlParser.AlterByModifyColumnContext) spec);
+            return true;
+        }
+        if (spec instanceof MySqlParser.AlterByChangeColumnContext) {
+            rewriteAlterByChangeColumn((MySqlParser.AlterByChangeColumnContext) spec);
+            return true;
+        }
+        if (spec instanceof MySqlParser.AlterByAddColumnContext) {
+            rewriteAlterByAddColumn((MySqlParser.AlterByAddColumnContext) spec);
+            return true;
+        }
+        if (spec instanceof MySqlParser.AlterByDropColumnContext) {
+            rewriteAlterByDropColumn((MySqlParser.AlterByDropColumnContext) spec);
+            return true;
+        }
+        if (spec instanceof MySqlParser.AlterByAddColumnsContext) {
+            rewriteAlterByAddColumns((MySqlParser.AlterByAddColumnsContext) spec);
+            return true;
+        }
+        if (spec instanceof MySqlParser.AlterByAddIndexContext) {
+            return rewriteAlterByAddIndex(tableId, (MySqlParser.AlterByAddIndexContext) spec);
+        }
+        if (spec instanceof MySqlParser.AlterByAddPrimaryKeyContext) {
+            return rewriteAlterByAddPrimaryKey(tableId, (MySqlParser.AlterByAddPrimaryKeyContext) spec);
+        }
+        if (spec instanceof MySqlParser.AlterByAddUniqueKeyContext) {
+            return rewriteAlterByAddUniqueKey(tableId, (MySqlParser.AlterByAddUniqueKeyContext) spec);
+        }
+        if (spec instanceof MySqlParser.AlterByAddForeignKeyContext) {
+            return rewriteAlterByAddForeignKey(tableId, (MySqlParser.AlterByAddForeignKeyContext) spec);
+        }
+        if (spec instanceof MySqlParser.AlterByAddCheckTableConstraintContext) {
+            return rewriteAlterByAddCheck(tableId, (MySqlParser.AlterByAddCheckTableConstraintContext) spec);
+        }
+        if (spec instanceof MySqlParser.AlterByAddSpecialIndexContext) {
+            rewriter.delete(spec.getStart(), spec.getStop());
+            message.report("FULLTEXT/SPATIAL index is not converted", Level.INFO);
+            return false;
+        }
+        if (spec instanceof MySqlParser.AlterByDropPrimaryKeyContext) {
+            return rewriteAlterByDropPrimaryKey(tableId, (MySqlParser.AlterByDropPrimaryKeyContext) spec);
+        }
+        if (spec instanceof MySqlParser.AlterByDropIndexContext) {
+            return rewriteAlterByDropIndex(tableId, (MySqlParser.AlterByDropIndexContext) spec);
+        }
+        if (spec instanceof MySqlParser.AlterByDropForeignKeyContext) {
+            rewriteAlterByDropForeignKey((MySqlParser.AlterByDropForeignKeyContext) spec);
+            return true;
+        }
+        if (spec instanceof MySqlParser.AlterByDropConstraintCheckContext) {
+            rewriteAlterByDropConstraintCheck((MySqlParser.AlterByDropConstraintCheckContext) spec);
+            return true;
+        }
+        if (spec instanceof MySqlParser.AlterByRenameContext) {
+            rewriteAlterByRename(tableId, (MySqlParser.AlterByRenameContext) spec);
+            return true;
+        }
+        if (spec instanceof MySqlParser.AlterByRenameColumnContext) {
+            rewriteAlterByRenameColumn((MySqlParser.AlterByRenameColumnContext) spec);
+            return true;
+        }
+        if (spec instanceof MySqlParser.AlterByRenameIndexContext) {
+            return rewriteAlterByRenameIndex(tableId, (MySqlParser.AlterByRenameIndexContext) spec);
+        }
+        if (spec instanceof MySqlParser.AlterByChangeDefaultContext) {
+            rewriteAlterByChangeDefault((MySqlParser.AlterByChangeDefaultContext) spec);
+            return true;
+        }
+        if (spec instanceof MySqlParser.AlterByAlterColumnDefaultContext) {
+            rewriteAlterByAlterColumnDefault((MySqlParser.AlterByAlterColumnDefaultContext) spec);
+            return true;
+        }
+        if (spec instanceof MySqlParser.AlterByTableOptionContext) {
+            // Tokens already deleted by exitTableOption*; drop the empty clause + its comma.
+            return false;
+        }
+        if (spec instanceof MySqlParser.AlterBySetAlgorithmContext
+                || spec instanceof MySqlParser.AlterByLockContext
+                || spec instanceof MySqlParser.AlterByDisableKeysContext
+                || spec instanceof MySqlParser.AlterByEnableKeysContext
+                || spec instanceof MySqlParser.AlterByConvertCharsetContext
+                || spec instanceof MySqlParser.AlterByDefaultCharsetContext
+                || spec instanceof MySqlParser.AlterByOrderContext
+                || spec instanceof MySqlParser.AlterByForceContext
+                || spec instanceof MySqlParser.AlterByValidateContext
+                || spec instanceof MySqlParser.AlterByDiscardTablespaceContext
+                || spec instanceof MySqlParser.AlterByImportTablespaceContext
+                || spec instanceof MySqlParser.AlterByAlterIndexVisibilityContext) {
+            rewriter.delete(spec.getStart(), spec.getStop());
+            return false;
+        }
+        // Partition clauses and other unsupported ALTER forms: drop them with a note.
+        rewriter.delete(spec.getStart(), spec.getStop());
+        message.report("unsupported ALTER TABLE clause dropped: " + abbreviateSql(spec.getText()), Level.INFO);
+        return false;
+    }
+
+    /**
+     * Deletes clauses marked {@code false} and rewrites commas so remaining clauses stay valid.
+     */
+    private void compactAlterSpecifications(MySqlParser.AlterTableContext ctx, boolean[] keepInAlter) {
+        List<MySqlParser.AlterSpecificationContext> specs = ctx.alterSpecification();
+        List<Integer> kept = new ArrayList<>();
+        for (int i = 0; i < keepInAlter.length; i++) {
+            if (keepInAlter[i]) {
+                kept.add(i);
+            } else {
+                rewriter.delete(specs.get(i).getStart(), specs.get(i).getStop());
+            }
+        }
+        for (TerminalNode comma : ctx.COMMA()) {
+            rewriter.delete(comma.getSymbol());
+        }
+        for (int k = 0; k < kept.size() - 1; k++) {
+            rewriter.insertAfter(specs.get(kept.get(k)).getStop(), ",");
+        }
+    }
+
+    private boolean rewriteAlterByAddIndex(TableId tableId, MySqlParser.AlterByAddIndexContext ctx) {
+        rewriter.delete(ctx.getStart(), ctx.getStop());
+        if (!includeSecondaryIndexes) {
+            return false;
+        }
+        List<String> columnNames = getColumnNamesFromIndexColumnNameContext(ctx.indexColumnNames(), false);
+        String indexName;
+        if (ctx.uid() != null) {
+            indexName = pgIndexName(tableId, StringUtil.unquote(ctx.uid().getText(), '`'));
+        } else {
+            indexName = pgIndexName(tableId, StringUtil.unquote(columnNames.get(0), '"'));
+        }
+        afterStatements.add(indexStatement(indexName, quotedTable(tableId), String.join(",", columnNames)));
+        return false;
+    }
+
+    private boolean rewriteAlterByAddPrimaryKey(TableId tableId, MySqlParser.AlterByAddPrimaryKeyContext ctx) {
+        rewriter.delete(ctx.getStart(), ctx.getStop());
+        if (!includePrimaryKey) {
+            return false;
+        }
+        List<String> columnNames = getColumnNamesFromIndexColumnNameContext(ctx.indexColumnNames(), false);
+        String constraintName = ctx.name != null
+                ? quoteIdent(ctx.name.getText())
+                : StringUtil.quote(tableId.getTable() + "_pkey", '"');
+        afterStatements.add(String.format(
+                "ALTER TABLE %s ADD CONSTRAINT %s PRIMARY KEY (%s)",
+                quotedTable(tableId), constraintName, String.join(",", columnNames)));
+        return false;
+    }
+
+    private boolean rewriteAlterByAddUniqueKey(TableId tableId, MySqlParser.AlterByAddUniqueKeyContext ctx) {
+        rewriter.delete(ctx.getStart(), ctx.getStop());
+        if (!includeUniqueKeys) {
+            return false;
+        }
+        List<String> columnNames = getColumnNamesFromIndexColumnNameContext(ctx.indexColumnNames(), false);
+        String constraintName;
+        if (ctx.name != null) {
+            constraintName = quoteIdent(ctx.name.getText());
+        } else if (ctx.indexName != null) {
+            constraintName = StringUtil.quote(
+                    tableId.getTable() + "_" + StringUtil.unquote(ctx.indexName.getText(), '`'), '"');
+        } else {
+            constraintName = StringUtil.quote(
+                    tableId.getTable() + "_" + StringUtil.unquote(columnNames.get(0), '"') + "_key", '"');
+        }
+        afterStatements.add(String.format(
+                "ALTER TABLE %s ADD CONSTRAINT %s UNIQUE (%s)",
+                quotedTable(tableId), constraintName, String.join(",", columnNames)));
+        return false;
+    }
+
+    private boolean rewriteAlterByAddForeignKey(TableId tableId, MySqlParser.AlterByAddForeignKeyContext ctx) {
+        rewriter.delete(ctx.getStart(), ctx.getStop());
+        if (!includeForeignKeys) {
+            return false;
+        }
+        MySqlParser.ReferenceDefinitionContext reference = ctx.referenceDefinition();
+        TableId refTableId = tableNamingStrategy.resolveTableId(
+                parseTableId(reference.tableName().fullId().getText()));
+        List<String> foreignColumns = getColumnNamesFromIndexColumnNameContext(ctx.indexColumnNames(), false);
+        List<String> refColumns = reference.indexColumnNames() != null
+                ? getColumnNamesFromIndexColumnNameContext(reference.indexColumnNames(), false)
+                : foreignColumns;
+        String constraintName = ctx.name != null
+                ? quoteIdent(ctx.name.getText())
+                : StringUtil.quote(tableId.getTable() + "_fkey", '"');
+        StringBuilder sql = new StringBuilder();
+        sql.append("ALTER TABLE ").append(quotedTable(tableId))
+                .append(" ADD CONSTRAINT ").append(constraintName)
+                .append(" FOREIGN KEY(").append(String.join(",", foreignColumns)).append(')')
+                .append(" REFERENCES ").append(quotedTable(refTableId))
+                .append('(').append(String.join(",", refColumns)).append(')');
+        if (reference.referenceAction() != null) {
+            appendReferenceAction(sql, reference.referenceAction());
+        }
+        afterStatements.add(sql.toString());
+        return false;
+    }
+
+    private void appendReferenceAction(StringBuilder sql, MySqlParser.ReferenceActionContext action) {
+        if (action.onDelete != null) {
+            sql.append(" ON DELETE ").append(referenceControlText(action.onDelete));
+        }
+        if (action.onUpdate != null) {
+            sql.append(" ON UPDATE ").append(referenceControlText(action.onUpdate));
+        }
+    }
+
+    private static String referenceControlText(MySqlParser.ReferenceControlTypeContext ctx) {
+        if (ctx.SET() != null && ctx.NULL_LITERAL() != null) {
+            return "SET NULL";
+        }
+        if (ctx.SET() != null && ctx.DEFAULT() != null) {
+            return "SET DEFAULT";
+        }
+        if (ctx.NO() != null) {
+            return "NO ACTION";
+        }
+        return ctx.getText();
+    }
+
+    private boolean rewriteAlterByAddCheck(TableId tableId, MySqlParser.AlterByAddCheckTableConstraintContext ctx) {
+        rewriter.delete(ctx.getStart(), ctx.getStop());
+        if (ctx.expression() == null) {
+            message.report("CHECK constraint without expression dropped", Level.INFO);
+            return false;
+        }
+        String expr = rewriteBackticks(rewriter.getTokenStream().getText(ctx.expression()));
+        StringBuilder sql = new StringBuilder("ALTER TABLE ").append(quotedTable(tableId)).append(" ADD");
+        if (ctx.name != null) {
+            sql.append(" CONSTRAINT ").append(quoteIdent(ctx.name.getText()));
+        }
+        sql.append(" CHECK (").append(expr).append(')');
+        afterStatements.add(sql.toString());
+        if (ctx.NOT() != null || ctx.ENFORCED() != null) {
+            message.report("CHECK ENFORCED/NOT ENFORCED dropped", Level.INFO);
+        }
+        return false;
+    }
+
+    private boolean rewriteAlterByDropPrimaryKey(TableId tableId, MySqlParser.AlterByDropPrimaryKeyContext ctx) {
+        rewriter.delete(ctx.getStart(), ctx.getStop());
+        String constraintName = StringUtil.quote(tableId.getTable() + "_pkey", '"');
+        afterStatements.add("ALTER TABLE " + quotedTable(tableId) + " DROP CONSTRAINT " + constraintName);
+        message.report(
+                "DROP PRIMARY KEY assumes PostgreSQL default name " + constraintName,
+                Level.INFO);
+        return false;
+    }
+
+    private boolean rewriteAlterByDropIndex(TableId tableId, MySqlParser.AlterByDropIndexContext ctx) {
+        rewriter.delete(ctx.getStart(), ctx.getStop());
+        String mysqlName = StringUtil.unquote(ctx.uid().getText(), '`');
+        afterStatements.add("DROP INDEX " + pgIndexName(tableId, mysqlName));
+        return false;
+    }
+
+    private void rewriteAlterByDropForeignKey(MySqlParser.AlterByDropForeignKeyContext ctx) {
+        rewriter.replace(ctx.getStart(), ctx.getStop(),
+                "DROP CONSTRAINT " + quoteIdent(ctx.uid().getText()));
+    }
+
+    private void rewriteAlterByDropConstraintCheck(MySqlParser.AlterByDropConstraintCheckContext ctx) {
+        rewriter.replace(ctx.getStart(), ctx.getStop(),
+                "DROP CONSTRAINT " + quoteIdent(ctx.uid().getText()));
+    }
+
+    private void rewriteAlterByRename(TableId tableId, MySqlParser.AlterByRenameContext ctx) {
+        String newNameText = ctx.fullId() != null ? ctx.fullId().getText() : ctx.uid().getText();
+        TableId newTableId = tableNamingStrategy.resolveTableId(parseTableId(newNameText));
+        // Keep schema of the original table when MySQL only supplies an unqualified new name.
+        if (newTableId.getCatalog() == null && newTableId.getSchema() == null) {
+            newTableId = new TableId(tableId.getCatalog(), tableId.getSchema(), newTableId.getTable());
+            newTableId = tableNamingStrategy.resolveTableId(newTableId);
+        }
+        rewriter.replace(ctx.getStart(), ctx.getStop(),
+                "RENAME TO " + StringUtil.quote(newTableId.getTable(), '"'));
+    }
+
+    private void rewriteAlterByRenameColumn(MySqlParser.AlterByRenameColumnContext ctx) {
+        rewriter.replace(ctx.oldColumn.getStart(), ctx.oldColumn.getStop(),
+                quoteIdent(ctx.oldColumn.getText()));
+        rewriter.replace(ctx.newColumn.getStart(), ctx.newColumn.getStop(),
+                quoteIdent(ctx.newColumn.getText()));
+    }
+
+    private boolean rewriteAlterByRenameIndex(TableId tableId, MySqlParser.AlterByRenameIndexContext ctx) {
+        rewriter.delete(ctx.getStart(), ctx.getStop());
+        String oldName = StringUtil.unquote(ctx.uid(0).getText(), '`');
+        String newName = StringUtil.unquote(ctx.uid(1).getText(), '`');
+        afterStatements.add("ALTER INDEX " + pgIndexName(tableId, oldName)
+                + " RENAME TO " + pgIndexName(tableId, newName));
+        return false;
+    }
+
+    private void rewriteAlterByChangeDefault(MySqlParser.AlterByChangeDefaultContext ctx) {
+        rewriter.replace(ctx.uid().getStart(), ctx.uid().getStop(), quoteIdent(ctx.uid().getText()));
+        if (ctx.defaultValue() != null && ctx.defaultValue().ON() != null) {
+            comment(ctx.defaultValue().ON().getSymbol(), ctx.defaultValue().getStop());
+        }
+    }
+
+    private void rewriteAlterByAlterColumnDefault(MySqlParser.AlterByAlterColumnDefaultContext ctx) {
+        rewriter.replace(ctx.uid().getStart(), ctx.uid().getStop(), quoteIdent(ctx.uid().getText()));
+        if (ctx.VISIBLE() != null || ctx.INVISIBLE() != null) {
+            // MySQL invisible columns have no PG equivalent inside ALTER DEFAULT.
+            if (ctx.VISIBLE() != null) {
+                rewriter.delete(ctx.SET().getSymbol());
+                rewriter.delete(ctx.VISIBLE().getSymbol());
+            }
+            if (ctx.INVISIBLE() != null) {
+                rewriter.delete(ctx.SET().getSymbol());
+                rewriter.delete(ctx.INVISIBLE().getSymbol());
+            }
+            message.report("ALTER COLUMN VISIBLE/INVISIBLE dropped", Level.INFO);
+        }
+    }
+
+    private static String quotedTable(TableId tableId) {
+        return tableId.toQuoted('"').toString();
+    }
+
+    private static String quoteIdent(String raw) {
+        return StringUtil.quote(StringUtil.unquote(raw, '`'), '"');
+    }
+
+    private static String pgIndexName(TableId tableId, String mysqlIndexName) {
+        return StringUtil.quote(tableId.getTable() + "_" + mysqlIndexName, '"');
+    }
+
+    private static String rewriteBackticks(String sql) {
+        StringBuilder out = new StringBuilder(sql.length());
+        for (int i = 0; i < sql.length(); i++) {
+            char c = sql.charAt(i);
+            if (c == '`') {
+                int end = sql.indexOf('`', i + 1);
+                if (end < 0) {
+                    out.append(c);
+                    continue;
+                }
+                out.append('"').append(sql, i + 1, end).append('"');
+                i = end;
+            } else {
+                out.append(c);
+            }
+        }
+        return out.toString();
+    }
+
+    private static String abbreviateSql(String sql) {
+        String compact = sql.replaceAll("\\s+", " ").trim();
+        return compact.length() <= 80 ? compact : compact.substring(0, 77) + "...";
     }
 
     /**
@@ -658,8 +1039,12 @@ public class MySqlToPGParserListener extends MySqlParserBaseListener {
     }
 
     private void rewriteAlterByDropColumn( MySqlParser.AlterByDropColumnContext ctx) {
-        String columnFullName = ctx.uid().getText();
+        String columnFullName = columnNamingStrategy.resolveColumnName(
+                StringUtil.unquote(ctx.uid().getText(), '`'));
         rewriter.replace(ctx.uid().getStart(), ctx.uid().getStop(), StringUtil.quote(columnFullName, '"'));
+        if (ctx.RESTRICT() != null) {
+            rewriter.delete(ctx.RESTRICT().getSymbol());
+        }
     }
     private void rewriteAlterByAddColumns(MySqlParser.AlterByAddColumnsContext ctx) {
         for (int i = 0; i < ctx.uid().size(); i++) {
@@ -672,30 +1057,48 @@ public class MySqlToPGParserListener extends MySqlParserBaseListener {
         String columnFullName = StringUtil.unquote(ctx.uid().get(0).getText(), '`');
         columnFullName = columnNamingStrategy.resolveColumnName(columnFullName);
         rewriter.replace(ctx.uid().get(0).getStart(), ctx.uid().get(0).getStop(), StringUtil.quote(columnFullName, '"'));
+        stripFirstAfter(ctx.FIRST(), ctx.AFTER(), ctx.uid().size() > 1 ? ctx.uid(1) : null);
         rewriteColumnDefinition(columnFullName, ctx.columnDefinition());
     }
     private void rewriteAlterByChangeColumn(MySqlParser.AlterByChangeColumnContext ctx) {
         final TableId tableId = context.get(TABLE_ID);
-        final ParserRuleContext parserRuleContext = context.get(PARSE_RULE_CONTEXT);
-        String oldColumnName = StringUtil.quote(ctx.oldColumn.getText(), '"');
-        String newColumnName = StringUtil.quote(ctx.newColumn.getText(), '"');
-        rewriter.insertBefore(parserRuleContext.getStart(), String.format(ALTER_TABLE_COLUMN_NAME, tableId, oldColumnName, newColumnName));
-        rewriter.replace(ctx.CHANGE().getSymbol(), "ALTER");
-        rewriter.delete(ctx.oldColumn.getStart(), ctx.oldColumn.getStop());
+        String oldColumnName = quoteIdent(ctx.oldColumn.getText());
+        String newColumnName = quoteIdent(ctx.newColumn.getText());
+        // RENAME must run before the type change; emit it as its own statement.
+        beforeStatements.add(String.format(
+                "ALTER TABLE %s RENAME COLUMN %s TO %s",
+                quotedTable(tableId), oldColumnName, newColumnName));
+        String alterColumn = ctx.COLUMN() != null
+                ? "ALTER COLUMN " + newColumnName
+                : "ALTER " + newColumnName;
+        rewriter.replace(ctx.CHANGE().getSymbol(), ctx.newColumn.getStop(), alterColumn);
         rewriter.insertBefore(ctx.columnDefinition().getStart(), "TYPE ");
+        stripFirstAfter(ctx.FIRST(), ctx.AFTER(), ctx.afterColumn);
         rewriteColumnDefinition(newColumnName, ctx.columnDefinition());
     }
     private void rewriteAlterByModifyColumn(MySqlParser.AlterByModifyColumnContext ctx) {
         rewriter.replace(ctx.MODIFY().getSymbol(), "ALTER");
-        List<String> fullColumnNames = new ArrayList<>(ctx.uid().size());
-        for (MySqlParser.UidContext uidContext : ctx.uid()) {
-            rewriter.replace(uidContext.getStart(), uidContext.getStop(),
-                    StringUtil.quote(StringUtil.unquote(uidContext.getText(), '`'), '"'));
-            fullColumnNames.add(uidContext.getText());
-        }
+        // First uid is the column; a second uid is only present with AFTER <col>.
+        MySqlParser.UidContext columnUid = ctx.uid(0);
+        String columnName = columnNamingStrategy.resolveColumnName(
+                StringUtil.unquote(columnUid.getText(), '`'));
+        rewriter.replace(columnUid.getStart(), columnUid.getStop(), StringUtil.quote(columnName, '"'));
         rewriter.insertBefore(ctx.columnDefinition().getStart(), "TYPE ");
-        for (String fullColumnName : fullColumnNames) {
-            rewriteColumnDefinition(fullColumnName, ctx.columnDefinition());
+        stripFirstAfter(ctx.FIRST(), ctx.AFTER(), ctx.uid().size() > 1 ? ctx.uid(1) : null);
+        rewriteColumnDefinition(columnName, ctx.columnDefinition());
+    }
+
+    private void stripFirstAfter(TerminalNode first, TerminalNode after, MySqlParser.UidContext afterColumn) {
+        if (first != null) {
+            rewriter.delete(first.getSymbol());
+            message.report("FIRST column position dropped", Level.INFO);
+        }
+        if (after != null) {
+            rewriter.delete(after.getSymbol());
+            if (afterColumn != null) {
+                rewriter.delete(afterColumn.getStart(), afterColumn.getStop());
+            }
+            message.report("AFTER column position dropped", Level.INFO);
         }
     }
 
@@ -780,17 +1183,17 @@ public class MySqlToPGParserListener extends MySqlParserBaseListener {
 
     @Override
     public void enterTableOptionRowFormat(MySqlParser.TableOptionRowFormatContext ctx) {
-        comment(ctx.getStart(), ctx.getStop());
+        dropOrCommentTableOption(ctx);
     }
 
     @Override
     public void exitTableOptionAutoIncrement(MySqlParser.TableOptionAutoIncrementContext ctx) {
-        comment(ctx.getStart(), ctx.getStop());
+        dropOrCommentTableOption(ctx);
     }
 
     @Override
     public void exitTableOptionAutoextendSize(MySqlParser.TableOptionAutoextendSizeContext ctx) {
-        comment(ctx.getStart(), ctx.getStop());
+        dropOrCommentTableOption(ctx);
     }
     private void rewriteDataType(ParserRuleContext parserRuleContext, String fullColumnName, MySqlParser.DataTypeContext dataTypeContext) {
         if (dataTypeContext instanceof MySqlParser.DimensionDataTypeContext) {
@@ -815,7 +1218,19 @@ public class MySqlToPGParserListener extends MySqlParserBaseListener {
 
     @Override
     public void exitTableOptionCharset(MySqlParser.TableOptionCharsetContext ctx) {
-        comment(ctx.getStart(),ctx.getStop());
+        dropOrCommentTableOption(ctx);
+    }
+
+    /**
+     * CREATE TABLE keeps MySQL table options as comments for traceability; ALTER TABLE drops them
+     * so comma compaction cannot leave a stray {@code /* ... * /} around a deleted clause.
+     */
+    private void dropOrCommentTableOption(ParserRuleContext ctx) {
+        if (within(ctx, MySqlParser.AlterTableContext.class)) {
+            rewriter.delete(ctx.getStart(), ctx.getStop());
+        } else {
+            comment(ctx.getStart(), ctx.getStop());
+        }
     }
 
     /**
@@ -854,6 +1269,38 @@ public class MySqlToPGParserListener extends MySqlParserBaseListener {
         if (translator.getCommentStatement() != null) {
             afterStatements.add(translator.getCommentStatement());
         }
+    }
+
+    @Override
+    public void exitRenameTable(MySqlParser.RenameTableContext ctx) {
+        List<String> statements = new ArrayList<>();
+        for (MySqlParser.RenameTableClauseContext clause : ctx.renameTableClause()) {
+            TableId from = tableNamingStrategy.resolveTableId(
+                    parseTableId(clause.tableName(0).fullId().getText()));
+            TableId to = tableNamingStrategy.resolveTableId(
+                    parseTableId(clause.tableName(1).fullId().getText()));
+            if (to.getCatalog() == null && to.getSchema() == null) {
+                to = tableNamingStrategy.resolveTableId(
+                        new TableId(from.getCatalog(), from.getSchema(), to.getTable()));
+            }
+            statements.add("ALTER TABLE " + quotedTable(from) + " RENAME TO "
+                    + StringUtil.quote(to.getTable(), '"'));
+        }
+        rewriter.replace(ctx.getStart(), ctx.getStop(), statements.get(0));
+        for (int i = 1; i < statements.size(); i++) {
+            afterStatements.add(statements.get(i));
+        }
+    }
+
+    @Override
+    public void exitTruncateTable(MySqlParser.TruncateTableContext ctx) {
+        TableId tableId = tableNamingStrategy.resolveTableId(
+                parseTableId(ctx.tableName().fullId().getText()));
+        if (ctx.TABLE() == null) {
+            rewriter.insertAfter(ctx.TRUNCATE().getSymbol(), " TABLE");
+        }
+        rewriter.replace(ctx.tableName().getStart(), ctx.tableName().getStop(),
+                quotedTable(tableId));
     }
 
     /**

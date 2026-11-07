@@ -50,14 +50,12 @@ class MySqlToPGConverterTest {
 
     @Test
     void keepsAlterTableThatMixesATableOptionWithAColumnChange() {
-        // The option becomes a comment, the column change still has to reach the target.
+        // ALTER TABLE drops MySQL-only table options; the column change still reaches the target.
         ConversionResult result = identityConverter()
                 .convert("ALTER TABLE `test`.`test` ENGINE=InnoDB, ADD COLUMN `col3` INT NULL");
 
-        String joined = String.join("\n", result.getStatements());
-        assertThat(joined).contains("ADD COLUMN");
-        assertThat(joined).contains("\"col3\"");
-        assertThat(joined).contains("/* ENGINE=InnoDB */");
+        assertThat(result.getStatements()).containsExactly(
+                "ALTER TABLE \"test\".\"test\" ADD COLUMN \"col3\" int NULL");
     }
 
     @Test
