@@ -4,15 +4,19 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.opendrs.engine.capture.BatchApplyHandler;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.LongSupplier;
 import org.apache.kafka.clients.consumer.Consumer;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.clients.consumer.OffsetAndMetadata;
+import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.connect.source.SourceRecord;
@@ -21,8 +25,12 @@ import org.slf4j.LoggerFactory;
 
 /**
  * KAFKA replay loop: poll the per-pipeline topic, apply via {@link BatchApplyHandler}, then
- * persist {@link AppliedOffsetStore}. Kafka consumer-group offset tracks read progress; applied
- * offsets track target progress (required under at-least-once).
+ * periodically persist {@link AppliedOffsetStore} and commit the consumer group offset.
+ *
+ * <p>Commits are <strong>time-based only</strong> (default {@link #COMMIT_INTERVAL} = 3s): after a
+ * successful apply the offsets stay in memory until the interval elapses (or {@link #close()}
+ * forces a final {@code commitSync}). Order is always apply → saveApplied → commit; the consumer
+ * is touched only from this runner's thread.
  */
 public final class KafkaReplayRunner implements AutoCloseable, Runnable {
 
@@ -30,24 +38,64 @@ public final class KafkaReplayRunner implements AutoCloseable, Runnable {
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final Duration POLL_TIMEOUT = Duration.ofMillis(500);
 
+    /** Pure timer: flush applied + consumer offset at most this often (no count cap). */
+    static final Duration COMMIT_INTERVAL = Duration.ofSeconds(3);
+
     private final long pipelineId;
     private final KafkaTransportConfig transport;
-    private final BatchApplyHandler applyHandler;
+    private final BatchApplyFn applyFn;
+    private final AutoCloseable applyClose;
     private final AppliedOffsetStore appliedOffsetStore;
     private final SourceRecordEnvelopeCodec codec;
     private final Consumer<String, byte[]> consumer;
+    private final LongSupplier nanoTime;
     private final AtomicBoolean running = new AtomicBoolean(true);
     private final Thread thread;
+
+    private final Map<TopicPartition, OffsetAndMetadata> pendingOffsets = new HashMap<>();
+    private PendingApplied pendingApplied;
+    private long lastFlushNanos;
+
+    @FunctionalInterface
+    interface BatchApplyFn {
+        void applyBatch(List<SourceRecord> batch) throws InterruptedException;
+    }
+
+    record PendingApplied(String sourceOffsetJson, String topic, int partition, long offset) {
+    }
 
     public KafkaReplayRunner(
             long pipelineId,
             KafkaTransportConfig transport,
             BatchApplyHandler applyHandler,
             AppliedOffsetStore appliedOffsetStore) {
-        this(pipelineId, transport, applyHandler, appliedOffsetStore, new SourceRecordEnvelopeCodec(),
-                createConsumer(transport));
+        this(pipelineId, transport, applyHandler::applyBatch, applyHandler, appliedOffsetStore,
+                new SourceRecordEnvelopeCodec(), createConsumer(transport), System::nanoTime);
     }
 
+    KafkaReplayRunner(
+            long pipelineId,
+            KafkaTransportConfig transport,
+            BatchApplyFn applyFn,
+            AutoCloseable applyClose,
+            AppliedOffsetStore appliedOffsetStore,
+            SourceRecordEnvelopeCodec codec,
+            Consumer<String, byte[]> consumer,
+            LongSupplier nanoTime) {
+        this.pipelineId = pipelineId;
+        this.transport = transport;
+        this.applyFn = applyFn;
+        this.applyClose = applyClose;
+        this.appliedOffsetStore = appliedOffsetStore;
+        this.codec = codec;
+        this.consumer = consumer;
+        this.nanoTime = nanoTime == null ? System::nanoTime : nanoTime;
+        this.lastFlushNanos = this.nanoTime.getAsLong();
+        this.thread = new Thread(this, "opendrs-kafka-replay-" + transport.pipelinePublicId());
+        this.thread.setDaemon(true);
+    }
+
+    /** Test hook: package constructor with real {@link BatchApplyHandler} wiring preserved. */
     KafkaReplayRunner(
             long pipelineId,
             KafkaTransportConfig transport,
@@ -55,21 +103,15 @@ public final class KafkaReplayRunner implements AutoCloseable, Runnable {
             AppliedOffsetStore appliedOffsetStore,
             SourceRecordEnvelopeCodec codec,
             Consumer<String, byte[]> consumer) {
-        this.pipelineId = pipelineId;
-        this.transport = transport;
-        this.applyHandler = applyHandler;
-        this.appliedOffsetStore = appliedOffsetStore;
-        this.codec = codec;
-        this.consumer = consumer;
-        this.thread = new Thread(this, "opendrs-kafka-replay-" + transport.pipelinePublicId());
-        this.thread.setDaemon(true);
+        this(pipelineId, transport, applyHandler::applyBatch, applyHandler, appliedOffsetStore, codec,
+                consumer, System::nanoTime);
     }
 
     public void start() {
         consumer.subscribe(List.of(transport.topic()));
         thread.start();
-        log.info("KAFKA replay started pipelineId={} topic={} group={}",
-                pipelineId, transport.topic(), transport.consumerGroup());
+        log.info("KAFKA replay started pipelineId={} topic={} group={} commitIntervalMs={}",
+                pipelineId, transport.topic(), transport.consumerGroup(), COMMIT_INTERVAL.toMillis());
     }
 
     @Override
@@ -77,26 +119,29 @@ public final class KafkaReplayRunner implements AutoCloseable, Runnable {
         try {
             while (running.get()) {
                 ConsumerRecords<String, byte[]> records = consumer.poll(POLL_TIMEOUT);
-                if (records.isEmpty()) {
-                    continue;
+                if (!records.isEmpty()) {
+                    List<SourceRecord> batch = new ArrayList<>(records.count());
+                    ConsumerRecord<String, byte[]> last = null;
+                    for (ConsumerRecord<String, byte[]> record : records) {
+                        batch.add(codec.deserialize(record.value()));
+                        last = record;
+                    }
+                    applyFn.applyBatch(batch);
+                    for (ConsumerRecord<String, byte[]> record : records) {
+                        pendingOffsets.put(
+                                new TopicPartition(record.topic(), record.partition()),
+                                new OffsetAndMetadata(record.offset() + 1));
+                    }
+                    if (last != null) {
+                        SourceRecord lastSource = batch.get(batch.size() - 1);
+                        String sourceOffsetJson = MAPPER.writeValueAsString(
+                                lastSource.sourceOffset() == null ? Map.of() : lastSource.sourceOffset());
+                        pendingApplied = new PendingApplied(
+                                sourceOffsetJson, last.topic(), last.partition(), last.offset());
+                    }
                 }
-                List<SourceRecord> batch = new ArrayList<>(records.count());
-                ConsumerRecord<String, byte[]> last = null;
-                for (ConsumerRecord<String, byte[]> record : records) {
-                    batch.add(codec.deserialize(record.value()));
-                    last = record;
-                }
-                applyHandler.applyBatch(batch);
-                if (last != null) {
-                    SourceRecord lastSource = batch.get(batch.size() - 1);
-                    String sourceOffsetJson = MAPPER.writeValueAsString(
-                            lastSource.sourceOffset() == null ? Map.of() : lastSource.sourceOffset());
-                    appliedOffsetStore.saveApplied(
-                            pipelineId, sourceOffsetJson, last.topic(), last.partition(), last.offset());
-                }
-                // Commit after applied row is durable so a crash between apply and commit still
-                // redelivers (at-least-once). Applied store is the truth for "target caught up".
-                consumer.commitSync();
+                // Interval-only flush (also runs on empty polls so the timer advances while idle).
+                flushIfDue(false);
             }
         }
         catch (InterruptedException ex) {
@@ -110,12 +155,59 @@ public final class KafkaReplayRunner implements AutoCloseable, Runnable {
         }
         finally {
             try {
+                flushIfDue(true);
+            }
+            catch (Exception ex) {
+                log.warn("KAFKA replay final flush failed for pipeline {}: {}", pipelineId, ex.toString());
+            }
+            try {
                 consumer.close(Duration.ofSeconds(5));
             }
             catch (Exception ex) {
                 log.debug("consumer close: {}", ex.getMessage());
             }
         }
+    }
+
+    /** Test-only: stage a successful apply as pending without going through {@link #run}. */
+    void notePendingForTest(String topic, int partition, long offset, String sourceOffsetJson) {
+        pendingOffsets.put(new TopicPartition(topic, partition), new OffsetAndMetadata(offset + 1));
+        pendingApplied = new PendingApplied(sourceOffsetJson, topic, partition, offset);
+    }
+
+    /**
+     * Persist pending applied row then commit consumer offsets. {@code force=true} uses
+     * {@code commitSync} (shutdown); otherwise {@code commitAsync} after {@link #COMMIT_INTERVAL}.
+     */
+    void flushIfDue(boolean force) {
+        if (pendingApplied == null || pendingOffsets.isEmpty()) {
+            return;
+        }
+        long now = nanoTime.getAsLong();
+        if (!force && Duration.ofNanos(now - lastFlushNanos).compareTo(COMMIT_INTERVAL) < 0) {
+            return;
+        }
+        appliedOffsetStore.saveApplied(
+                pipelineId,
+                pendingApplied.sourceOffsetJson(),
+                pendingApplied.topic(),
+                pendingApplied.partition(),
+                pendingApplied.offset());
+        Map<TopicPartition, OffsetAndMetadata> toCommit = Map.copyOf(pendingOffsets);
+        if (force) {
+            consumer.commitSync(toCommit);
+        }
+        else {
+            consumer.commitAsync(toCommit, (offsets, exception) -> {
+                if (exception != null) {
+                    log.warn("KAFKA replay commitAsync failed pipelineId={}: {}",
+                            pipelineId, exception.toString());
+                }
+            });
+        }
+        pendingOffsets.clear();
+        pendingApplied = null;
+        lastFlushNanos = now;
     }
 
     @Override
@@ -133,7 +225,14 @@ public final class KafkaReplayRunner implements AutoCloseable, Runnable {
         catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
         }
-        applyHandler.close();
+        try {
+            if (applyClose != null) {
+                applyClose.close();
+            }
+        }
+        catch (Exception ex) {
+            log.debug("apply close: {}", ex.getMessage());
+        }
     }
 
     private static Consumer<String, byte[]> createConsumer(KafkaTransportConfig transport) {

@@ -37,6 +37,12 @@ public class DebeziumCdcEngineFactory implements CdcEngineFactory {
 
     private static final Logger log = LoggerFactory.getLogger(DebeziumCdcEngineFactory.class);
 
+    /**
+     * KAFKA capture only: {@link OffsetCommitPolicy#periodic} interval for flushing
+     * {@code debezium_offsets} after successful produce. DIRECT keeps {@link OffsetCommitPolicy#always()}.
+     */
+    public static final String KAFKA_OFFSET_FLUSH_INTERVAL_MS = "3000";
+
     private final JdbcConnectionFactory connectionFactory;
     private final MappingValidator mappingValidator;
     private final DataSource metadataDataSource;
@@ -161,11 +167,16 @@ public class DebeziumCdcEngineFactory implements CdcEngineFactory {
                 replayRunner.close();
             }
         };
+        // KAFKA: produce→mark still every batch; OffsetCommitPolicy.periodic flushes
+        // debezium_offsets at most every 3s (async from the engine's POV relative to always()).
+        java.util.Properties kafkaProps = DebeziumEngineConfig.capture(spec);
+        kafkaProps.setProperty("offset.flush.interval.ms", KAFKA_OFFSET_FLUSH_INTERVAL_MS);
         return build(
-                DebeziumEngineConfig.capture(spec),
+                kafkaProps,
                 spec.taskId(),
                 new SnapshotCompletionConsumer(produceConsumer, onSnapshotCompleted, logListener),
-                resources);
+                resources,
+                OffsetCommitPolicy.periodic(kafkaProps));
     }
 
     /**
@@ -224,6 +235,16 @@ public class DebeziumCdcEngineFactory implements CdcEngineFactory {
             long taskId,
             DebeziumEngine.ChangeConsumer<RecordChangeEvent<SourceRecord>> consumer,
             AutoCloseable resource) {
+        // DIRECT (and capture-only) paths: commit offsets as soon as the batch is marked.
+        return build(props, taskId, consumer, resource, OffsetCommitPolicy.always());
+    }
+
+    private CdcEngine build(
+            java.util.Properties props,
+            long taskId,
+            DebeziumEngine.ChangeConsumer<RecordChangeEvent<SourceRecord>> consumer,
+            AutoCloseable resource,
+            OffsetCommitPolicy commitPolicy) {
         AtomicReference<Throwable> error = new AtomicReference<>();
         // Debezium instantiates offset/schema-history stores by class name; bind the metadata
         // DataSource for this engine run until the Engine stops. The key is the engine name, so
@@ -231,8 +252,9 @@ public class DebeziumCdcEngineFactory implements CdcEngineFactory {
         String engineKey = props.getProperty("name");
         // 诊断日志：这里记录的是实际写进 Debezium Properties 的值，以及 classpath 上真正加载的
         // debezium-connector-mysql 版本——两边对不上时（如胖 jar 内嵌旧版依赖）一眼可见。
-        log.info("Debezium engine {} starting: snapshot.mode={}, debezium-connector-mysql={}",
-                engineKey, props.getProperty("snapshot.mode"), debeziumConnectorVersion());
+        log.info("Debezium engine {} starting: snapshot.mode={}, debezium-connector-mysql={}, offsetCommit={}",
+                engineKey, props.getProperty("snapshot.mode"), debeziumConnectorVersion(),
+                commitPolicy.getClass().getSimpleName());
         TaskDataSourceRegistry.bind(engineKey, metadataDataSource);
         DebeziumEngine<RecordChangeEvent<SourceRecord>> engine = DebeziumEngine
                 .create(ChangeEventFormat.of(Connect.class))
@@ -248,7 +270,7 @@ public class DebeziumCdcEngineFactory implements CdcEngineFactory {
                         error.set(new IllegalStateException(message));
                     }
                 })
-                .using(OffsetCommitPolicy.always())
+                .using(commitPolicy)
                 .build();
         return new DebeziumCdcEngine(
                 engine, error, taskId, resource, () -> TaskDataSourceRegistry.unbind(engineKey));
