@@ -7,7 +7,10 @@
            -> 源库 3 张表各 ALTER ADD COLUMN note
            -> 等目标表结构出现 note
            -> 源库各续写 APPEND_ROWS 行 -> 等增量追平（每张 = BASE+APPEND）
-  check    每张目标行数 = BASE+APPEND，且含 note 列
+           -> 源库 3 张表各 ALTER DROP COLUMN note
+           -> 等目标表结构去掉 note
+           -> 源库各再续写 APPEND_ROWS 行 -> 等增量追平（每张 = BASE+2*APPEND）
+  check    每张目标行数 = BASE+2*APPEND，且不含 note 列
   clean    terminate -> 删任务/数据源/两端隔离表
 
 依赖应用栈里的 Kafka + Apicurio（deploy/docker-compose.yml）。
@@ -88,6 +91,8 @@ def test_full_inc_kafka_ddl_and_rows(prepared):
     mysql, pg = prepared["mysql"], prepared["pg"]
     schema, tables = prepared["schema"], prepared["tables"]
     timeout = prepared["timeout"]
+    after_add = BASE_ROWS + APPEND_ROWS
+    final_rows = BASE_ROWS + 2 * APPEND_ROWS
 
     # ---------------- run：全量
     task.precheck()
@@ -96,23 +101,32 @@ def test_full_inc_kafka_ddl_and_rows(prepared):
     for table in tables:
         utils.wait_row_count(pg, schema, table, BASE_ROWS, timeout=timeout)
 
-    # ---------------- run：增量 DDL（加列）
+    # ---------------- run：增量 DDL（加列）+ DML
     for table in tables:
         utils.alter_add_column(mysql, table, NEW_COLUMN, NEW_COLUMN_DEF)
     for table in tables:
         utils.wait_column(pg, schema, table, NEW_COLUMN, timeout=timeout)
 
-    # ---------------- run：增量 DML
     for table in tables:
         utils.append_user_wallet_rows(mysql, table, BASE_ROWS + 1, APPEND_ROWS)
     for table in tables:
-        utils.wait_row_count(pg, schema, table, BASE_ROWS + APPEND_ROWS,
-                             timeout=timeout)
+        utils.wait_row_count(pg, schema, table, after_add, timeout=timeout)
 
-    # ---------------- check：行数 + 表结构
+    # ---------------- run：增量 DDL（删列）+ DML
+    for table in tables:
+        utils.alter_drop_column(mysql, table, NEW_COLUMN)
+    for table in tables:
+        utils.wait_column_absent(pg, schema, table, NEW_COLUMN, timeout=timeout)
+
+    for table in tables:
+        utils.append_user_wallet_rows(mysql, table, after_add + 1, APPEND_ROWS)
+    for table in tables:
+        utils.wait_row_count(pg, schema, table, final_rows, timeout=timeout)
+
+    # ---------------- check：最终行数 + 表结构（无 note 列）
     for table in tables:
         count = pg.count(schema, table)
-        assert count == BASE_ROWS + APPEND_ROWS, \
-            f"{schema}.{table} row count {count} != {BASE_ROWS + APPEND_ROWS}"
-        assert utils.pg_has_column(pg, schema, table, NEW_COLUMN), \
-            f"{schema}.{table} missing column {NEW_COLUMN!r}"
+        assert count == final_rows, \
+            f"{schema}.{table} row count {count} != {final_rows}"
+        assert not utils.pg_has_column(pg, schema, table, NEW_COLUMN), \
+            f"{schema}.{table} still has column {NEW_COLUMN!r} after DROP"

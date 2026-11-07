@@ -303,6 +303,29 @@ def wait_column(pg: PostgresConnection, schema: str, table: str, column: str,
         time.sleep(poll)
 
 
+def alter_drop_column(mysql: MySqlConnection, table: str, column: str,
+                      database: str | None = None) -> None:
+    """Source-side ALTER TABLE … DROP COLUMN (CDC should replicate to target)."""
+    name = _qname(database, table)
+    mysql.execute(f"ALTER TABLE {name} DROP COLUMN {column}")
+
+
+def wait_column_absent(pg: PostgresConnection, schema: str, table: str, column: str,
+                       timeout: float = 180, poll: float = 2) -> None:
+    """Poll until the target table no longer has ``column`` (DROP COLUMN caught up)."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            if not pg_has_column(pg, schema, table, column):
+                return
+        except psycopg2.errors.UndefinedTable:
+            return
+        if time.monotonic() > deadline:
+            raise RuntimeError(
+                f"{schema}.{table} still has column {column!r} after {timeout:.0f}s")
+        time.sleep(poll)
+
+
 # ---------------------------------------------------------------------- 对账
 def row_digest(rows: dict[int, tuple]) -> str:
     canonical = "\n".join(
