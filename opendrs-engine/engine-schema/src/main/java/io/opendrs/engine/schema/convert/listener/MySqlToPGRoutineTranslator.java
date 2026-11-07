@@ -12,10 +12,12 @@ import org.antlr.v4.runtime.TokenStream;
 import org.antlr.v4.runtime.tree.ParseTree;
 
 /**
- * MySQL {@code CREATE FUNCTION}/{@code CREATE PROCEDURE} → PostgreSQL PL/pgSQL translator.
+ * MySQL {@code CREATE FUNCTION}/{@code CREATE PROCEDURE}/{@code CREATE TRIGGER}
+ * → PostgreSQL PL/pgSQL translator.
  *
- * <p>Function and procedure share the same body emitter; only the header differs
+ * <p>Function, procedure, and trigger share the same body emitter; only the header differs
  * ({@code RETURNS} for functions, {@code IN}/{@code OUT}/{@code INOUT} for procedures,
+ * {@code RETURNS TRIGGER} plus a follow-up {@code CREATE TRIGGER} for triggers,
  * {@code COMMENT ON FUNCTION}/{@code COMMENT ON PROCEDURE}).
  *
  * <p>Hybrid strategy — token rewriting and clause re-emission are complementary, not alternatives:
@@ -82,6 +84,15 @@ import org.antlr.v4.runtime.tree.ParseTree;
  * {@code CALL proc(..., 'cur'); FETCH ALL FROM cur;}. Multiple bare SELECTs reopen the same
  * cursor (last wins) with a WARNING. Bare {@code SELECT} inside a {@code FUNCTION} is FAILED
  * (MySQL forbids function result sets).
+ *
+ * <p>Triggers (P0): MySQL {@code CREATE TRIGGER … FOR EACH ROW <body>} becomes two PostgreSQL
+ * statements — {@code CREATE FUNCTION <trigger>_trigger_function() RETURNS TRIGGER …} plus
+ * {@code CREATE TRIGGER <original> … EXECUTE FUNCTION <trigger>_trigger_function()}. The trigger
+ * keeps its original name; the function uses the {@code _trigger_function} suffix (no
+ * {@code opendrs} marker). Body emission is shared; {@code SET NEW.col = …} is already handled;
+ * an automatic {@code RETURN NEW}/{@code RETURN OLD} is appended (DELETE → OLD, else NEW).
+ * {@code DEFINER} and {@code FOLLOWS}/{@code PRECEDES} are dropped as INFO. No REFCURSOR
+ * result-set path for triggers.
  */
 
 public class MySqlToPGRoutineTranslator {
@@ -97,11 +108,15 @@ public class MySqlToPGRoutineTranslator {
     static final String RESULT_SET_CURSOR = "__opendrs_rs";
     /** True while {@link #translateProcedure} is emitting a body. */
     private boolean inProcedure;
+    /** True while {@link #translateTrigger} is emitting a body. */
+    private boolean inTrigger;
     /** Set when a bare SELECT in a procedure needs the injected REFCURSOR param. */
     private boolean resultSetCursorNeeded;
     /** Count of bare result-set SELECTs (for multi-result WARNING). */
     private int resultSetSelectCount;
     private String commentStatement;
+    /** Follow-up {@code CREATE TRIGGER … EXECUTE FUNCTION …} for {@link #translateTrigger}. */
+    private String createTriggerStatement;
 
     public MySqlToPGRoutineTranslator(TokenStream tokens, ConversionMessage message) {
         this.tokens = tokens;
@@ -111,6 +126,14 @@ public class MySqlToPGRoutineTranslator {
     /** The {@code COMMENT ON FUNCTION/PROCEDURE …} statement derived from the routine COMMENT option. */
     public String getCommentStatement() {
         return commentStatement;
+    }
+
+    /**
+     * The follow-up {@code CREATE TRIGGER … EXECUTE FUNCTION …} produced by
+     * {@link #translateTrigger}; {@code null} for function/procedure translation.
+     */
+    public String getCreateTriggerStatement() {
+        return createTriggerStatement;
     }
 
     /** MySQL {@code CREATE FUNCTION} → {@code CREATE FUNCTION … AS $$…$$ LANGUAGE plpgsql}. */
@@ -202,6 +225,43 @@ public class MySqlToPGRoutineTranslator {
     }
 
     /**
+     * MySQL {@code CREATE TRIGGER} → PostgreSQL trigger function + {@code CREATE TRIGGER}.
+     * The rewritten text is the {@code CREATE FUNCTION <name>_trigger_function() RETURNS TRIGGER};
+     * {@link #getCreateTriggerStatement()} holds the follow-up {@code CREATE TRIGGER} that
+     * {@code EXECUTE FUNCTION}s it. Trigger keeps the original name; function uses the
+     * {@code _trigger_function} suffix.
+     */
+    public String translateTrigger(MySqlParser.CreateTriggerContext ctx) {
+        if (ctx.ownerStatement() != null) {
+            message.report("DEFINER clause dropped: PostgreSQL has no per-trigger definer", Level.INFO);
+        }
+        if (ctx.triggerPlace != null) {
+            message.report("FOLLOWS/PRECEDES dropped: PostgreSQL has no trigger ordering clause"
+                    + " equivalent to MySQL FOLLOWS/PRECEDES", Level.INFO);
+        }
+
+        String triggerName = quotedFullId(ctx.thisTrigger);
+        String functionName = quotedTriggerFunctionName(ctx.thisTrigger);
+        String time = ctx.triggerTime.getText().toUpperCase();
+        String event = ctx.triggerEvent.getText().toUpperCase();
+        String table = quotedFullId(ctx.tableName().fullId());
+        // BEFORE/AFTER DELETE → RETURN OLD; INSERT/UPDATE → RETURN NEW
+        String autoReturn = "DELETE".equals(event) ? "OLD" : "NEW";
+
+        inProcedure = false;
+        inTrigger = true;
+        resultSetCursorNeeded = false;
+        resultSetSelectCount = 0;
+        String body = emitRoutineBody(ctx.routineBody(), "trigger", autoReturn);
+
+        createTriggerStatement = "CREATE TRIGGER " + triggerName + ' ' + time + ' ' + event
+                + " ON " + table + " FOR EACH ROW EXECUTE FUNCTION " + functionName + "();";
+
+        return "CREATE FUNCTION " + functionName + "() RETURNS TRIGGER AS $$\n"
+                + body + "$$ LANGUAGE plpgsql;";
+    }
+
+    /**
      * Collects {@code COMMENT} into {@link #commentStatement} and returns
      * {@code SECURITY DEFINER}|{@code SECURITY INVOKER} when {@code SQL SECURITY} is present.
      * Other MySQL routine options are dropped with INFO.
@@ -229,18 +289,31 @@ public class MySqlToPGRoutineTranslator {
     // ---------------------------------------------------------------------------------------------
 
     private String emitRoutineBody(MySqlParser.RoutineBodyContext body, String kind) {
+        return emitRoutineBody(body, kind, null);
+    }
+
+    /**
+     * @param autoReturn when non-null (triggers), append {@code RETURN NEW|OLD;} on the
+     *                   outermost block before {@code EXCEPTION}/{@code END}
+     */
+    private String emitRoutineBody(MySqlParser.RoutineBodyContext body, String kind, String autoReturn) {
         if (body != null && body.blockStatement() != null) {
             message.report(kind + " body statements are re-emitted, but expressions are carried over"
                     + " verbatim: verify function/operator semantics (e.g. ||, integer division, date"
                     + " arithmetic) differ between MySQL and PostgreSQL", Level.WARNING);
             notFoundAssignments.clear();
             StringBuilder sb = new StringBuilder();
-            emitBlock(body.blockStatement(), sb, 0);
+            emitBlock(body.blockStatement(), sb, 0, autoReturn);
             return sb.toString();
         }
         // Rare shape: body is a single plain SQL statement.
         message.report("single-statement " + kind + " body passed through untranslated", Level.WARNING);
-        return "BEGIN\n" + tokens.getText(body) + ";\nEND;";
+        StringBuilder sb = new StringBuilder("BEGIN\n").append(tokens.getText(body)).append(";\n");
+        if (autoReturn != null) {
+            sb.append("    RETURN ").append(autoReturn).append(";\n");
+        }
+        sb.append("END;");
+        return sb.toString();
     }
 
     /**
@@ -249,6 +322,11 @@ public class MySqlToPGRoutineTranslator {
      * so the clauses are re-emitted rather than token-edited.
      */
     private void emitBlock(MySqlParser.BlockStatementContext ctx, StringBuilder sb, int depth) {
+        emitBlock(ctx, sb, depth, null);
+    }
+
+    private void emitBlock(MySqlParser.BlockStatementContext ctx, StringBuilder sb, int depth,
+                           String autoReturn) {
         String ind = "    ".repeat(depth);
         if (!ctx.uid().isEmpty()) {
             sb.append(ind).append("<<").append(ctx.uid().get(0).getText()).append(">>\n");
@@ -312,6 +390,10 @@ public class MySqlToPGRoutineTranslator {
         sb.append(ind).append("BEGIN\n");
         for (MySqlParser.ProcedureSqlStatementContext stmt : ctx.procedureSqlStatement()) {
             emitProcStatement(stmt, sb, depth + 1);
+        }
+        // Trigger functions must return NEW/OLD; inject before EXCEPTION so the happy path returns.
+        if (autoReturn != null) {
+            sb.append(ind).append("    RETURN ").append(autoReturn).append(";\n");
         }
         if (!exceptionHandlers.isEmpty()) {
             sb.append(ind).append("EXCEPTION\n");
@@ -1040,8 +1122,11 @@ public class MySqlToPGRoutineTranslator {
      */
     private void emitBareSelect(MySqlParser.SelectStatementContext select, StringBuilder sb, int depth) {
         if (!inProcedure) {
-            unsupported(select, sb, depth, "SELECT result set in FUNCTION", Level.FAILED,
-                    "MySQL functions cannot return result sets; use RETURN or SELECT INTO");
+            String where = inTrigger ? "TRIGGER" : "FUNCTION";
+            unsupported(select, sb, depth, "SELECT result set in " + where, Level.FAILED,
+                    inTrigger
+                            ? "trigger bodies have no REFCURSOR result-set path; use SELECT INTO or DML"
+                            : "MySQL functions cannot return result sets; use RETURN or SELECT INTO");
             sb.append('\n');
             return;
         }
@@ -1247,6 +1332,25 @@ public class MySqlToPGRoutineTranslator {
     /** Variables/parameter names stay bare so they line up with the unquoted occurrences inside the body. */
     private String plainUid(MySqlParser.UidContext uid) {
         return StringUtil.unquote(uid.getText(), '`');
+    }
+
+    /**
+     * Trigger function name: same schema qualification as the trigger, last component suffixed
+     * with {@code _trigger_function} (no {@code opendrs} marker).
+     */
+    private String quotedTriggerFunctionName(MySqlParser.FullIdContext ctx) {
+        List<MySqlParser.UidContext> uids = ctx.uid();
+        if (ctx.DOT_ID() != null) {
+            String schema = quotedUid(uids.get(0));
+            String name = StringUtil.unquote(ctx.DOT_ID().getText().substring(1), '`');
+            return schema + '.' + StringUtil.quote(name + "_trigger_function", '"');
+        }
+        if (uids.size() > 1) {
+            String local = StringUtil.unquote(uids.get(1).getText(), '`') + "_trigger_function";
+            return quotedUid(uids.get(0)) + '.' + StringUtil.quote(local, '"');
+        }
+        String local = StringUtil.unquote(uids.get(0).getText(), '`') + "_trigger_function";
+        return StringUtil.quote(local, '"');
     }
 
     private String quotedFullId(MySqlParser.FullIdContext ctx) {

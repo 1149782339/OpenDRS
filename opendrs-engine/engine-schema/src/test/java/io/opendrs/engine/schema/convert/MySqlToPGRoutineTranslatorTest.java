@@ -6,7 +6,8 @@ import io.opendrs.engine.schema.convert.converters.MySqlToPGConverter;
 import org.junit.jupiter.api.Test;
 
 /**
- * Coverage for {@code CREATE FUNCTION}/{@code CREATE PROCEDURE} translation (MySQL → PL/pgSQL).
+ * Coverage for {@code CREATE FUNCTION}/{@code CREATE PROCEDURE}/{@code CREATE TRIGGER}
+ * translation (MySQL → PL/pgSQL).
  */
 class MySqlToPGRoutineTranslatorTest {
 
@@ -609,6 +610,78 @@ class MySqlToPGRoutineTranslatorTest {
         assertThat(stmt).contains("SELECT result set in FUNCTION");
         assertThat(stmt).doesNotContain("OPEN __opendrs_rs");
         assertThat(result.getErrors()).contains("SELECT result set");
+    }
+
+
+    @Test
+    void translatesBeforeInsertTriggerWithSetNew() {
+        ConversionResult result = identityConverter().convert(
+                "CREATE DEFINER=`root`@`localhost` TRIGGER bi_people "
+                        + "BEFORE INSERT ON people FOR EACH ROW "
+                        + "BEGIN "
+                        + "SET NEW.name = IFNULL(NEW.name, 'anon'); "
+                        + "SET NEW.updated_at = NOW(); "
+                        + "END");
+
+        assertThat(result.getStatus()).isEqualTo(ConversionStatus.SUCCEEDED);
+        assertThat(result.getStatements()).hasSize(2);
+        String fn = result.getStatements().get(0);
+        String tg = result.getStatements().get(1);
+        assertThat(fn).contains("CREATE FUNCTION \"bi_people_trigger_function\"() RETURNS TRIGGER AS $$");
+        assertThat(fn).contains("NEW.name := COALESCE(NEW.name, 'anon');");
+        assertThat(fn).contains("NEW.updated_at := NOW();");
+        assertThat(fn).contains("RETURN NEW;");
+        assertThat(fn).contains("$$ LANGUAGE plpgsql;");
+        assertThat(fn).doesNotContain("opendrs");
+        assertThat(fn).doesNotContain("DEFINER");
+        assertThat(tg).isEqualTo(
+                "CREATE TRIGGER \"bi_people\" BEFORE INSERT ON \"people\" "
+                        + "FOR EACH ROW EXECUTE FUNCTION \"bi_people_trigger_function\"();");
+        assertThat(result.getInfos()).anyMatch(m -> m.contains("DEFINER"));
+    }
+
+    @Test
+    void translatesAfterDeleteTriggerReturnsOldAndDropsFollows() {
+        ConversionResult result = identityConverter().convert(
+                "CREATE TRIGGER ad_people AFTER DELETE ON people FOR EACH ROW "
+                        + "FOLLOWS other_trig "
+                        + "BEGIN "
+                        + "INSERT INTO people_audit(id) VALUES (OLD.id); "
+                        + "END");
+
+        assertThat(result.getStatus()).isEqualTo(ConversionStatus.SUCCEEDED);
+        assertThat(result.getStatements()).hasSize(2);
+        String fn = result.getStatements().get(0);
+        String tg = result.getStatements().get(1);
+        assertThat(fn).contains("CREATE FUNCTION \"ad_people_trigger_function\"() RETURNS TRIGGER AS $$");
+        assertThat(fn).contains("INSERT INTO people_audit(id) VALUES (OLD.id);");
+        assertThat(fn).contains("RETURN OLD;");
+        assertThat(fn).doesNotContain("RETURN NEW;");
+        assertThat(fn).doesNotContain("FOLLOWS");
+        assertThat(tg).isEqualTo(
+                "CREATE TRIGGER \"ad_people\" AFTER DELETE ON \"people\" "
+                        + "FOR EACH ROW EXECUTE FUNCTION \"ad_people_trigger_function\"();");
+        assertThat(result.getInfos()).anyMatch(m -> m.contains("FOLLOWS") || m.contains("PRECEDES"));
+    }
+
+    @Test
+    void translatesBeforeUpdateTriggerWithIf() {
+        ConversionResult result = identityConverter().convert(
+                "CREATE TRIGGER bu_people BEFORE UPDATE ON people FOR EACH ROW "
+                        + "BEGIN "
+                        + "IF NEW.name IS NULL THEN SET NEW.name = OLD.name; END IF; "
+                        + "END");
+
+        assertThat(result.getStatus()).isEqualTo(ConversionStatus.SUCCEEDED);
+        String all = String.join("\n", result.getStatements());
+        assertThat(all).contains("CREATE FUNCTION \"bu_people_trigger_function\"() RETURNS TRIGGER AS $$");
+        assertThat(all).contains("IF NEW.name IS NULL THEN");
+        assertThat(all).contains("NEW.name := OLD.name;");
+        assertThat(all).contains("RETURN NEW;");
+        assertThat(all).contains(
+                "CREATE TRIGGER \"bu_people\" BEFORE UPDATE ON \"people\" "
+                        + "FOR EACH ROW EXECUTE FUNCTION \"bu_people_trigger_function\"();");
+        assertThat(all).doesNotContain("opendrs");
     }
 
 }

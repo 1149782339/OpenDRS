@@ -856,4 +856,19 @@ public class MySqlToPGParserListener extends MySqlParserBaseListener {
         }
     }
 
+    /**
+     * MySQL {@code CREATE TRIGGER} becomes a trigger function ({@code RETURNS TRIGGER}) plus a
+     * follow-up {@code CREATE TRIGGER … EXECUTE FUNCTION …}; see
+     * {@link MySqlToPGRoutineTranslator#translateTrigger}.
+     */
+    @Override
+    public void exitCreateTrigger(MySqlParser.CreateTriggerContext ctx) {
+        MySqlToPGRoutineTranslator translator = new MySqlToPGRoutineTranslator(rewriter.getTokenStream(), message);
+        String translated = translator.translateTrigger(ctx);
+        rewriter.replace(ctx.getStart(), ctx.getStop(), translated);
+        if (translator.getCreateTriggerStatement() != null) {
+            afterStatements.add(translator.getCreateTriggerStatement());
+        }
+    }
+
 }
