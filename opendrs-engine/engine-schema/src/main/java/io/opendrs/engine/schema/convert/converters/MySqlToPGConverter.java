@@ -18,8 +18,14 @@ import java.util.List;
 import java.util.concurrent.CancellationException;
 
 /**
- * MySql to PostgreSQL DDL SQL converter
+ * MySQL to PostgreSQL DDL converter.
  *
+ * <p>Structure-migration scripts that emit a plain {@code CREATE TABLE} followed by
+ * {@code ALTER TABLE … PARTITION BY} are normalized first via
+ * {@link DdlStatements#mergeCreateTableWithAlterPartitionBy}: the partition clause is folded onto
+ * the CREATE so the existing CREATE-table partition rewriter runs. A lone
+ * {@code ALTER … PARTITION BY} (CDC) is not merged and remains discarded with INFO inside the
+ * listener.
  */
 public class MySqlToPGConverter extends CommonSQLConverter {
 
@@ -29,6 +35,54 @@ public class MySqlToPGConverter extends CommonSQLConverter {
 
     @Override
     public ConversionResult convert(String statement) {
+        if (statement == null || statement.isBlank()) {
+            return ConversionResult.builder()
+                    .statements(List.of())
+                    .status(ConversionStatus.SUCCEEDED)
+                    .infos(List.of())
+                    .warnings(List.of())
+                    .error("")
+                    .build();
+        }
+        List<String> split = DdlStatements.splitStatements(statement);
+        if (split.isEmpty()) {
+            split = List.of(statement.trim());
+        }
+        List<String> merged = DdlStatements.mergeCreateTableWithAlterPartitionBy(split);
+        if (merged.size() <= 1) {
+            return convertSingle(merged.isEmpty() ? statement : merged.get(0));
+        }
+        return convertAll(merged);
+    }
+
+    private ConversionResult convertAll(List<String> statements) {
+        List<String> out = new ArrayList<>();
+        List<String> infos = new ArrayList<>();
+        List<String> warnings = new ArrayList<>();
+        List<String> errors = new ArrayList<>();
+        ConversionStatus status = ConversionStatus.SUCCEEDED;
+        for (String stmt : statements) {
+            ConversionResult part = convertSingle(stmt);
+            out.addAll(part.getStatements());
+            infos.addAll(part.getInfos());
+            warnings.addAll(part.getWarnings());
+            if (part.getErrors() != null && !part.getErrors().isBlank()) {
+                errors.add(part.getErrors());
+            }
+            if (part.getStatus() == ConversionStatus.FAILED) {
+                status = ConversionStatus.FAILED;
+            }
+        }
+        return ConversionResult.builder()
+                .statements(out)
+                .status(status)
+                .infos(infos)
+                .warnings(warnings)
+                .error(String.join("\n", errors))
+                .build();
+    }
+
+    private ConversionResult convertSingle(String statement) {
         CodePointCharStream ddlContentCharStream = CharStreams.fromString(statement);
         Lexer lexer = new MySqlLexer(new CaseChangingCharStream(ddlContentCharStream, true));
         CommonTokenStream tokens = new CommonTokenStream(lexer);

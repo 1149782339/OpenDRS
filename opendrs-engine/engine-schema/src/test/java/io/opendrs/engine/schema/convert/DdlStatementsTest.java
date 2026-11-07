@@ -28,4 +28,44 @@ class DdlStatementsTest {
                 .isTrue();
         assertThat(DdlStatements.isMysqlSessionOnly("CREATE TABLE t (id INT)")).isFalse();
     }
+
+    @Test
+    void mergeFoldsAlterPartitionByOntoPrecedingCreate() {
+        List<String> merged = DdlStatements.mergeCreateTableWithAlterPartitionBy(List.of(
+                "CREATE TABLE titles (emp_no INT NOT NULL, from_date DATE NOT NULL, PRIMARY KEY (emp_no, from_date))",
+                "ALTER TABLE titles PARTITION BY RANGE COLUMNS (from_date) ("
+                        + "PARTITION p01 VALUES LESS THAN ('1985-12-31'), "
+                        + "PARTITION pmax VALUES LESS THAN (MAXVALUE))"));
+        assertThat(merged).hasSize(1);
+        assertThat(merged.get(0)).contains("CREATE TABLE titles");
+        assertThat(merged.get(0)).contains("PARTITION BY RANGE COLUMNS (from_date)");
+        assertThat(merged.get(0)).doesNotContain("ALTER TABLE");
+    }
+
+    @Test
+    void mergeLeavesIsolatedAlterPartitionBy() {
+        List<String> merged = DdlStatements.mergeCreateTableWithAlterPartitionBy(List.of(
+                "ALTER TABLE titles PARTITION BY RANGE COLUMNS (from_date) ("
+                        + "PARTITION p01 VALUES LESS THAN ('1985-12-31'))"));
+        assertThat(merged).hasSize(1);
+        assertThat(merged.get(0)).startsWith("ALTER TABLE");
+    }
+
+    @Test
+    void mergeDoesNotFoldAddPartition() {
+        List<String> merged = DdlStatements.mergeCreateTableWithAlterPartitionBy(List.of(
+                "CREATE TABLE t (id INT, region CHAR(2))",
+                "ALTER TABLE t ADD PARTITION (PARTITION us VALUES IN ('US'))"));
+        assertThat(merged).hasSize(2);
+        assertThat(merged.get(1)).contains("ADD PARTITION");
+    }
+
+    @Test
+    void splitStatementsRespectsQuotes() {
+        List<String> parts = DdlStatements.splitStatements(
+                "CREATE TABLE t (note VARCHAR(10) DEFAULT 'a;b'); ALTER TABLE t PARTITION BY HASH (id) PARTITIONS 2");
+        assertThat(parts).hasSize(2);
+        assertThat(parts.get(0)).contains("DEFAULT 'a;b'");
+        assertThat(parts.get(1)).startsWith("ALTER TABLE");
+    }
 }

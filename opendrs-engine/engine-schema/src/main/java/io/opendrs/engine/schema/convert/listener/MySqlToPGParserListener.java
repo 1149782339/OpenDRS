@@ -639,6 +639,9 @@ public class MySqlToPGParserListener extends MySqlParserBaseListener {
         List<MySqlParser.AlterSpecificationContext> alterSpecificationContexts = ctx.alterSpecification();
         // Trailing `ALTER TABLE t PARTITION BY ...` (grammar: alterTable.partitionDefinitions?)
         // is not an alterSpecification — drop it so MySQL partition syntax cannot leak.
+        // Structure-migration scripts should fold this onto a preceding CREATE via
+        // DdlStatements.mergeCreateTableWithAlterPartitionBy (MySqlToPGConverter does so).
+        // Isolated CDC events stay discarded here.
         if (ctx.partitionDefinitions() != null) {
             rewriter.delete(
                     ctx.partitionDefinitions().getStart(), ctx.partitionDefinitions().getStop());

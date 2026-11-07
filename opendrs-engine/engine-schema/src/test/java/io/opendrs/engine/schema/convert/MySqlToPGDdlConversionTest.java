@@ -459,7 +459,69 @@ class MySqlToPGDdlConversionTest {
         assertThat(firstPartitionOf).isLessThan(indexStmt);
     }
 
+    // --- CREATE + ALTER PARTITION BY merge (structure migration P0-a) ---
+
+    @Test
+    void createThenAlterPartitionByMergesLikeEmployeesTitles() {
+        ConversionResult result = identityConverter().convert(
+                "CREATE TABLE titles ("
+                        + "emp_no INT NOT NULL, "
+                        + "title VARCHAR(50) NOT NULL, "
+                        + "from_date DATE NOT NULL, "
+                        + "to_date DATE, "
+                        + "PRIMARY KEY (emp_no, title, from_date)"
+                        + ");\n"
+                        + "ALTER TABLE titles PARTITION BY RANGE COLUMNS (from_date) ("
+                        + "PARTITION p01 VALUES LESS THAN ('1985-12-31'), "
+                        + "PARTITION p02 VALUES LESS THAN ('1986-12-31'), "
+                        + "PARTITION pmax VALUES LESS THAN (MAXVALUE)"
+                        + ")");
+        assertThat(result.getStatus()).isEqualTo(ConversionStatus.SUCCEEDED);
+        assertThat(result.getInfos()).noneMatch(m -> m.contains("PARTITION BY clause dropped"));
+        List<String> stmts = result.getStatements();
+        assertThat(stmts.get(0)).contains("PARTITION BY RANGE (\"from_date\")");
+        assertThat(stmts).anyMatch(s -> s.startsWith("CREATE TABLE \"titles_p01\" PARTITION OF \"titles\"")
+                && s.contains("FROM (MINVALUE) TO ('1985-12-31')"));
+        assertThat(stmts).anyMatch(s -> s.startsWith("CREATE TABLE \"titles_p02\" PARTITION OF \"titles\"")
+                && s.contains("FROM ('1985-12-31') TO ('1986-12-31')"));
+        assertThat(stmts).anyMatch(s -> s.startsWith("CREATE TABLE \"titles_pmax\" PARTITION OF \"titles\"")
+                && s.contains("TO (MAXVALUE)"));
+    }
+
+    @Test
+    void createThenAlterPartitionByMergesLikeEmployeesSalaries() {
+        ConversionResult result = identityConverter().convert(
+                "CREATE TABLE salaries ("
+                        + "emp_no INT NOT NULL, "
+                        + "salary INT NOT NULL, "
+                        + "from_date DATE NOT NULL, "
+                        + "to_date DATE NOT NULL, "
+                        + "PRIMARY KEY (emp_no, from_date)"
+                        + ");\n"
+                        + "ALTER TABLE salaries\n"
+                        + "PARTITION BY RANGE COLUMNS (from_date) (\n"
+                        + "    PARTITION p01 VALUES LESS THAN ('1985-12-31'),\n"
+                        + "    PARTITION pmax VALUES LESS THAN (MAXVALUE)\n"
+                        + ")");
+        assertThat(result.getStatus()).isEqualTo(ConversionStatus.SUCCEEDED);
+        assertThat(result.getStatements().get(0)).contains("PARTITION BY RANGE (\"from_date\")");
+        assertThat(result.getStatements()).anyMatch(s ->
+                s.startsWith("CREATE TABLE \"salaries_p01\" PARTITION OF \"salaries\""));
+        assertThat(result.getStatements()).anyMatch(s ->
+                s.startsWith("CREATE TABLE \"salaries_pmax\" PARTITION OF \"salaries\""));
+    }
+
+    @Test
+    void isolatedAlterPartitionByStillDiscardedForCdc() {
+        ConversionResult result = identityConverter().convert(
+                "ALTER TABLE `shop`.`t` PARTITION BY HASH (`id`) PARTITIONS 4");
+        assertThat(result.getStatus()).isEqualTo(ConversionStatus.SUCCEEDED);
+        assertThat(result.getStatements()).isEmpty();
+        assertThat(result.getInfos()).anyMatch(m -> m.contains("PARTITION BY"));
+    }
+
     // --- anonymous FK / UNIQUE KEY fixes ---
+
 
     @Test
     void createTableAnonymousForeignKeyGetsDefaultConstraintName() {
