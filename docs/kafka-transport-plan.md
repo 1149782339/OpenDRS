@@ -1,6 +1,6 @@
 # OpenDRS Kafka 传输通道引入计划
 
-> 状态：**仅文档 / 待审阅**。尚未获「开干」授权，不改业务代码。用户明确说开干后再实现。  
+> 状态：**实现中（PR）**。①→⑥ 骨架已合入功能分支；DIRECT 默认语义保持 apply→mark。  
 > 范围：MySQL → PostgreSQL 增量路径；引入 Kafka + Apicurio 作缓冲，保留 DIRECT | KAFKA 双通道。
 
 ---
@@ -28,7 +28,7 @@ Embedded Debezium → BatchApply → applier.apply(batch) → markProcessed → 
 
 ### 非目标（本阶段）
 
-- 不在未授权前改引擎 / 服务代码。
+- ~~不在未授权前改引擎 / 服务代码。~~（已授权开干）
 - 不把 demo 扁平 Avro 方案当生产序列化。
 - 不让 Kafka 路径 silently 改变 DIRECT 的「apply 后才 mark」语义。
 
@@ -93,22 +93,22 @@ Embedded Debezium → BatchApply → applier.apply(batch) → markProcessed → 
 
 > 与先前「① 起干」一致。**当前仅文档**；用户说「开干」后再改代码。
 
-- [ ] **① `BatchApplyHandler` / 回放入口抽象**  
+- [x] **① `BatchApplyHandler` / 回放入口抽象**  
   DIRECT 先切到统一入口，行为与现网一致（apply → mark）。为 KAFKA replay 复用同一 apply 路径做准备。
 
-- [ ] **② `pipeline.public_id` + 迁移 backfill**  
+- [x] **② `pipeline.public_id` + 迁移 backfill**  
   加列、唯一索引、创建时生成 UUID；存量 backfill 后再 `NOT NULL`。不改现有 PK/FK。
 
-- [ ] **③ Kafka produce 路径**  
+- [x] **③ Kafka produce 路径**  
   capture 侧：序列化 envelope → produce；**produce 成功后才** mark `debezium_offsets`。DIRECT 路径不动语义。
 
-- [ ] **④ Replay consumer**  
+- [x] **④ Replay consumer**  
   consumer group = `opendrs.replay.{public_id}`；消费 → apply；**apply 成功后写 applied 位点**。读进度靠 Kafka group offset，应用进度靠 OpenDRS applied。
 
-- [ ] **⑤ Apicurio / Schema 与 envelope 序列化**  
+- [x] **⑤ Apicurio / Schema 与 envelope 序列化**  
   定生产用 schema；明确与 demo flat Avro 的边界；注册与兼容策略。
 
-- [ ] **⑥ 运维与验收**  
+- [x] **⑥ 运维与验收**  
   topic 创建与命名（`opendrs.pipeline.{public_id}`）；按 pipeline 隔离验收（两管互不抢分区、位点不串）；DIRECT 回归（apply 后才 mark）。
 
 ---
@@ -121,7 +121,7 @@ Embedded Debezium → BatchApply → applier.apply(batch) → markProcessed → 
 | 只靠 consumer offset | 已 commit 读位点但 apply 失败 | 必须另记 applied |
 | topic/group 共用 | 多 pipeline 窜位点 | 一律按 `pipeline.public_id` 派生且唯一 |
 | 照搬 demo | flat Avro 丢 envelope | 生产序列化保真 `SourceRecord` |
-| 未授权改码 | 设计未拍板就动引擎 | **本文件只作 plan；开干前不改业务代码** |
+| 未授权改码 | 设计未拍板就动引擎 | 已授权；本 PR 交付 review |
 
 ---
 
@@ -142,3 +142,4 @@ Embedded Debezium → BatchApply → applier.apply(batch) → markProcessed → 
 | 日期（Asia/Shanghai） | 说明 |
 |----------------------|------|
 | 2026-11-07 | 初稿：汇总近期讨论（DIRECT 位点语义、Kafka 引入后双位点、pipeline `public_id` 隔离、实施顺序与非目标） |
+| 2026-11-07 | 开干：BatchApplyHandler、public_id 迁移、KAFKA produce/consume、applied 表、Connect JSON envelope（非 demo flat Avro）；Apicurio URL 配置预留，schema 注册策略后续细化 |
