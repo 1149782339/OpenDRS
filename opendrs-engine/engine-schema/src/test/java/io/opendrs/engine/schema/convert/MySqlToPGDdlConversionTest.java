@@ -269,4 +269,164 @@ class MySqlToPGDdlConversionTest {
                 "TRUNCATE `shop`.`orders`",
                 "TRUNCATE TABLE \"shop\".\"orders\"");
     }
+
+    // --- PARTITION BY (P0) ---
+
+    @Test
+    void createTableRangeColumnsEmitsPartitionOfChildren() {
+        assertConverts(
+                "CREATE TABLE `shop`.`orders` ("
+                        + "`id` INT NOT NULL, "
+                        + "`order_date` DATE NOT NULL, "
+                        + "PRIMARY KEY (`id`, `order_date`)"
+                        + ") ENGINE=InnoDB "
+                        + "PARTITION BY RANGE COLUMNS (`order_date`) ("
+                        + "PARTITION `p2023` VALUES LESS THAN ('2024-01-01'), "
+                        + "PARTITION `p2024` VALUES LESS THAN ('2025-01-01'), "
+                        + "PARTITION `pmax` VALUES LESS THAN (MAXVALUE)"
+                        + ")",
+                "CREATE TABLE \"shop\".\"orders\" (\"id\" int NOT NULL, \"order_date\" DATE NOT NULL, "
+                        + "PRIMARY KEY (\"id\", \"order_date\")) /* ENGINE=InnoDB */ "
+                        + "PARTITION BY RANGE (\"order_date\")",
+                "CREATE TABLE \"shop\".\"orders_p2023\" PARTITION OF \"shop\".\"orders\" "
+                        + "FOR VALUES FROM (MINVALUE) TO ('2024-01-01')",
+                "CREATE TABLE \"shop\".\"orders_p2024\" PARTITION OF \"shop\".\"orders\" "
+                        + "FOR VALUES FROM ('2024-01-01') TO ('2025-01-01')",
+                "CREATE TABLE \"shop\".\"orders_pmax\" PARTITION OF \"shop\".\"orders\" "
+                        + "FOR VALUES FROM ('2025-01-01') TO (MAXVALUE)");
+    }
+
+    @Test
+    void createTableListColumnsEmitsPartitionOfChildren() {
+        assertConverts(
+                "CREATE TABLE `shop`.`t` ("
+                        + "`id` INT NOT NULL, "
+                        + "`region` VARCHAR(8) NOT NULL, "
+                        + "PRIMARY KEY (`id`, `region`)"
+                        + ") "
+                        + "PARTITION BY LIST COLUMNS (`region`) ("
+                        + "PARTITION `asia` VALUES IN ('CN','JP'), "
+                        + "PARTITION `eu` VALUES IN ('DE','FR')"
+                        + ")",
+                "CREATE TABLE \"shop\".\"t\" (\"id\" int NOT NULL, \"region\" VARCHAR(8) NOT NULL, "
+                        + "PRIMARY KEY (\"id\", \"region\")) PARTITION BY LIST (\"region\")",
+                "CREATE TABLE \"shop\".\"t_asia\" PARTITION OF \"shop\".\"t\" "
+                        + "FOR VALUES IN ('CN', 'JP')",
+                "CREATE TABLE \"shop\".\"t_eu\" PARTITION OF \"shop\".\"t\" "
+                        + "FOR VALUES IN ('DE', 'FR')");
+    }
+
+    @Test
+    void createTableHashPartitionsEmitsModulusRemainderAndWarns() {
+        ConversionResult result = identityConverter().convert(
+                "CREATE TABLE `shop`.`t` (`id` INT NOT NULL, PRIMARY KEY (`id`)) "
+                        + "PARTITION BY HASH (`id`) PARTITIONS 4");
+        assertThat(result.getStatus()).isEqualTo(ConversionStatus.SUCCEEDED);
+        assertThat(result.getStatements()).containsExactly(
+                "CREATE TABLE \"shop\".\"t\" (\"id\" int NOT NULL, PRIMARY KEY (\"id\")) "
+                        + "PARTITION BY HASH (\"id\")",
+                "CREATE TABLE \"shop\".\"t_p0\" PARTITION OF \"shop\".\"t\" "
+                        + "FOR VALUES WITH (MODULUS 4, REMAINDER 0)",
+                "CREATE TABLE \"shop\".\"t_p1\" PARTITION OF \"shop\".\"t\" "
+                        + "FOR VALUES WITH (MODULUS 4, REMAINDER 1)",
+                "CREATE TABLE \"shop\".\"t_p2\" PARTITION OF \"shop\".\"t\" "
+                        + "FOR VALUES WITH (MODULUS 4, REMAINDER 2)",
+                "CREATE TABLE \"shop\".\"t_p3\" PARTITION OF \"shop\".\"t\" "
+                        + "FOR VALUES WITH (MODULUS 4, REMAINDER 3)");
+        assertThat(result.getWarnings()).anyMatch(m -> m.contains("HASH"));
+    }
+
+    @Test
+    void createTableWithSubpartitionStripsPartitioning() {
+        ConversionResult result = identityConverter().convert(
+                "CREATE TABLE `shop`.`t` (`id` INT NOT NULL, `d` DATE NOT NULL, "
+                        + "PRIMARY KEY (`id`, `d`)) "
+                        + "PARTITION BY RANGE COLUMNS (`d`) "
+                        + "SUBPARTITION BY HASH (`id`) SUBPARTITIONS 2 ("
+                        + "PARTITION `p0` VALUES LESS THAN ('2024-01-01')"
+                        + ")");
+        assertThat(result.getStatus()).isEqualTo(ConversionStatus.SUCCEEDED);
+        assertThat(result.getStatements()).hasSize(1);
+        assertThat(result.getStatements().get(0))
+                .startsWith("CREATE TABLE \"shop\".\"t\"")
+                .doesNotContain("PARTITION BY");
+        assertThat(result.getWarnings()).anyMatch(m -> m.contains("SUBPARTITION"));
+    }
+
+    @Test
+    void createTableRangeYearExpressionStripsPartitioning() {
+        ConversionResult result = identityConverter().convert(
+                "CREATE TABLE `shop`.`t` (`id` INT NOT NULL, `order_date` DATE NOT NULL, "
+                        + "PRIMARY KEY (`id`, `order_date`)) "
+                        + "PARTITION BY RANGE (YEAR(`order_date`)) ("
+                        + "PARTITION `p2023` VALUES LESS THAN (2024), "
+                        + "PARTITION `pmax` VALUES LESS THAN MAXVALUE"
+                        + ")");
+        assertThat(result.getStatus()).isEqualTo(ConversionStatus.SUCCEEDED);
+        assertThat(result.getStatements()).hasSize(1);
+        assertThat(result.getStatements().get(0)).doesNotContain("PARTITION BY");
+        assertThat(result.getWarnings()).anyMatch(m -> m.contains("bare column"));
+    }
+
+    @Test
+    void createTableKeyPartitioningStrips() {
+        ConversionResult result = identityConverter().convert(
+                "CREATE TABLE `shop`.`t` (`id` INT NOT NULL, PRIMARY KEY (`id`)) "
+                        + "PARTITION BY KEY (`id`) PARTITIONS 4");
+        assertThat(result.getStatus()).isEqualTo(ConversionStatus.SUCCEEDED);
+        assertThat(result.getStatements()).hasSize(1);
+        assertThat(result.getStatements().get(0)).doesNotContain("PARTITION BY");
+        assertThat(result.getWarnings()).anyMatch(m -> m.contains("KEY"));
+    }
+
+    @Test
+    void alterAddPartitionIsDropped() {
+        ConversionResult result = identityConverter().convert(
+                "ALTER TABLE `shop`.`t` ADD PARTITION (PARTITION `p5` VALUES LESS THAN (2026))");
+        assertThat(result.getStatus()).isEqualTo(ConversionStatus.SUCCEEDED);
+        assertThat(result.getStatements()).isEmpty();
+        assertThat(result.getInfos()).anyMatch(m -> m.contains("partition clause dropped"));
+    }
+
+    @Test
+    void alterTrailingPartitionByIsDropped() {
+        ConversionResult result = identityConverter().convert(
+                "ALTER TABLE `shop`.`t` PARTITION BY HASH (`id`) PARTITIONS 4");
+        assertThat(result.getStatus()).isEqualTo(ConversionStatus.SUCCEEDED);
+        assertThat(result.getStatements()).isEmpty();
+        assertThat(result.getInfos()).anyMatch(m -> m.contains("PARTITION BY"));
+    }
+
+    @Test
+    void createTablePartitionChildrenPrecedeIndexFollowUps() {
+        ConversionResult result = identityConverter().convert(
+                "CREATE TABLE `shop`.`orders` ("
+                        + "`id` INT NOT NULL, "
+                        + "`order_date` DATE NOT NULL, "
+                        + "`customer_id` INT NOT NULL, "
+                        + "PRIMARY KEY (`id`, `order_date`), "
+                        + "KEY `idx_customer` (`customer_id`)"
+                        + ") "
+                        + "PARTITION BY RANGE COLUMNS (`order_date`) ("
+                        + "PARTITION `p2024` VALUES LESS THAN ('2025-01-01'), "
+                        + "PARTITION `pmax` VALUES LESS THAN (MAXVALUE)"
+                        + ")");
+        assertThat(result.getStatus()).isEqualTo(ConversionStatus.SUCCEEDED);
+        List<String> stmts = result.getStatements();
+        assertThat(stmts.get(0)).contains("PARTITION BY RANGE (\"order_date\")");
+        assertThat(stmts.get(1)).startsWith("CREATE TABLE \"shop\".\"orders_p2024\" PARTITION OF");
+        assertThat(stmts.get(2)).startsWith("CREATE TABLE \"shop\".\"orders_pmax\" PARTITION OF");
+        int firstPartitionOf = indexOfPrefix(stmts, "CREATE TABLE \"shop\".\"orders_p");
+        int indexStmt = indexOfPrefix(stmts, "CREATE INDEX");
+        assertThat(firstPartitionOf).isLessThan(indexStmt);
+    }
+
+    private static int indexOfPrefix(List<String> stmts, String prefix) {
+        for (int i = 0; i < stmts.size(); i++) {
+            if (stmts.get(i).startsWith(prefix)) {
+                return i;
+            }
+        }
+        throw new AssertionError("no statement starting with: " + prefix + " in " + stmts);
+    }
 }

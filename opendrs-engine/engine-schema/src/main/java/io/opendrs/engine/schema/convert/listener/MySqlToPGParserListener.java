@@ -622,6 +622,13 @@ public class MySqlToPGParserListener extends MySqlParserBaseListener {
         context.put(TABLE_ID, tableId);
         context.put(PARSE_RULE_CONTEXT, ctx);
         List<MySqlParser.AlterSpecificationContext> alterSpecificationContexts = ctx.alterSpecification();
+        // Trailing `ALTER TABLE t PARTITION BY ...` (grammar: alterTable.partitionDefinitions?)
+        // is not an alterSpecification — drop it so MySQL partition syntax cannot leak.
+        if (ctx.partitionDefinitions() != null) {
+            rewriter.delete(
+                    ctx.partitionDefinitions().getStart(), ctx.partitionDefinitions().getStop());
+            message.report("unsupported ALTER TABLE PARTITION BY clause dropped", Level.INFO);
+        }
         if (onlyTableOptions(alterSpecificationContexts)) {
             // `ALTER TABLE t AUTO_INCREMENT = 11` — and its ENGINE= / CHARSET= / COLLATE= /
             // ROW_FORMAT= siblings — carries nothing PostgreSQL can execute. The table option exit
@@ -630,6 +637,7 @@ public class MySqlToPGParserListener extends MySqlParserBaseListener {
             // "syntax error at end of input" and the whole CDC job dies. MySQL writes such a
             // statement to the binlog whenever a client resets the counter, so it does reach the
             // applier as a schema change event.
+            // Also covers `ALTER TABLE t PARTITION BY ...` with no other clauses.
             rewrittenTextDiscarded = true;
             return;
         }
@@ -762,7 +770,15 @@ public class MySqlToPGParserListener extends MySqlParserBaseListener {
             rewriter.delete(spec.getStart(), spec.getStop());
             return false;
         }
-        // Partition clauses and other unsupported ALTER forms: drop them with a note.
+        if (isPartitionAlterSpecification(spec)) {
+            rewriter.delete(spec.getStart(), spec.getStop());
+            message.report(
+                    "unsupported ALTER TABLE partition clause dropped: "
+                            + abbreviateSql(spec.getText()),
+                    Level.INFO);
+            return false;
+        }
+        // Other unsupported ALTER forms: drop them with a note.
         rewriter.delete(spec.getStart(), spec.getStop());
         message.report("unsupported ALTER TABLE clause dropped: " + abbreviateSql(spec.getText()), Level.INFO);
         return false;
@@ -1271,7 +1287,354 @@ public class MySqlToPGParserListener extends MySqlParserBaseListener {
         }
     }
 
+    /**
+     * MySQL {@code CREATE TABLE ... PARTITION BY ...} → PostgreSQL declarative partitioning.
+     * P0: RANGE/LIST (bare columns or COLUMNS) and HASH (bare column); KEY / LINEAR /
+     * expression keys / SUBPARTITION are stripped to a flat table with a WARNING.
+     *
+     * <p>Runs before {@link #exitColumnCreateTable}, so {@code PARTITION OF} children land in
+     * {@link #afterStatements} ahead of indexes / FKs / comments emitted there.
+     */
     @Override
+    public void exitPartitionDefinitions(MySqlParser.PartitionDefinitionsContext ctx) {
+        // Trailing PARTITION BY on ALTER TABLE is removed in exitAlterTable.
+        if (within(ctx, MySqlParser.AlterTableContext.class)) {
+            return;
+        }
+        TableId tableId = context.get(TABLE_ID);
+        if (tableId == null) {
+            rewriter.delete(ctx.getStart(), ctx.getStop());
+            message.report("partition clause dropped (missing table context)", Level.WARNING);
+            return;
+        }
+        if (ctx.subpartitionFunctionDefinition() != null || hasInlineSubpartitions(ctx)) {
+            stripPartitioning(ctx, "SUBPARTITION is not converted; creating a non-partitioned table");
+            return;
+        }
+        MySqlParser.PartitionFunctionDefinitionContext fn = ctx.partitionFunctionDefinition();
+        if (fn instanceof MySqlParser.PartitionFunctionKeyContext) {
+            stripPartitioning(ctx, "PARTITION BY KEY is not converted; creating a non-partitioned table");
+            return;
+        }
+        if (fn instanceof MySqlParser.PartitionFunctionHashContext) {
+            MySqlParser.PartitionFunctionHashContext hash = (MySqlParser.PartitionFunctionHashContext) fn;
+            if (hash.LINEAR() != null) {
+                stripPartitioning(ctx,
+                        "LINEAR HASH partitioning is not converted; creating a non-partitioned table");
+                return;
+            }
+            if (!isBareColumnExpression(hash.expression())) {
+                stripPartitioning(ctx,
+                        "partition expression is not a bare column; creating a non-partitioned table");
+                return;
+            }
+            rewriteHashPartitioning(tableId, ctx, hash);
+            return;
+        }
+        if (fn instanceof MySqlParser.PartitionFunctionRangeContext) {
+            MySqlParser.PartitionFunctionRangeContext range = (MySqlParser.PartitionFunctionRangeContext) fn;
+            String keys = partitionKeyList(range.COLUMNS() != null, range.uidList(), range.expression());
+            if (keys == null) {
+                stripPartitioning(ctx,
+                        "partition expression is not a bare column; creating a non-partitioned table");
+                return;
+            }
+            rewriteRangePartitioning(tableId, ctx, keys);
+            return;
+        }
+        if (fn instanceof MySqlParser.PartitionFunctionListContext) {
+            MySqlParser.PartitionFunctionListContext list = (MySqlParser.PartitionFunctionListContext) fn;
+            String keys = partitionKeyList(list.COLUMNS() != null, list.uidList(), list.expression());
+            if (keys == null) {
+                stripPartitioning(ctx,
+                        "partition expression is not a bare column; creating a non-partitioned table");
+                return;
+            }
+            rewriteListPartitioning(tableId, ctx, keys);
+            return;
+        }
+        stripPartitioning(ctx, "unsupported PARTITION BY form; creating a non-partitioned table");
+    }
+
+    private static boolean isPartitionAlterSpecification(MySqlParser.AlterSpecificationContext spec) {
+        return spec instanceof MySqlParser.AlterByAddPartitionContext
+                || spec instanceof MySqlParser.AlterByDropPartitionContext
+                || spec instanceof MySqlParser.AlterByDiscardPartitionContext
+                || spec instanceof MySqlParser.AlterByImportPartitionContext
+                || spec instanceof MySqlParser.AlterByTruncatePartitionContext
+                || spec instanceof MySqlParser.AlterByCoalescePartitionContext
+                || spec instanceof MySqlParser.AlterByReorganizePartitionContext
+                || spec instanceof MySqlParser.AlterByExchangePartitionContext
+                || spec instanceof MySqlParser.AlterByAnalyzePartitionContext
+                || spec instanceof MySqlParser.AlterByCheckPartitionContext
+                || spec instanceof MySqlParser.AlterByOptimizePartitionContext
+                || spec instanceof MySqlParser.AlterByRebuildPartitionContext
+                || spec instanceof MySqlParser.AlterByRepairPartitionContext
+                || spec instanceof MySqlParser.AlterByRemovePartitioningContext
+                || spec instanceof MySqlParser.AlterByUpgradePartitioningContext;
+    }
+
+    private void stripPartitioning(MySqlParser.PartitionDefinitionsContext ctx, String warning) {
+        notePartitionOptions(ctx);
+        rewriter.delete(ctx.getStart(), ctx.getStop());
+        message.report(warning, Level.WARNING);
+    }
+
+    private void rewriteHashPartitioning(
+            TableId tableId,
+            MySqlParser.PartitionDefinitionsContext ctx,
+            MySqlParser.PartitionFunctionHashContext hash) {
+        notePartitionOptions(ctx);
+        String key = quotePartitionColumn(hash.expression().getText());
+        List<String> names = new ArrayList<>();
+        List<MySqlParser.PartitionDefinitionContext> defs = ctx.partitionDefinition();
+        if (defs != null && !defs.isEmpty()) {
+            for (MySqlParser.PartitionDefinitionContext def : defs) {
+                if (!(def instanceof MySqlParser.PartitionSimpleContext)) {
+                    stripPartitioning(ctx,
+                            "HASH partition definition is not convertible; creating a non-partitioned table");
+                    return;
+                }
+                names.add(StringUtil.unquote(
+                        ((MySqlParser.PartitionSimpleContext) def).uid().getText(), '`'));
+            }
+        } else if (ctx.count != null) {
+            int n = Integer.parseInt(ctx.count.getText());
+            for (int i = 0; i < n; i++) {
+                names.add("p" + i);
+            }
+        } else {
+            stripPartitioning(ctx,
+                    "HASH partitioning requires PARTITIONS n or explicit partitions; "
+                            + "creating a non-partitioned table");
+            return;
+        }
+        int modulus = names.size();
+        rewriter.replace(ctx.getStart(), ctx.getStop(), "PARTITION BY HASH (" + key + ")");
+        message.report(
+                "HASH partition mapping uses PostgreSQL hash; values may land in different "
+                        + "partitions than MySQL",
+                Level.WARNING);
+        String parent = quotedTable(tableId);
+        for (int i = 0; i < names.size(); i++) {
+            afterStatements.add("CREATE TABLE " + childPartitionTable(tableId, names.get(i))
+                    + " PARTITION OF " + parent
+                    + " FOR VALUES WITH (MODULUS " + modulus + ", REMAINDER " + i + ")");
+        }
+    }
+
+    private void rewriteRangePartitioning(
+            TableId tableId, MySqlParser.PartitionDefinitionsContext ctx, String keys) {
+        notePartitionOptions(ctx);
+        List<MySqlParser.PartitionDefinitionContext> defs = ctx.partitionDefinition();
+        if (defs == null || defs.isEmpty()) {
+            stripPartitioning(ctx,
+                    "RANGE partitioning requires explicit partition definitions; "
+                            + "creating a non-partitioned table");
+            return;
+        }
+        List<String> fromBounds = new ArrayList<>();
+        List<String> toBounds = new ArrayList<>();
+        List<String> names = new ArrayList<>();
+        int arity = 1;
+        MySqlParser.PartitionDefinitionContext first = defs.get(0);
+        if (first instanceof MySqlParser.PartitionComparisonContext) {
+            arity = Math.max(1,
+                    ((MySqlParser.PartitionComparisonContext) first).partitionDefinerAtom().size());
+        }
+        String prev = minValueBound(arity);
+        for (MySqlParser.PartitionDefinitionContext def : defs) {
+            if (!(def instanceof MySqlParser.PartitionComparisonContext)) {
+                stripPartitioning(ctx,
+                        "RANGE partition definition is not convertible; creating a non-partitioned table");
+                return;
+            }
+            MySqlParser.PartitionComparisonContext cmp = (MySqlParser.PartitionComparisonContext) def;
+            String bound = formatPartitionBound(cmp.partitionDefinerAtom());
+            names.add(StringUtil.unquote(cmp.uid().getText(), '`'));
+            fromBounds.add(prev);
+            toBounds.add(bound);
+            prev = bound;
+        }
+        rewriter.replace(ctx.getStart(), ctx.getStop(), "PARTITION BY RANGE (" + keys + ")");
+        String parent = quotedTable(tableId);
+        for (int i = 0; i < names.size(); i++) {
+            afterStatements.add("CREATE TABLE " + childPartitionTable(tableId, names.get(i))
+                    + " PARTITION OF " + parent
+                    + " FOR VALUES FROM (" + fromBounds.get(i) + ") TO (" + toBounds.get(i) + ")");
+        }
+    }
+
+    private void rewriteListPartitioning(
+            TableId tableId, MySqlParser.PartitionDefinitionsContext ctx, String keys) {
+        notePartitionOptions(ctx);
+        List<MySqlParser.PartitionDefinitionContext> defs = ctx.partitionDefinition();
+        if (defs == null || defs.isEmpty()) {
+            stripPartitioning(ctx,
+                    "LIST partitioning requires explicit partition definitions; "
+                            + "creating a non-partitioned table");
+            return;
+        }
+        List<String> names = new ArrayList<>();
+        List<String> valueLists = new ArrayList<>();
+        for (MySqlParser.PartitionDefinitionContext def : defs) {
+            if (def instanceof MySqlParser.PartitionListAtomContext) {
+                MySqlParser.PartitionListAtomContext atom = (MySqlParser.PartitionListAtomContext) def;
+                names.add(StringUtil.unquote(atom.uid().getText(), '`'));
+                valueLists.add(formatPartitionBound(atom.partitionDefinerAtom()));
+            } else if (def instanceof MySqlParser.PartitionListVectorContext) {
+                MySqlParser.PartitionListVectorContext vector =
+                        (MySqlParser.PartitionListVectorContext) def;
+                names.add(StringUtil.unquote(vector.uid().getText(), '`'));
+                List<String> tuples = new ArrayList<>();
+                for (MySqlParser.PartitionDefinerVectorContext v : vector.partitionDefinerVector()) {
+                    tuples.add("(" + formatPartitionBound(v.partitionDefinerAtom()) + ")");
+                }
+                valueLists.add(String.join(", ", tuples));
+            } else {
+                stripPartitioning(ctx,
+                        "LIST partition definition is not convertible; creating a non-partitioned table");
+                return;
+            }
+        }
+        rewriter.replace(ctx.getStart(), ctx.getStop(), "PARTITION BY LIST (" + keys + ")");
+        String parent = quotedTable(tableId);
+        for (int i = 0; i < names.size(); i++) {
+            afterStatements.add("CREATE TABLE " + childPartitionTable(tableId, names.get(i))
+                    + " PARTITION OF " + parent
+                    + " FOR VALUES IN (" + valueLists.get(i) + ")");
+        }
+    }
+
+    /**
+     * @return quoted key list, or {@code null} when the expression form is not a bare column
+     */
+    private String partitionKeyList(
+            boolean columnsForm,
+            MySqlParser.UidListContext uidList,
+            MySqlParser.ExpressionContext expression) {
+        if (columnsForm) {
+            if (uidList == null || uidList.uid().isEmpty()) {
+                return null;
+            }
+            List<String> parts = new ArrayList<>(uidList.uid().size());
+            for (MySqlParser.UidContext uid : uidList.uid()) {
+                parts.add(quotePartitionColumn(uid.getText()));
+            }
+            return String.join(", ", parts);
+        }
+        if (expression == null || !isBareColumnExpression(expression)) {
+            return null;
+        }
+        return quotePartitionColumn(expression.getText());
+    }
+
+    private static boolean isBareColumnExpression(MySqlParser.ExpressionContext expression) {
+        if (expression == null) {
+            return false;
+        }
+        String text = expression.getText();
+        if (text == null || text.isEmpty()) {
+            return false;
+        }
+        // Function calls / operators contain '(' or other punctuation beyond a simple ident.
+        String stripped = StringUtil.unquote(text.trim(), '`').trim();
+        return stripped.matches("[A-Za-z_][A-Za-z0-9_]*");
+    }
+
+    private String quotePartitionColumn(String raw) {
+        String name = StringUtil.unquote(raw.trim(), '`');
+        name = columnNamingStrategy.resolveColumnName(name);
+        return StringUtil.quote(name, '"');
+    }
+
+    private String childPartitionTable(TableId parent, String partitionUid) {
+        TableId child = tableNamingStrategy.resolveTableId(
+                new TableId(parent.getCatalog(), parent.getSchema(),
+                        parent.getTable() + "_" + partitionUid));
+        return quotedTable(child);
+    }
+
+    private static String minValueBound(int arity) {
+        if (arity <= 1) {
+            return "MINVALUE";
+        }
+        List<String> parts = new ArrayList<>(arity);
+        for (int i = 0; i < arity; i++) {
+            parts.add("MINVALUE");
+        }
+        return String.join(", ", parts);
+    }
+
+    private static String formatPartitionBound(List<MySqlParser.PartitionDefinerAtomContext> atoms) {
+        List<String> parts = new ArrayList<>(atoms.size());
+        for (MySqlParser.PartitionDefinerAtomContext atom : atoms) {
+            parts.add(formatPartitionAtom(atom));
+        }
+        return String.join(", ", parts);
+    }
+
+    private static String formatPartitionAtom(MySqlParser.PartitionDefinerAtomContext atom) {
+        if (atom.MAXVALUE() != null) {
+            return "MAXVALUE";
+        }
+        return rewriteBackticks(atom.getText());
+    }
+
+    private static boolean hasInlineSubpartitions(MySqlParser.PartitionDefinitionsContext ctx) {
+        for (MySqlParser.PartitionDefinitionContext def : ctx.partitionDefinition()) {
+            if (def instanceof MySqlParser.PartitionComparisonContext
+                    && !((MySqlParser.PartitionComparisonContext) def).subpartitionDefinition().isEmpty()) {
+                return true;
+            }
+            if (def instanceof MySqlParser.PartitionListAtomContext
+                    && !((MySqlParser.PartitionListAtomContext) def).subpartitionDefinition().isEmpty()) {
+                return true;
+            }
+            if (def instanceof MySqlParser.PartitionListVectorContext
+                    && !((MySqlParser.PartitionListVectorContext) def).subpartitionDefinition().isEmpty()) {
+                return true;
+            }
+            if (def instanceof MySqlParser.PartitionSimpleContext
+                    && !((MySqlParser.PartitionSimpleContext) def).subpartitionDefinition().isEmpty()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void notePartitionOptions(MySqlParser.PartitionDefinitionsContext ctx) {
+        boolean any = false;
+        for (MySqlParser.PartitionDefinitionContext def : ctx.partitionDefinition()) {
+            List<? extends MySqlParser.PartitionOptionContext> options = partitionOptionsOf(def);
+            if (options != null && !options.isEmpty()) {
+                any = true;
+                break;
+            }
+        }
+        if (any) {
+            message.report("partition-level ENGINE/DIRECTORY/TABLESPACE options dropped", Level.INFO);
+        }
+    }
+
+    private static List<? extends MySqlParser.PartitionOptionContext> partitionOptionsOf(
+            MySqlParser.PartitionDefinitionContext def) {
+        if (def instanceof MySqlParser.PartitionComparisonContext) {
+            return ((MySqlParser.PartitionComparisonContext) def).partitionOption();
+        }
+        if (def instanceof MySqlParser.PartitionListAtomContext) {
+            return ((MySqlParser.PartitionListAtomContext) def).partitionOption();
+        }
+        if (def instanceof MySqlParser.PartitionListVectorContext) {
+            return ((MySqlParser.PartitionListVectorContext) def).partitionOption();
+        }
+        if (def instanceof MySqlParser.PartitionSimpleContext) {
+            return ((MySqlParser.PartitionSimpleContext) def).partitionOption();
+        }
+        return null;
+    }
+
+        @Override
     public void exitRenameTable(MySqlParser.RenameTableContext ctx) {
         List<String> statements = new ArrayList<>();
         for (MySqlParser.RenameTableClauseContext clause : ctx.renameTableClause()) {
