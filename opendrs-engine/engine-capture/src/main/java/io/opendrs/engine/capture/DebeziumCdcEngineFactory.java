@@ -117,8 +117,9 @@ public class DebeziumCdcEngineFactory implements CdcEngineFactory {
     }
 
     /**
-     * KAFKA path: Debezium produces envelopes to the pipeline topic (offsets mark produce
-     * progress); a sibling {@link KafkaReplayRunner} consumes, applies via
+     * KAFKA path: snapshot/FULL rows apply DIRECT (bypass Kafka); incremental envelopes are
+     * produced to the pipeline topic (offsets mark produce progress). A sibling
+     * {@link KafkaReplayRunner} consumes streaming records, applies via
      * {@link BatchApplyHandler}, and writes {@code pipeline_applied_offsets}.
      */
     private CdcEngine buildKafka(
@@ -130,18 +131,27 @@ public class DebeziumCdcEngineFactory implements CdcEngineFactory {
             TransportSpec transport) {
         KafkaTransportConfig kafka = transport.kafka();
         ReplayConfig config = replayConfig(spec);
+        // FULL: same apply→mark semantics as DIRECT (checkpoints land here).
+        BatchApplyHandler snapshotApplyHandler = new BatchApplyHandler(
+                spec.taskId(),
+                spec.pipelineId(),
+                config,
+                logListener,
+                lagListener,
+                checkpointListener);
         KafkaProduceChangeConsumer produceConsumer =
-                new KafkaProduceChangeConsumer(spec.taskId(), config, kafka);
-        BatchApplyHandler applyHandler = new BatchApplyHandler(
+                new KafkaProduceChangeConsumer(spec.taskId(), config, kafka, snapshotApplyHandler);
+        // INCREMENTAL replay from Kafka; full-load checkpoints already handled above.
+        BatchApplyHandler replayApplyHandler = new BatchApplyHandler(
                 spec.taskId(),
                 spec.pipelineId(),
                 replayConfig(spec),
                 logListener,
                 lagListener,
-                checkpointListener);
+                FullLoadCheckpointListener.NONE);
         AppliedOffsetStore appliedStore = new JdbcAppliedOffsetStore(metadataDataSource);
         KafkaReplayRunner replayRunner =
-                new KafkaReplayRunner(spec.pipelineId(), kafka, applyHandler, appliedStore);
+                new KafkaReplayRunner(spec.pipelineId(), kafka, replayApplyHandler, appliedStore);
         replayRunner.start();
         AutoCloseable resources = () -> {
             try {

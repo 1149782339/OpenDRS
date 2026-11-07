@@ -1,7 +1,8 @@
 # OpenDRS Kafka 传输通道引入计划
 
 > 状态：**实现中（PR）**。①→⑥ 骨架已合入功能分支；DIRECT 默认语义保持 apply→mark。  
-> 范围：MySQL → PostgreSQL 增量路径；引入 Kafka + Apicurio 作缓冲，保留 DIRECT | KAFKA 双通道。
+> 范围：MySQL → PostgreSQL 增量路径；引入 Kafka + Apicurio 作缓冲，保留 DIRECT | KAFKA 双通道。  
+> **全量旁路**：KAFKA 通道下 snapshot/FULL 仍 DIRECT apply→mark；仅 INCREMENTAL/streaming produce→Kafka→replay。
 
 ---
 
