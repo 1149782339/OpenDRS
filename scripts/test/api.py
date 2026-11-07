@@ -70,6 +70,12 @@ class OpenDrsApi:
     # ------------------------------------------------------------------ tasks
     def create_task(self, name: str, mode: str, source_connection_id: int,
                     target_connection_id: int, options: dict | None = None) -> dict:
+        """Create a migration task.
+
+        ``options`` is the ``MigrationOptions`` JSON body (topology / selection /
+        full / incremental / bidirectional / ``cdcTransportSpec``). Prefer the
+        facade's ``cdc_transport_spec=`` helper over stuffing the enum by hand.
+        """
         return self._request("POST", "/api/v1/migration/tasks", {
             "name": name,
             "mode": mode,
