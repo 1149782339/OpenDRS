@@ -78,13 +78,29 @@ class MigrationTask:
     def start(self) -> None:
         self._facade._api.start_task(self.id)
 
-    def terminate(self) -> None:
+    def terminate(self, timeout: float = 120, poll: float = 0.5) -> None:
         """Stop a streaming (FULL_AND_INCREMENTAL / INCREMENTAL_ONLY) task.
 
-        Required before delete: the backend refuses to delete a task that is
-        still running.
+        Required before delete: the backend only allows delete from TERMINATED
+        or COMPLETED. terminate() itself may land in TERMINATING first while the
+        job winds down, so we wait for a terminal state before returning —
+        otherwise teardown races DELETE against TERMINATING (CI flake).
         """
         self._facade._api._request("POST", f"/api/v1/migration/tasks/{self.id}/terminate")
+        deadline = time.monotonic() + timeout
+        while True:
+            status = self.status()
+            if status.state in ("TERMINATED", "COMPLETED"):
+                return
+            if status.state == "FAILED":
+                # delete() only accepts TERMINATED/COMPLETED — do not pretend success.
+                raise FacadeError(
+                    f"task {self.id} ended in {status.state} while terminating: {status.error}")
+            if time.monotonic() > deadline:
+                raise FacadeError(
+                    f"task {self.id} still {status.state} after terminate "
+                    f"within {timeout:.0f}s (need TERMINATED before delete)")
+            time.sleep(poll)
 
     def status(self) -> TaskStatus:
         data = self._facade._api.get_status(self.id)
