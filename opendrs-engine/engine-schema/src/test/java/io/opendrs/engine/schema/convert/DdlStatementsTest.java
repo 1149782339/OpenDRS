@@ -68,4 +68,20 @@ class DdlStatementsTest {
         assertThat(parts.get(0)).contains("DEFAULT 'a;b'");
         assertThat(parts.get(1)).startsWith("ALTER TABLE");
     }
+
+    @Test
+    void splitStatementsKeepsBeginEndRoutineBodyIntact() {
+        String fn = "CREATE FUNCTION calc_tax(amount DECIMAL(10,2)) RETURNS DECIMAL(10,2) "
+                + "BEGIN DECLARE tax DECIMAL(10,2) DEFAULT 0; "
+                + "SET tax = amount * 0.1; "
+                + "IF tax < 0 THEN SET tax = 0; END IF; "
+                + "RETURN tax; END";
+        List<String> parts = DdlStatements.splitStatements(fn + "; CREATE TABLE t (id INT)");
+        assertThat(parts).hasSize(2);
+        assertThat(parts.get(0)).startsWith("CREATE FUNCTION");
+        assertThat(parts.get(0)).contains("DECLARE tax");
+        assertThat(parts.get(0)).contains("END IF");
+        assertThat(parts.get(0)).endsWith("END");
+        assertThat(parts.get(1)).startsWith("CREATE TABLE");
+    }
 }

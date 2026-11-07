@@ -46,3 +46,13 @@ opendrs:
     # Comma separated origins. Empty means "same origin only" - the default deployment
     # serves the SPA and /api from one nginx origin and needs no CORS at all.
     allowed-origins: ${OPENDRS_CORS_ALLOWED_ORIGINS:}
+
+  # CDC transport between capture and replay. DIRECT = apply then mark (default, no Kafka).
+  # KAFKA = produce SourceRecord envelopes to opendrs.pipeline.{pipeline.public_id}, mark on
+  # produce success; replay consumer group opendrs.replay.{public_id} applies and writes
+  # pipeline_applied_offsets. Serialization is Connect JSON envelope (not demo flat Avro).
+  transport:
+    channel: ${OPENDRS_TRANSPORT_CHANNEL:DIRECT}
+    kafka-bootstrap-servers: ${OPENDRS_KAFKA_BOOTSTRAP:127.0.0.1:9092}
+    schema-registry-url: ${OPENDRS_SCHEMA_REGISTRY_URL:http://127.0.0.1:8081}
+

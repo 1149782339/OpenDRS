@@ -73,6 +73,7 @@ class SnapshotNotificationsTest {
 
         assertThat(SnapshotNotifications.parseTableScanCompleted(data)).isEmpty();
         assertThat(SnapshotNotifications.parseDataCollectionsResolved(data)).isEmpty();
+        assertThat(SnapshotNotifications.isInitialSnapshotNotification(data)).isFalse();
     }
 
     @Test
@@ -89,6 +90,27 @@ class SnapshotNotificationsTest {
     }
 
     @Test
+    void detectsAnyInitialSnapshotNotification() {
+        assertThat(SnapshotNotifications.isInitialSnapshotNotification(
+                notification("TABLE_SCAN_COMPLETED", Map.of(
+                        "scanned_collection", "hr.emp", "status", "SUCCEEDED")))).isTrue();
+        assertThat(SnapshotNotifications.isInitialSnapshotNotification(
+                notification("COMPLETED", Map.of()))).isTrue();
+        assertThat(SnapshotNotifications.isInitialSnapshotNotification(
+                notification("DATA_COLLECTIONS_RESOLVED",
+                        Map.of("data_collections", "hr.emp")))).isTrue();
+    }
+
+    @Test
+    void incrementalSnapshotIsNotInitialSnapshotNotification() {
+        SourceRecord record = notification(
+                "TABLE_SCAN_COMPLETED",
+                Map.of("scanned_collection", "hr.emp", "status", "SUCCEEDED"));
+        ((Struct) record.value()).put("aggregate_type", "Incremental Snapshot");
+        assertThat(SnapshotNotifications.isInitialSnapshotNotification(record)).isFalse();
+    }
+
+        @Test
     void incrementalSnapshotNotificationsAreIgnored() {
         SourceRecord record = notification(
                 "TABLE_SCAN_COMPLETED",

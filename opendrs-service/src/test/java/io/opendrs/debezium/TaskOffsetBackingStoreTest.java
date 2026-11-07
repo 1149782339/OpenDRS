@@ -123,6 +123,7 @@ class TaskOffsetBackingStoreTest {
                         List.of(new io.opendrs.migration.api.request.SelectedTable("hr", "emp"))),
                 MigrationOptions.FullSettings.defaults(),
                 MigrationOptions.IncrementalSettings.defaults(),
+                null,
                 null));
         taskMapper.insert(task);
         return task.getId();
@@ -131,6 +132,7 @@ class TaskOffsetBackingStoreTest {
     private long insertPipeline(long taskId) {
         MigrationTask task = taskMapper.findById(taskId);
         io.opendrs.migration.domain.TaskPipeline pipeline = new io.opendrs.migration.domain.TaskPipeline();
+        pipeline.setPublicId(UUID.randomUUID().toString());
         pipeline.setTaskId(taskId);
         pipeline.setSourceEndpointId(task.getSourceConnectionId());
         pipeline.setTargetEndpointId(task.getTargetConnectionId());

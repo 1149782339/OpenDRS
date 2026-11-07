@@ -309,6 +309,7 @@ class MigrationCoordinatorTest {
                 MigrationOptions.Selection.ofTables(List.of(new SelectedTable("hr", "emp"))),
                 MigrationOptions.FullSettings.defaults(),
                 MigrationOptions.IncrementalSettings.defaults(),
+                null,
                 null));
         return task;
     }

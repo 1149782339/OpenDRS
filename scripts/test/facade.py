@@ -162,8 +162,20 @@ class OpenDrs:
     # ------------------------------------------------------------------ tasks
     def create_migration_task(self, name: str, mode: str, source: Datasource,
                               target: Datasource,
-                              options: dict | None = None) -> MigrationTask:
-        data = self._api.create_task(name, mode, source.id, target.id, options)
+                              options: dict | None = None,
+                              *,
+                              cdc_transport_spec: str | None = None) -> MigrationTask:
+        """Create a migration task.
+
+        ``cdc_transport_spec`` maps to ``MigrationOptions.cdcTransportSpec``
+        (``DIRECT`` | ``KAFKA``). When set, it is merged into ``options`` so the
+        task overrides the process-wide ``OPENDRS_TRANSPORT_CHANNEL``. Full-load
+        always stays in-process; only incremental CDC uses this channel.
+        """
+        opts = dict(options or {})
+        if cdc_transport_spec is not None:
+            opts["cdcTransportSpec"] = cdc_transport_spec
+        data = self._api.create_task(name, mode, source.id, target.id, opts or None)
         return MigrationTask(self, task_id=data["id"], name=name)
 
     def delete_task(self, task: MigrationTask) -> None:

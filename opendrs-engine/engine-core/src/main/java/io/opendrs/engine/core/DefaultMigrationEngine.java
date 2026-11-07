@@ -189,7 +189,8 @@ public class DefaultMigrationEngine implements MigrationEngine {
                 param.snapshotThreads(),
                 param.snapshotThreadsMultiplier(),
                 param.snapshotStrategy(),
-                param.resumeTables());
+                param.resumeTables(),
+                param.transport());
         return cdcEngineFactory.create(
                 spec, onSnapshot, listener, param.lagListener(), fullLoadCheckpointListener);
     }

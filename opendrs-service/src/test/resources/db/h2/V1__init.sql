@@ -42,6 +42,7 @@ CREATE TABLE migration_tasks (
 
 CREATE TABLE task_pipelines (
   id                   BIGINT       NOT NULL AUTO_INCREMENT,
+  public_id            VARCHAR(36)  NOT NULL,
   task_id              BIGINT       NOT NULL,
   source_endpoint_id   BIGINT       NOT NULL,
   target_endpoint_id   BIGINT       NOT NULL,
@@ -49,10 +50,22 @@ CREATE TABLE task_pipelines (
   replay_options       JSON         NOT NULL,
   created_at           DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
+  CONSTRAINT uk_pipeline_public_id UNIQUE (public_id),
   UNIQUE KEY uk_pipeline_route (task_id, source_endpoint_id, target_endpoint_id),
   CONSTRAINT fk_pipeline_task    FOREIGN KEY (task_id)            REFERENCES migration_tasks (id),
   CONSTRAINT fk_pipeline_source  FOREIGN KEY (source_endpoint_id) REFERENCES endpoints (id),
   CONSTRAINT fk_pipeline_target  FOREIGN KEY (target_endpoint_id) REFERENCES endpoints (id)
+);
+
+CREATE TABLE pipeline_applied_offsets (
+  pipeline_id         BIGINT        NOT NULL,
+  source_offset_json  CLOB          NULL,
+  kafka_topic         VARCHAR(255)  NULL,
+  kafka_partition     INT           NULL,
+  kafka_offset        BIGINT        NULL,
+  updated_at          DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (pipeline_id),
+  CONSTRAINT fk_applied_pipeline FOREIGN KEY (pipeline_id) REFERENCES task_pipelines (id)
 );
 
 CREATE TABLE debezium_offsets (

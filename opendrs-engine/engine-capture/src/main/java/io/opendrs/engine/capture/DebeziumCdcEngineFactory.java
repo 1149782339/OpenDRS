@@ -10,6 +10,13 @@ import io.opendrs.common.progress.FullLoadCheckpointListener;
 import io.opendrs.common.progress.MigrationLagListener;
 import io.opendrs.jdbc.JdbcConnectionFactory;
 import io.opendrs.engine.replay.ReplayConfig;
+import io.opendrs.engine.capture.transport.AppliedOffsetStore;
+import io.opendrs.engine.capture.transport.JdbcAppliedOffsetStore;
+import io.opendrs.engine.capture.transport.KafkaProduceChangeConsumer;
+import io.opendrs.engine.capture.transport.KafkaReplayRunner;
+import io.opendrs.engine.capture.transport.KafkaTransportConfig;
+import io.opendrs.engine.capture.transport.CdcTransportSpec;
+import io.opendrs.engine.capture.transport.ResolvedCdcTransport;
 import io.opendrs.engine.replay.mapping.MappingValidator;
 import io.opendrs.engine.replay.naming.DefaultColumnNamingStrategy;
 import io.opendrs.engine.replay.naming.MappedTableNamingStrategy;
@@ -29,6 +36,12 @@ import org.slf4j.LoggerFactory;
 public class DebeziumCdcEngineFactory implements CdcEngineFactory {
 
     private static final Logger log = LoggerFactory.getLogger(DebeziumCdcEngineFactory.class);
+
+    /**
+     * KAFKA capture only: {@link OffsetCommitPolicy#periodic} interval for flushing
+     * {@code debezium_offsets} after successful produce. DIRECT keeps {@link OffsetCommitPolicy#always()}.
+     */
+    public static final String KAFKA_OFFSET_FLUSH_INTERVAL_MS = "3000";
 
     private final JdbcConnectionFactory connectionFactory;
     private final MappingValidator mappingValidator;
@@ -96,13 +109,74 @@ public class DebeziumCdcEngineFactory implements CdcEngineFactory {
                             new LoggingChangeConsumer(spec.taskId()), onSnapshotCompleted, listener),
                     null);
         }
+        ResolvedCdcTransport transport = spec.transport() == null ? ResolvedCdcTransport.direct() : spec.transport();
+        if (transport.channel() == CdcTransportSpec.KAFKA) {
+            return buildKafka(
+                    spec, onSnapshotCompleted, listener, lagListener, checkpointListener, transport);
+        }
         ReplayApplyChangeConsumer applyConsumer = applyConsumer(spec, listener, lagListener, checkpointListener);
         return build(
                 DebeziumEngineConfig.capture(spec),
                 spec.taskId(),
-                new SnapshotCompletionConsumer(
-                        new LagTrackingConsumer(applyConsumer, lagListener), onSnapshotCompleted, listener),
+                new SnapshotCompletionConsumer(applyConsumer, onSnapshotCompleted, listener),
                 applyConsumer);
+    }
+
+    /**
+     * KAFKA path: snapshot/FULL rows apply DIRECT (bypass Kafka); incremental envelopes are
+     * produced to the pipeline topic (offsets mark produce progress). A sibling
+     * {@link KafkaReplayRunner} consumes streaming records, applies via
+     * {@link BatchApplyHandler}, and writes {@code pipeline_applied_offsets}.
+     */
+    private CdcEngine buildKafka(
+            DebeziumEngineConfig.EngineSpec spec,
+            Runnable onSnapshotCompleted,
+            MigrationLogListener logListener,
+            MigrationLagListener lagListener,
+            FullLoadCheckpointListener checkpointListener,
+            ResolvedCdcTransport transport) {
+        KafkaTransportConfig kafka = transport.kafka();
+        ReplayConfig config = replayConfig(spec);
+        // FULL: same apply→mark semantics as DIRECT (checkpoints land here).
+        BatchApplyHandler snapshotApplyHandler = new BatchApplyHandler(
+                spec.taskId(),
+                spec.pipelineId(),
+                config,
+                logListener,
+                lagListener,
+                checkpointListener);
+        KafkaProduceChangeConsumer produceConsumer =
+                new KafkaProduceChangeConsumer(spec.taskId(), config, kafka, snapshotApplyHandler);
+        // INCREMENTAL replay from Kafka; full-load checkpoints already handled above.
+        BatchApplyHandler replayApplyHandler = new BatchApplyHandler(
+                spec.taskId(),
+                spec.pipelineId(),
+                replayConfig(spec),
+                logListener,
+                lagListener,
+                FullLoadCheckpointListener.NONE);
+        AppliedOffsetStore appliedStore = new JdbcAppliedOffsetStore(metadataDataSource);
+        KafkaReplayRunner replayRunner =
+                new KafkaReplayRunner(spec.pipelineId(), kafka, replayApplyHandler, appliedStore);
+        replayRunner.start();
+        AutoCloseable resources = () -> {
+            try {
+                produceConsumer.close();
+            }
+            finally {
+                replayRunner.close();
+            }
+        };
+        // KAFKA: produce→mark still every batch; OffsetCommitPolicy.periodic flushes
+        // debezium_offsets at most every 3s (async from the engine's POV relative to always()).
+        java.util.Properties kafkaProps = DebeziumEngineConfig.capture(spec);
+        kafkaProps.setProperty("offset.flush.interval.ms", KAFKA_OFFSET_FLUSH_INTERVAL_MS);
+        return build(
+                kafkaProps,
+                spec.taskId(),
+                new SnapshotCompletionConsumer(produceConsumer, onSnapshotCompleted, logListener),
+                resources,
+                OffsetCommitPolicy.periodic(kafkaProps));
     }
 
     /**
@@ -125,6 +199,12 @@ public class DebeziumCdcEngineFactory implements CdcEngineFactory {
             MigrationLogListener logListener,
             MigrationLagListener positionListener,
             FullLoadCheckpointListener checkpointListener) {
+        return new ReplayApplyChangeConsumer(
+                spec.taskId(), spec.pipelineId(), replayConfig(spec),
+                logListener, positionListener, checkpointListener);
+    }
+
+    private ReplayConfig replayConfig(DebeziumEngineConfig.EngineSpec spec) {
         ReplayConfig.Builder configBuilder = ReplayConfig.builder()
                 // Stateless provider: every call opens a fresh physical connection, so each
                 // parallel applier worker (via its own JdbcConnection) gets its own connection.
@@ -143,10 +223,7 @@ public class DebeziumCdcEngineFactory implements CdcEngineFactory {
         if (spec.tableApplierConcurrency() != null) {
             configBuilder.tableApplierConcurrency(spec.tableApplierConcurrency());
         }
-        ReplayConfig config = configBuilder.build();
-        return new ReplayApplyChangeConsumer(
-                spec.taskId(), spec.pipelineId(), config,
-                logListener, positionListener, checkpointListener);
+        return configBuilder.build();
     }
 
     private MappedTableNamingStrategy specTableNaming(DebeziumEngineConfig.EngineSpec spec) {
@@ -158,6 +235,16 @@ public class DebeziumCdcEngineFactory implements CdcEngineFactory {
             long taskId,
             DebeziumEngine.ChangeConsumer<RecordChangeEvent<SourceRecord>> consumer,
             AutoCloseable resource) {
+        // DIRECT (and capture-only) paths: commit offsets as soon as the batch is marked.
+        return build(props, taskId, consumer, resource, OffsetCommitPolicy.always());
+    }
+
+    private CdcEngine build(
+            java.util.Properties props,
+            long taskId,
+            DebeziumEngine.ChangeConsumer<RecordChangeEvent<SourceRecord>> consumer,
+            AutoCloseable resource,
+            OffsetCommitPolicy commitPolicy) {
         AtomicReference<Throwable> error = new AtomicReference<>();
         // Debezium instantiates offset/schema-history stores by class name; bind the metadata
         // DataSource for this engine run until the Engine stops. The key is the engine name, so
@@ -165,8 +252,9 @@ public class DebeziumCdcEngineFactory implements CdcEngineFactory {
         String engineKey = props.getProperty("name");
         // 诊断日志：这里记录的是实际写进 Debezium Properties 的值，以及 classpath 上真正加载的
         // debezium-connector-mysql 版本——两边对不上时（如胖 jar 内嵌旧版依赖）一眼可见。
-        log.info("Debezium engine {} starting: snapshot.mode={}, debezium-connector-mysql={}",
-                engineKey, props.getProperty("snapshot.mode"), debeziumConnectorVersion());
+        log.info("Debezium engine {} starting: snapshot.mode={}, debezium-connector-mysql={}, offsetCommit={}",
+                engineKey, props.getProperty("snapshot.mode"), debeziumConnectorVersion(),
+                commitPolicy.getClass().getSimpleName());
         TaskDataSourceRegistry.bind(engineKey, metadataDataSource);
         DebeziumEngine<RecordChangeEvent<SourceRecord>> engine = DebeziumEngine
                 .create(ChangeEventFormat.of(Connect.class))
@@ -182,7 +270,7 @@ public class DebeziumCdcEngineFactory implements CdcEngineFactory {
                         error.set(new IllegalStateException(message));
                     }
                 })
-                .using(OffsetCommitPolicy.always())
+                .using(commitPolicy)
                 .build();
         return new DebeziumCdcEngine(
                 engine, error, taskId, resource, () -> TaskDataSourceRegistry.unbind(engineKey));

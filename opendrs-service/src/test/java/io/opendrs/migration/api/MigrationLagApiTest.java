@@ -120,6 +120,7 @@ class MigrationLagApiTest {
         taskMapper.insert(task);
         taskMapper.updatePhaseState(task.getId(), phase, state);
         io.opendrs.migration.domain.TaskPipeline pipeline = new io.opendrs.migration.domain.TaskPipeline();
+        pipeline.setPublicId(java.util.UUID.randomUUID().toString());
         pipeline.setTaskId(task.getId());
         pipeline.setSourceEndpointId(sourceId);
         pipeline.setTargetEndpointId(targetId);

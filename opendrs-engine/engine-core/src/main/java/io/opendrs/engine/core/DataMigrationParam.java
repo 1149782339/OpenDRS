@@ -6,6 +6,7 @@ import io.opendrs.engine.replay.GtidLoopConfig;
 import io.opendrs.engine.replay.SnapshotStrategy;
 import io.opendrs.common.selection.TableSelection;
 import io.opendrs.engine.replay.metrics.ReplayDirection;
+import io.opendrs.engine.capture.transport.ResolvedCdcTransport;
 import io.opendrs.jdbc.JdbcConnectionConfig;
 import java.util.Objects;
 import java.util.function.Consumer;
@@ -82,7 +83,11 @@ public record DataMigrationParam(
          * other strategy). The service computes the set from the persisted full-load checkpoints;
          * null keeps a normal full snapshot.
          */
-        java.util.Set<String> resumeTables)
+        java.util.Set<String> resumeTables,
+        /**
+         * Capture→replay transport. Null keeps {@link ResolvedCdcTransport#direct()}.
+         */
+        ResolvedCdcTransport transport)
         implements MigrationParam {
 
     public DataMigrationParam {
@@ -92,6 +97,7 @@ public record DataMigrationParam(
         lagListener = lagListener == null ? MigrationLagListener.NONE : lagListener;
         direction = direction == null ? ReplayDirection.FORWARD : direction;
         snapshotStrategy = snapshotStrategy == null ? SnapshotStrategy.INITIAL : snapshotStrategy;
+        transport = transport == null ? ResolvedCdcTransport.direct() : transport;
     }
 
     /** Compact factory for the classic single-direction run. */
@@ -107,7 +113,7 @@ public record DataMigrationParam(
         return new DataMigrationParam(
                 taskId, source, target, selection, databaseServerId,
                 phaseListener, logListener, lagListener, null, null, ReplayDirection.FORWARD,
-                null, null, null, null, null, null);
+                null, null, null, null, null, null, null);
     }
 
     public static Builder builder() {
@@ -133,6 +139,7 @@ public record DataMigrationParam(
         private Integer snapshotThreadsMultiplier;
         private SnapshotStrategy snapshotStrategy;
         private java.util.Set<String> resumeTables;
+        private ResolvedCdcTransport transport;
 
         private Builder() {
         }
@@ -251,6 +258,12 @@ public record DataMigrationParam(
             return this;
         }
 
+        /** Capture→replay transport; null keeps DIRECT. */
+        public Builder transport(ResolvedCdcTransport transport) {
+            this.transport = transport;
+            return this;
+        }
+
         public DataMigrationParam build() {
             return new DataMigrationParam(
                     taskId,
@@ -269,7 +282,8 @@ public record DataMigrationParam(
                     snapshotThreads,
                     snapshotThreadsMultiplier,
                     snapshotStrategy,
-                    resumeTables);
+                    resumeTables,
+                    transport);
         }
     }
 }

@@ -21,6 +21,10 @@ import io.opendrs.migration.domain.MigrationTask;
 import io.opendrs.migration.mapper.ConnectionInfoMapper;
 import io.opendrs.migration.mapper.MigrationTaskMapper;
 import io.opendrs.migration.service.MappingRequests;
+import io.opendrs.migration.config.OpenDrsTransportProperties;
+import io.opendrs.engine.capture.transport.KafkaTransportConfig;
+import io.opendrs.engine.capture.transport.CdcTransportSpec;
+import io.opendrs.engine.capture.transport.ResolvedCdcTransport;
 import io.opendrs.migration.service.ServerIdAllocator;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
@@ -53,6 +57,7 @@ public class MigrationCoordinator implements Runnable {
     private final ServerIdAllocator serverIdAllocator;
     private final io.opendrs.migration.mapper.TaskPipelineMapper pipelineMapper;
     private final io.opendrs.migration.service.FullLoadResumePlanner resumePlanner;
+    private final OpenDrsTransportProperties transportProperties;
     private final AtomicBoolean stopRequested = new AtomicBoolean(false);
     private volatile Thread worker;
 
@@ -210,6 +215,27 @@ public class MigrationCoordinator implements Runnable {
             java.util.function.Function<Long, MigrationLagListener> lagListenerFactory,
             io.opendrs.migration.mapper.TaskPipelineMapper pipelineMapper,
             io.opendrs.migration.service.FullLoadResumePlanner resumePlanner) {
+        this(taskId, mode, taskMapper, connectionMapper, registry, engine, logListener,
+                lagListener, serverIdAllocator, lagListenerFactory, pipelineMapper, resumePlanner, null);
+    }
+
+    /**
+     * @param transportProperties selects DIRECT vs KAFKA; null keeps DIRECT (unit tests / legacy).
+     */
+    public MigrationCoordinator(
+            Long taskId,
+            MigrationMode mode,
+            MigrationTaskMapper taskMapper,
+            ConnectionInfoMapper connectionMapper,
+            MigrationCoordinatorRegistry registry,
+            MigrationEngine engine,
+            MigrationLogListener logListener,
+            MigrationLagListener lagListener,
+            ServerIdAllocator serverIdAllocator,
+            java.util.function.Function<Long, MigrationLagListener> lagListenerFactory,
+            io.opendrs.migration.mapper.TaskPipelineMapper pipelineMapper,
+            io.opendrs.migration.service.FullLoadResumePlanner resumePlanner,
+            OpenDrsTransportProperties transportProperties) {
         this.taskId = taskId;
         this.mode = mode;
         this.taskMapper = taskMapper;
@@ -224,6 +250,7 @@ public class MigrationCoordinator implements Runnable {
         this.serverIdAllocator = serverIdAllocator;
         this.pipelineMapper = pipelineMapper;
         this.resumePlanner = resumePlanner;
+        this.transportProperties = transportProperties;
     }
 
     public Long getTaskId() {
@@ -411,6 +438,7 @@ public class MigrationCoordinator implements Runnable {
         }
         io.opendrs.migration.domain.TaskPipeline ephemeral = new io.opendrs.migration.domain.TaskPipeline();
         ephemeral.setId(task.getId());
+        ephemeral.setPublicId(java.util.UUID.randomUUID().toString());
         ephemeral.setTaskId(task.getId());
         ephemeral.setSourceEndpointId(task.getSourceConnectionId());
         ephemeral.setTargetEndpointId(task.getTargetConnectionId());
@@ -467,10 +495,50 @@ public class MigrationCoordinator implements Runnable {
                 .snapshotThreadsMultiplier(snapshotThreadsMultiplier)
                 .snapshotStrategy(strategyOf(mode))
                 .resumeTables(resumeTablesOf(task, pipeline, source, target, direction))
+                .transport(transportOf(task, pipeline))
                 .phaseListener(phase -> onTaskPhase(phase, pipeline))
                 .logListener(logListener)
                 .lagListener(lagListenerFactory.apply(pipeline.getId()))
                 .build();
+    }
+
+    /**
+     * Builds the resolved CDC transport for one pipeline.
+     * Channel priority: task {@code options.cdcTransportSpec} → global
+     * {@code opendrs.transport.channel} → {@link CdcTransportSpec#DIRECT}.
+     * KAFKA requires {@code pipeline.public_id} to derive topic/group; bootstrap/registry stay global.
+     */
+    private ResolvedCdcTransport transportOf(
+            MigrationTask task, io.opendrs.migration.domain.TaskPipeline pipeline) {
+        CdcTransportSpec channel = resolveCdcTransportSpec(task);
+        if (channel == CdcTransportSpec.DIRECT) {
+            return ResolvedCdcTransport.direct();
+        }
+        String publicId = pipeline.getPublicId();
+        if (publicId == null || publicId.isBlank()) {
+            throw new IllegalStateException(
+                    "KAFKA transport requires task_pipelines.public_id for pipeline " + pipeline.getId());
+        }
+        if (transportProperties == null) {
+            throw new IllegalStateException(
+                    "KAFKA transport requires opendrs.transport.kafka-bootstrap-servers");
+        }
+        return ResolvedCdcTransport.kafka(new KafkaTransportConfig(
+                transportProperties.getKafkaBootstrapServers(),
+                transportProperties.getSchemaRegistryUrl(),
+                publicId));
+    }
+
+    /** Task options override global channel; null/blank options inherit global then DIRECT. */
+    private CdcTransportSpec resolveCdcTransportSpec(MigrationTask task) {
+        MigrationOptions options = task == null ? null : task.getOptionsJson();
+        if (options != null && options.cdcTransportSpec() != null) {
+            return options.cdcTransportSpec();
+        }
+        if (transportProperties != null) {
+            return transportProperties.channelEnum();
+        }
+        return CdcTransportSpec.DIRECT;
     }
 
     /**

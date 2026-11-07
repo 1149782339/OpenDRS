@@ -266,6 +266,66 @@ def wait_row_count(pg: PostgresConnection, schema: str, table: str,
         time.sleep(poll)
 
 
+# ---------------------------------------------------------------------- DDL / schema helpers
+def alter_add_column(mysql: MySqlConnection, table: str, column: str,
+                     definition: str, database: str | None = None) -> None:
+    """Source-side ALTER TABLE … ADD COLUMN (CDC should replicate to target)."""
+    name = _qname(database, table)
+    mysql.execute(f"ALTER TABLE {name} ADD COLUMN {column} {definition}")
+
+
+def pg_has_column(pg: PostgresConnection, schema: str, table: str, column: str) -> bool:
+    conn = pg._connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_schema = %s AND table_name = %s AND column_name = %s",
+                (schema, table, column))
+            return cur.fetchone() is not None
+    finally:
+        conn.close()
+
+
+def wait_column(pg: PostgresConnection, schema: str, table: str, column: str,
+                timeout: float = 180, poll: float = 2) -> None:
+    """Poll until the target table exposes ``column`` (incremental DDL caught up)."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            if pg_has_column(pg, schema, table, column):
+                return
+        except psycopg2.errors.UndefinedTable:
+            pass
+        if time.monotonic() > deadline:
+            raise RuntimeError(
+                f"{schema}.{table} missing column {column!r} within {timeout:.0f}s")
+        time.sleep(poll)
+
+
+def alter_drop_column(mysql: MySqlConnection, table: str, column: str,
+                      database: str | None = None) -> None:
+    """Source-side ALTER TABLE … DROP COLUMN (CDC should replicate to target)."""
+    name = _qname(database, table)
+    mysql.execute(f"ALTER TABLE {name} DROP COLUMN {column}")
+
+
+def wait_column_absent(pg: PostgresConnection, schema: str, table: str, column: str,
+                       timeout: float = 180, poll: float = 2) -> None:
+    """Poll until the target table no longer has ``column`` (DROP COLUMN caught up)."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            if not pg_has_column(pg, schema, table, column):
+                return
+        except psycopg2.errors.UndefinedTable:
+            return
+        if time.monotonic() > deadline:
+            raise RuntimeError(
+                f"{schema}.{table} still has column {column!r} after {timeout:.0f}s")
+        time.sleep(poll)
+
+
 # ---------------------------------------------------------------------- 对账
 def row_digest(rows: dict[int, tuple]) -> str:
     canonical = "\n".join(
