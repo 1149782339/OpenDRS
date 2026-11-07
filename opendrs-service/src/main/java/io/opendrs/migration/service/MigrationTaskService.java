@@ -49,6 +49,7 @@ public class MigrationTaskService {
     private final MigrationLagRegistry lagRegistry;
     private final SourcePositionQuery sourcePositionQuery;
     private final TransactionTemplate transactionTemplate;
+    private final KafkaPipelineResourceReleaser kafkaReleaser;
 
     public MigrationTaskService(
             MigrationTaskMapper taskMapper,
@@ -63,7 +64,8 @@ public class MigrationTaskService {
             MigrationLogService logService,
             MigrationLagRegistry lagRegistry,
             SourcePositionQuery sourcePositionQuery,
-            TransactionTemplate transactionTemplate) {
+            TransactionTemplate transactionTemplate,
+            KafkaPipelineResourceReleaser kafkaReleaser) {
         this.taskMapper = taskMapper;
         this.connectionMapper = connectionMapper;
         this.offsetMapper = offsetMapper;
@@ -77,6 +79,7 @@ public class MigrationTaskService {
         this.lagRegistry = lagRegistry;
         this.sourcePositionQuery = sourcePositionQuery;
         this.transactionTemplate = transactionTemplate;
+        this.kafkaReleaser = kafkaReleaser;
     }
 
     @Transactional
@@ -339,6 +342,10 @@ public class MigrationTaskService {
         if (state == TaskState.STARTING) {
             coordinatorRegistry.requestStop(id);
         }
+        // Idle path lands TERMINATED in this request: release Kafka resources first so the
+        // terminal state means topic/group are gone (pause never reaches here).
+        task = requireTask(id);
+        kafkaReleaser.releaseIfNeeded(task);
         int updated = taskMapper.terminateIdle(id);
         if (updated == 0) {
             MigrationTask latest = requireTask(id);

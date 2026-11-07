@@ -8,6 +8,7 @@ import io.opendrs.migration.service.MigrationLagRegistry;
 import io.opendrs.migration.service.MigrationLogService;
 import io.opendrs.migration.service.FullLoadResumePlanner;
 import io.opendrs.migration.config.OpenDrsTransportProperties;
+import io.opendrs.migration.service.KafkaPipelineResourceReleaser;
 import io.opendrs.migration.service.ServerIdAllocator;
 import org.springframework.stereotype.Component;
 
@@ -24,6 +25,7 @@ public class MigrationCoordinatorFactory {
     private final ServerIdAllocator serverIdAllocator;
     private final FullLoadResumePlanner resumePlanner;
     private final OpenDrsTransportProperties transportProperties;
+    private final KafkaPipelineResourceReleaser kafkaReleaser;
 
     public MigrationCoordinatorFactory(
             MigrationTaskMapper taskMapper,
@@ -35,7 +37,8 @@ public class MigrationCoordinatorFactory {
             MigrationLagRegistry lagRegistry,
             ServerIdAllocator serverIdAllocator,
             FullLoadResumePlanner resumePlanner,
-            OpenDrsTransportProperties transportProperties) {
+            OpenDrsTransportProperties transportProperties,
+            KafkaPipelineResourceReleaser kafkaReleaser) {
         this.taskMapper = taskMapper;
         this.connectionMapper = connectionMapper;
         this.pipelineMapper = pipelineMapper;
@@ -46,6 +49,7 @@ public class MigrationCoordinatorFactory {
         this.serverIdAllocator = serverIdAllocator;
         this.resumePlanner = resumePlanner;
         this.transportProperties = transportProperties;
+        this.kafkaReleaser = kafkaReleaser;
     }
 
     public MigrationCoordinator create(io.opendrs.migration.domain.MigrationTask task) {
@@ -62,6 +66,7 @@ public class MigrationCoordinatorFactory {
                 lagRegistry::listenerFor,
                 pipelineMapper,
                 resumePlanner,
-                transportProperties);
+                transportProperties,
+                kafkaReleaser);
     }
 }

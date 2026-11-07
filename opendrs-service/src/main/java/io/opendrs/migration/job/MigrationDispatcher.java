@@ -3,6 +3,7 @@ package io.opendrs.migration.job;
 import io.opendrs.engine.core.TaskState;
 import io.opendrs.migration.domain.MigrationTask;
 import io.opendrs.migration.mapper.MigrationTaskMapper;
+import io.opendrs.migration.service.KafkaPipelineResourceReleaser;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.ApplicationArguments;
@@ -24,20 +25,39 @@ public class MigrationDispatcher implements ApplicationRunner {
     private final MigrationCoordinatorRegistry registry;
     private final MigrationCoordinatorFactory coordinatorFactory;
     private final ThreadPoolTaskExecutor coordinatorExecutor;
+    private final KafkaPipelineResourceReleaser kafkaReleaser;
 
     public MigrationDispatcher(
             MigrationTaskMapper taskMapper,
             MigrationCoordinatorRegistry registry,
             MigrationCoordinatorFactory coordinatorFactory,
-            ThreadPoolTaskExecutor coordinatorExecutor) {
+            ThreadPoolTaskExecutor coordinatorExecutor,
+            KafkaPipelineResourceReleaser kafkaReleaser) {
         this.taskMapper = taskMapper;
         this.registry = registry;
         this.coordinatorFactory = coordinatorFactory;
         this.coordinatorExecutor = coordinatorExecutor;
+        this.kafkaReleaser = kafkaReleaser == null
+                ? KafkaPipelineResourceReleaser.NONE
+                : kafkaReleaser;
     }
 
     @Override
     public void run(ApplicationArguments args) {
+        // TERMINATING rows left by a crashed JVM: release Kafka before landing TERMINATED so the
+        // terminal state still means resources are gone. STOPPING (pause) is never cleaned.
+        for (MigrationTask task : taskMapper.findAll()) {
+            if (task.getState() == TaskState.TERMINATING) {
+                try {
+                    kafkaReleaser.releaseIfNeeded(task);
+                } catch (RuntimeException ex) {
+                    log.warn(
+                            "Boot Kafka release failed for terminating task {}: {}",
+                            task.getId(),
+                            ex.toString());
+                }
+            }
+        }
         int n = taskMapper.markStoppingAsStopped();
         if (n > 0) {
             log.info("Recovered {} wind-down task(s) (STOPPING→STOPPED / TERMINATING→TERMINATED) on boot", n);

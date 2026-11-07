@@ -25,6 +25,7 @@ import io.opendrs.migration.config.OpenDrsTransportProperties;
 import io.opendrs.engine.capture.transport.KafkaTransportConfig;
 import io.opendrs.engine.capture.transport.CdcTransportSpec;
 import io.opendrs.engine.capture.transport.ResolvedCdcTransport;
+import io.opendrs.migration.service.KafkaPipelineResourceReleaser;
 import io.opendrs.migration.service.ServerIdAllocator;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
@@ -58,6 +59,7 @@ public class MigrationCoordinator implements Runnable {
     private final io.opendrs.migration.mapper.TaskPipelineMapper pipelineMapper;
     private final io.opendrs.migration.service.FullLoadResumePlanner resumePlanner;
     private final OpenDrsTransportProperties transportProperties;
+    private final KafkaPipelineResourceReleaser kafkaReleaser;
     private final AtomicBoolean stopRequested = new AtomicBoolean(false);
     private volatile Thread worker;
 
@@ -236,6 +238,31 @@ public class MigrationCoordinator implements Runnable {
             io.opendrs.migration.mapper.TaskPipelineMapper pipelineMapper,
             io.opendrs.migration.service.FullLoadResumePlanner resumePlanner,
             OpenDrsTransportProperties transportProperties) {
+        this(taskId, mode, taskMapper, connectionMapper, registry, engine, logListener,
+                lagListener, serverIdAllocator, lagListenerFactory, pipelineMapper, resumePlanner,
+                transportProperties, null);
+    }
+
+    /**
+     * @param transportProperties selects DIRECT vs KAFKA; null keeps DIRECT (unit tests / legacy).
+     * @param kafkaReleaser deletes per-pipeline Kafka topic/group on terminate; null is a no-op
+     *     (unit tests / DIRECT-only). Never invoked on pause.
+     */
+    public MigrationCoordinator(
+            Long taskId,
+            MigrationMode mode,
+            MigrationTaskMapper taskMapper,
+            ConnectionInfoMapper connectionMapper,
+            MigrationCoordinatorRegistry registry,
+            MigrationEngine engine,
+            MigrationLogListener logListener,
+            MigrationLagListener lagListener,
+            ServerIdAllocator serverIdAllocator,
+            java.util.function.Function<Long, MigrationLagListener> lagListenerFactory,
+            io.opendrs.migration.mapper.TaskPipelineMapper pipelineMapper,
+            io.opendrs.migration.service.FullLoadResumePlanner resumePlanner,
+            OpenDrsTransportProperties transportProperties,
+            KafkaPipelineResourceReleaser kafkaReleaser) {
         this.taskId = taskId;
         this.mode = mode;
         this.taskMapper = taskMapper;
@@ -251,6 +278,7 @@ public class MigrationCoordinator implements Runnable {
         this.pipelineMapper = pipelineMapper;
         this.resumePlanner = resumePlanner;
         this.transportProperties = transportProperties;
+        this.kafkaReleaser = kafkaReleaser == null ? KafkaPipelineResourceReleaser.NONE : kafkaReleaser;
     }
 
     public Long getTaskId() {
@@ -824,6 +852,9 @@ public class MigrationCoordinator implements Runnable {
             return;
         }
         if (state == TaskState.TERMINATING) {
+            // Engine is already down: release Kafka topic/group before landing TERMINATED so the
+            // terminal state means resources are gone. Pause (STOPPING) never reaches here for delete.
+            releaseKafkaResources(task);
             if (taskMapper.landTerminating(taskId) > 0) {
                 note(MigrationLogLevel.WARNING, "job terminated");
             }
@@ -850,6 +881,19 @@ public class MigrationCoordinator implements Runnable {
                 && taskMapper.compareAndSetState(taskId, TaskState.RUNNING, TaskState.COMPLETED) > 0) {
             note(MigrationLogLevel.INFO, "full load finished, task completed");
             log.info("Task job {} full-only run finished, state COMPLETED", taskId);
+        }
+    }
+
+    /**
+     * Best-effort Kafka topic/group delete for KAFKA tasks. Failures are logged inside the
+     * releaser; TERMINATED still lands so the UI is not stuck in 结束中.
+     */
+    private void releaseKafkaResources(MigrationTask task) {
+        try {
+            kafkaReleaser.releaseIfNeeded(task);
+        } catch (RuntimeException ex) {
+            log.warn("Kafka resource release failed for task {}: {}", taskId, ex.toString());
+            note(MigrationLogLevel.WARNING, "Kafka resource release failed: " + ex.getMessage());
         }
     }
 

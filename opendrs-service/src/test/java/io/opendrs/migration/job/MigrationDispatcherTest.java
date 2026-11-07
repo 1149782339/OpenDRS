@@ -12,6 +12,7 @@ import io.opendrs.engine.core.TaskState;
 import io.opendrs.migration.domain.MigrationMode;
 import io.opendrs.migration.domain.MigrationTask;
 import io.opendrs.migration.mapper.MigrationTaskMapper;
+import io.opendrs.migration.service.KafkaPipelineResourceReleaser;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -36,7 +37,8 @@ class MigrationDispatcherTest {
             MigrationTask task = invocation.getArgument(0);
             return new MigrationCoordinator(task.getId(), task.getMode(), taskMapper, registry);
         });
-        dispatcher = new MigrationDispatcher(taskMapper, registry, factory, executor);
+        dispatcher = new MigrationDispatcher(
+                taskMapper, registry, factory, executor, KafkaPipelineResourceReleaser.NONE);
     }
 
     @Test
@@ -81,8 +83,25 @@ class MigrationDispatcherTest {
 
     @Test
     void bootMarksStoppingAsStopped() {
+        when(taskMapper.findAll()).thenReturn(List.of());
         when(taskMapper.markStoppingAsStopped()).thenReturn(2);
         dispatcher.run(null);
+        verify(taskMapper).markStoppingAsStopped();
+    }
+
+    @Test
+    void bootReleasesKafkaForTerminatingBeforeLanding() {
+        MigrationTask terminating = dispatchable(9L, TaskState.TERMINATING);
+        MigrationTask pausing = dispatchable(8L, TaskState.STOPPING);
+        KafkaPipelineResourceReleaser releaser = Mockito.mock(KafkaPipelineResourceReleaser.class);
+        dispatcher = new MigrationDispatcher(taskMapper, registry, factory, executor, releaser);
+        when(taskMapper.findAll()).thenReturn(List.of(terminating, pausing));
+        when(taskMapper.markStoppingAsStopped()).thenReturn(2);
+
+        dispatcher.run(null);
+
+        verify(releaser).releaseIfNeeded(terminating);
+        verify(releaser, never()).releaseIfNeeded(pausing);
         verify(taskMapper).markStoppingAsStopped();
     }
 

@@ -29,6 +29,7 @@ import io.opendrs.migration.domain.MigrationMode;
 import io.opendrs.migration.domain.MigrationTask;
 import io.opendrs.migration.mapper.ConnectionInfoMapper;
 import io.opendrs.migration.mapper.MigrationTaskMapper;
+import io.opendrs.migration.service.KafkaPipelineResourceReleaser;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -93,6 +94,60 @@ class MigrationCoordinatorTest {
         // 暂停落地：STOPPING → landPausing → STOPPED。
         verify(taskMapper).landPausing(1L);
         assertThat(registry.hasLive(1L)).isFalse();
+    }
+
+    @Test
+    void terminateReleasesKafkaBeforeLandingTerminated() throws Exception {
+        MigrationTask task = task(11L, MigrationPhase.PRECHECKED, TaskState.STARTING, MigrationMode.FULL_AND_INCREMENTAL);
+        stubTask(task);
+        KafkaPipelineResourceReleaser releaser = Mockito.mock(KafkaPipelineResourceReleaser.class);
+        when(taskMapper.landTerminating(11L)).thenAnswer(inv -> {
+            task.setState(TaskState.TERMINATED);
+            return 1;
+        });
+        MigrationCoordinator job = job(task, releaser);
+        registry.tryRegister(job);
+
+        Thread thread = new Thread(job, "test-job-terminate");
+        thread.start();
+        assertThat(engine.run.started.await(5, TimeUnit.SECONDS)).isTrue();
+
+        task.setPhase(MigrationPhase.INCREMENTAL);
+        task.setState(TaskState.TERMINATING);
+        job.requestStop();
+        thread.join(5_000);
+
+        // InOrder: release before landTerminating
+        var inOrder = Mockito.inOrder(releaser, taskMapper);
+        inOrder.verify(releaser).releaseIfNeeded(task);
+        inOrder.verify(taskMapper).landTerminating(11L);
+        verify(taskMapper, never()).landPausing(anyLong());
+    }
+
+    @Test
+    void pauseDoesNotReleaseKafkaResources() throws Exception {
+        MigrationTask task = task(12L, MigrationPhase.PRECHECKED, TaskState.STARTING, MigrationMode.FULL_AND_INCREMENTAL);
+        stubTask(task);
+        KafkaPipelineResourceReleaser releaser = Mockito.mock(KafkaPipelineResourceReleaser.class);
+        when(taskMapper.landPausing(12L)).thenAnswer(inv -> {
+            task.setState(TaskState.STOPPED);
+            return 1;
+        });
+        MigrationCoordinator job = job(task, releaser);
+        registry.tryRegister(job);
+
+        Thread thread = new Thread(job, "test-job-pause");
+        thread.start();
+        assertThat(engine.run.started.await(5, TimeUnit.SECONDS)).isTrue();
+
+        task.setPhase(MigrationPhase.INCREMENTAL);
+        task.setState(TaskState.STOPPING);
+        job.requestStop();
+        thread.join(5_000);
+
+        verify(releaser, never()).releaseIfNeeded(any());
+        verify(taskMapper).landPausing(12L);
+        verify(taskMapper, never()).landTerminating(anyLong());
     }
 
     @Test
@@ -283,6 +338,10 @@ class MigrationCoordinatorTest {
     }
 
     private MigrationCoordinator job(MigrationTask task) {
+        return job(task, KafkaPipelineResourceReleaser.NONE);
+    }
+
+    private MigrationCoordinator job(MigrationTask task, KafkaPipelineResourceReleaser releaser) {
         engine.phaseSupplier = task::getPhase;
         MigrationCoordinator job = new MigrationCoordinator(
                 task.getId(),
@@ -290,7 +349,15 @@ class MigrationCoordinatorTest {
                 taskMapper,
                 connectionMapper,
                 registry,
-                engine);
+                engine,
+                io.opendrs.common.log.MigrationLogListener.NONE,
+                io.opendrs.common.progress.MigrationLagListener.NONE,
+                null,
+                null,
+                null,
+                null,
+                null,
+                releaser);
         registry.tryRegister(job);
         return job;
     }
