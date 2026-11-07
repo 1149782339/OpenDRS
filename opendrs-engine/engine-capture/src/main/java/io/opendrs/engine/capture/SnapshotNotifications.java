@@ -50,6 +50,23 @@ public final class SnapshotNotifications {
     }
 
     /**
+     * True for any sink-channel {@code aggregate_type=Initial Snapshot} notification
+     * ({@code DATA_COLLECTIONS_RESOLVED}, {@code TABLE_SCAN_COMPLETED}, {@code COMPLETED}, …).
+     * These carry no {@code op}/{@code source.snapshot} and must still bypass Kafka so
+     * {@link BatchApplyHandler} can drive per-table full-load checkpoints.
+     */
+    public static boolean isInitialSnapshotNotification(SourceRecord record) {
+        Object value = record.value();
+        if (!(value instanceof Struct struct)) {
+            return false;
+        }
+        if (struct.schema().field("aggregate_type") == null) {
+            return false;
+        }
+        return INITIAL_SNAPSHOT.equals(struct.getString("aggregate_type"));
+    }
+
+    /**
      * One table's scan outcome. {@code succeeded} mirrors the {@code status} entry Debezium
      * reports ({@code SUCCEEDED} vs e.g. {@code SQL_EXCEPTION}): a failed scan still yields a
      * record here (so the caller can log it) but must never be treated as "table done".

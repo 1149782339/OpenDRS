@@ -3,6 +3,7 @@ package io.opendrs.engine.capture.transport;
 import io.debezium.engine.DebeziumEngine;
 import io.debezium.engine.RecordChangeEvent;
 import io.opendrs.engine.capture.BatchApplyHandler;
+import io.opendrs.engine.capture.SnapshotNotifications;
 import io.opendrs.engine.replay.GtidLoopConfig;
 import io.opendrs.engine.replay.ReplayConfig;
 import java.time.Duration;
@@ -25,9 +26,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * KAFKA capture consumer with snapshot bypass: full-load ({@code source.snapshot} / op {@code r})
- * rows are applied DIRECT (apply → mark, same as {@code ReplayApplyChangeConsumer}); only
- * incremental/streaming records are batch-produced to the pipeline topic. For produced records,
+ * KAFKA capture consumer with snapshot bypass: full-load data rows ({@code source.snapshot} /
+ * op {@code r}) and {@code aggregate_type=Initial Snapshot} notifications are applied DIRECT
+ * (apply → mark, same as {@code ReplayApplyChangeConsumer}); only incremental/streaming
+ * records are batch-produced to the pipeline topic. For produced records,
  * {@code debezium_offsets} means "successfully produced", not "applied to the target".
  */
 public final class KafkaProduceChangeConsumer
@@ -131,7 +133,7 @@ public final class KafkaProduceChangeConsumer
             if (loop != null && loop.isLoopBack(sourceGtid(record))) {
                 continue;
             }
-            if (isSnapshotRecord(record)) {
+            if (shouldBypassKafka(record)) {
                 snapshot.add(record);
             }
             else {
@@ -141,9 +143,20 @@ public final class KafkaProduceChangeConsumer
     }
 
     /**
-     * True for Debezium snapshot-phase records that must bypass Kafka and apply DIRECT.
-     * Uses {@code source.snapshot} markers when present; falls back to envelope op {@code r}
-     * (READ) for snapshot row events.
+     * FULL-phase records that must apply DIRECT: snapshot data rows and
+     * {@code aggregate_type=Initial Snapshot} sink notifications (no {@code op}/
+     * {@code source.snapshot}, but drive per-table checkpoints in {@link BatchApplyHandler}).
+     */
+    static boolean shouldBypassKafka(SourceRecord record) {
+        return isSnapshotRecord(record)
+                || SnapshotNotifications.isInitialSnapshotNotification(record);
+    }
+
+    /**
+     * True for Debezium snapshot-phase <em>data</em> records that must bypass Kafka and apply
+     * DIRECT. Uses {@code source.snapshot} markers when present; falls back to envelope op
+     * {@code r} (READ). Does <em>not</em> cover sink-channel notifications — those lack
+     * {@code op}/{@code source.snapshot}; see {@link SnapshotNotifications#isInitialSnapshotNotification}.
      */
     static boolean isSnapshotRecord(SourceRecord record) {
         if (record == null) {
