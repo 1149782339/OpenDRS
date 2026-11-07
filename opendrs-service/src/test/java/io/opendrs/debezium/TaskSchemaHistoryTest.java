@@ -88,6 +88,7 @@ class TaskSchemaHistoryTest {
     private long insertPipeline(long taskId) {
         MigrationTask task = taskMapper.findById(taskId);
         io.opendrs.migration.domain.TaskPipeline pipeline = new io.opendrs.migration.domain.TaskPipeline();
+        pipeline.setPublicId(UUID.randomUUID().toString());
         pipeline.setTaskId(taskId);
         pipeline.setSourceEndpointId(task.getSourceConnectionId());
         pipeline.setTargetEndpointId(task.getTargetConnectionId());

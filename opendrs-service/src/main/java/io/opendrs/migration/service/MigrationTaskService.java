@@ -22,6 +22,7 @@ import io.opendrs.migration.mapper.DebeziumOffsetMapper;
 import io.opendrs.migration.mapper.DebeziumSchemaHistoryMapper;
 import io.opendrs.migration.mapper.FullLoadCheckpointMapper;
 import io.opendrs.migration.mapper.MigrationTaskMapper;
+import io.opendrs.migration.mapper.PipelineAppliedOffsetMapper;
 import io.opendrs.migration.mapper.TaskPipelineMapper;
 import io.opendrs.engine.replay.exception.MappingException;
 import io.opendrs.engine.replay.mapping.MappingValidator;
@@ -40,6 +41,7 @@ public class MigrationTaskService {
     private final DebeziumOffsetMapper offsetMapper;
     private final DebeziumSchemaHistoryMapper schemaHistoryMapper;
     private final TaskPipelineMapper pipelineMapper;
+    private final PipelineAppliedOffsetMapper appliedOffsetMapper;
     private final FullLoadCheckpointMapper checkpointMapper;
     private final MappingValidator mappingValidator;
     private final MigrationCoordinatorRegistry coordinatorRegistry;
@@ -54,6 +56,7 @@ public class MigrationTaskService {
             DebeziumOffsetMapper offsetMapper,
             DebeziumSchemaHistoryMapper schemaHistoryMapper,
             TaskPipelineMapper pipelineMapper,
+            PipelineAppliedOffsetMapper appliedOffsetMapper,
             FullLoadCheckpointMapper checkpointMapper,
             MappingValidator mappingValidator,
             MigrationCoordinatorRegistry coordinatorRegistry,
@@ -66,6 +69,7 @@ public class MigrationTaskService {
         this.offsetMapper = offsetMapper;
         this.schemaHistoryMapper = schemaHistoryMapper;
         this.pipelineMapper = pipelineMapper;
+        this.appliedOffsetMapper = appliedOffsetMapper;
         this.checkpointMapper = checkpointMapper;
         this.mappingValidator = mappingValidator;
         this.coordinatorRegistry = coordinatorRegistry;
@@ -150,6 +154,7 @@ public class MigrationTaskService {
     private void insertPipeline(MigrationTask task, Long sourceEndpointId, Long targetEndpointId,
             Map<String, Object> captureOptions) {
         TaskPipeline pipeline = new TaskPipeline();
+        pipeline.setPublicId(java.util.UUID.randomUUID().toString());
         pipeline.setTaskId(task.getId());
         pipeline.setSourceEndpointId(sourceEndpointId);
         pipeline.setTargetEndpointId(targetEndpointId);
@@ -357,6 +362,7 @@ public class MigrationTaskService {
                     ErrorMessage.TASK_MUST_TERMINATE_BEFORE_DELETE, id, describe(task));
         }
         offsetMapper.deleteByTaskId(id);
+        appliedOffsetMapper.deleteByTaskId(id);
         schemaHistoryMapper.deleteByTaskId(id);
         logService.deleteByTaskId(id);
         checkpointMapper.deleteByTaskId(id);

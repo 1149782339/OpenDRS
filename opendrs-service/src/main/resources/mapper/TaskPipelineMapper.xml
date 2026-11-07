@@ -5,6 +5,7 @@
 
     <resultMap id="TaskPipelineMap" type="io.opendrs.migration.domain.TaskPipeline">
         <id property="id" column="id"/>
+        <result property="publicId" column="public_id"/>
         <result property="taskId" column="task_id"/>
         <result property="sourceEndpointId" column="source_endpoint_id"/>
         <result property="targetEndpointId" column="target_endpoint_id"/>
@@ -16,20 +17,20 @@
     </resultMap>
 
     <insert id="insert" useGeneratedKeys="true" keyProperty="id">
-        INSERT INTO task_pipelines (task_id, source_endpoint_id, target_endpoint_id, capture_options, replay_options)
-        VALUES (#{taskId}, #{sourceEndpointId}, #{targetEndpointId},
+        INSERT INTO task_pipelines (public_id, task_id, source_endpoint_id, target_endpoint_id, capture_options, replay_options)
+        VALUES (#{publicId}, #{taskId}, #{sourceEndpointId}, #{targetEndpointId},
                 #{captureOptions, typeHandler=io.opendrs.migration.mapper.type.JsonMapTypeHandler},
                 #{replayOptions, typeHandler=io.opendrs.migration.mapper.type.JsonMapTypeHandler})
     </insert>
 
     <select id="findById" resultMap="TaskPipelineMap">
-        SELECT id, task_id, source_endpoint_id, target_endpoint_id, capture_options, replay_options, created_at
+        SELECT id, public_id, task_id, source_endpoint_id, target_endpoint_id, capture_options, replay_options, created_at
         FROM task_pipelines
         WHERE id = #{id}
     </select>
 
     <select id="findByTaskId" resultMap="TaskPipelineMap">
-        SELECT id, task_id, source_endpoint_id, target_endpoint_id, capture_options, replay_options, created_at
+        SELECT id, public_id, task_id, source_endpoint_id, target_endpoint_id, capture_options, replay_options, created_at
         FROM task_pipelines
         WHERE task_id = #{taskId}
         ORDER BY id

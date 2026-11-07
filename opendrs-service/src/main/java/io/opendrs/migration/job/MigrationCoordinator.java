@@ -21,6 +21,10 @@ import io.opendrs.migration.domain.MigrationTask;
 import io.opendrs.migration.mapper.ConnectionInfoMapper;
 import io.opendrs.migration.mapper.MigrationTaskMapper;
 import io.opendrs.migration.service.MappingRequests;
+import io.opendrs.migration.config.OpenDrsTransportProperties;
+import io.opendrs.engine.capture.transport.KafkaTransportConfig;
+import io.opendrs.engine.capture.transport.TransportChannel;
+import io.opendrs.engine.capture.transport.TransportSpec;
 import io.opendrs.migration.service.ServerIdAllocator;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
@@ -53,6 +57,7 @@ public class MigrationCoordinator implements Runnable {
     private final ServerIdAllocator serverIdAllocator;
     private final io.opendrs.migration.mapper.TaskPipelineMapper pipelineMapper;
     private final io.opendrs.migration.service.FullLoadResumePlanner resumePlanner;
+    private final OpenDrsTransportProperties transportProperties;
     private final AtomicBoolean stopRequested = new AtomicBoolean(false);
     private volatile Thread worker;
 
@@ -210,6 +215,27 @@ public class MigrationCoordinator implements Runnable {
             java.util.function.Function<Long, MigrationLagListener> lagListenerFactory,
             io.opendrs.migration.mapper.TaskPipelineMapper pipelineMapper,
             io.opendrs.migration.service.FullLoadResumePlanner resumePlanner) {
+        this(taskId, mode, taskMapper, connectionMapper, registry, engine, logListener,
+                lagListener, serverIdAllocator, lagListenerFactory, pipelineMapper, resumePlanner, null);
+    }
+
+    /**
+     * @param transportProperties selects DIRECT vs KAFKA; null keeps DIRECT (unit tests / legacy).
+     */
+    public MigrationCoordinator(
+            Long taskId,
+            MigrationMode mode,
+            MigrationTaskMapper taskMapper,
+            ConnectionInfoMapper connectionMapper,
+            MigrationCoordinatorRegistry registry,
+            MigrationEngine engine,
+            MigrationLogListener logListener,
+            MigrationLagListener lagListener,
+            ServerIdAllocator serverIdAllocator,
+            java.util.function.Function<Long, MigrationLagListener> lagListenerFactory,
+            io.opendrs.migration.mapper.TaskPipelineMapper pipelineMapper,
+            io.opendrs.migration.service.FullLoadResumePlanner resumePlanner,
+            OpenDrsTransportProperties transportProperties) {
         this.taskId = taskId;
         this.mode = mode;
         this.taskMapper = taskMapper;
@@ -224,6 +250,7 @@ public class MigrationCoordinator implements Runnable {
         this.serverIdAllocator = serverIdAllocator;
         this.pipelineMapper = pipelineMapper;
         this.resumePlanner = resumePlanner;
+        this.transportProperties = transportProperties;
     }
 
     public Long getTaskId() {
@@ -411,6 +438,7 @@ public class MigrationCoordinator implements Runnable {
         }
         io.opendrs.migration.domain.TaskPipeline ephemeral = new io.opendrs.migration.domain.TaskPipeline();
         ephemeral.setId(task.getId());
+        ephemeral.setPublicId(java.util.UUID.randomUUID().toString());
         ephemeral.setTaskId(task.getId());
         ephemeral.setSourceEndpointId(task.getSourceConnectionId());
         ephemeral.setTargetEndpointId(task.getTargetConnectionId());
@@ -467,10 +495,31 @@ public class MigrationCoordinator implements Runnable {
                 .snapshotThreadsMultiplier(snapshotThreadsMultiplier)
                 .snapshotStrategy(strategyOf(mode))
                 .resumeTables(resumeTablesOf(task, pipeline, source, target, direction))
+                .transport(transportOf(pipeline))
                 .phaseListener(phase -> onTaskPhase(phase, pipeline))
                 .logListener(logListener)
                 .lagListener(lagListenerFactory.apply(pipeline.getId()))
                 .build();
+    }
+
+    /**
+     * Builds the transport spec for one pipeline. DIRECT when unset; KAFKA requires
+     * {@code pipeline.public_id} to derive topic/group.
+     */
+    private TransportSpec transportOf(io.opendrs.migration.domain.TaskPipeline pipeline) {
+        if (transportProperties == null
+                || transportProperties.channelEnum() == TransportChannel.DIRECT) {
+            return TransportSpec.direct();
+        }
+        String publicId = pipeline.getPublicId();
+        if (publicId == null || publicId.isBlank()) {
+            throw new IllegalStateException(
+                    "KAFKA transport requires task_pipelines.public_id for pipeline " + pipeline.getId());
+        }
+        return TransportSpec.kafka(new KafkaTransportConfig(
+                transportProperties.getKafkaBootstrapServers(),
+                transportProperties.getSchemaRegistryUrl(),
+                publicId));
     }
 
     /**

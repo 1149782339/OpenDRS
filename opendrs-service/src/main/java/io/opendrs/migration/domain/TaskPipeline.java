@@ -20,6 +20,8 @@ import java.util.Map;
 public class TaskPipeline {
 
     private Long id;
+    /** Stable UUID for Kafka topic/group binding; PK/FK stay on {@link #id}. */
+    private String publicId;
     private Long taskId;
     private Long sourceEndpointId;
     private Long targetEndpointId;
@@ -33,6 +35,14 @@ public class TaskPipeline {
 
     public void setId(Long id) {
         this.id = id;
+    }
+
+    public String getPublicId() {
+        return publicId;
+    }
+
+    public void setPublicId(String publicId) {
+        this.publicId = publicId;
     }
 
     public Long getTaskId() {
