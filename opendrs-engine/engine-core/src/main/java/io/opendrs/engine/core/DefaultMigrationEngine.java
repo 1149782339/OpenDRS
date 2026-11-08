@@ -6,6 +6,10 @@ import io.opendrs.engine.common.metadata.DatabaseType;
 import io.opendrs.engine.capture.CdcEngine;
 import io.opendrs.engine.capture.DebeziumCdcEngineFactory;
 import io.opendrs.engine.capture.DebeziumEngineConfig;
+import io.opendrs.engine.datacheck.DataCheckRunner;
+import io.opendrs.engine.datacheck.InconsistentRowDBStore;
+import io.opendrs.engine.datacheck.InconsistentRowStore;
+import io.opendrs.engine.jdbc.JdbcConnection;
 import io.opendrs.engine.precheck.PlanBuilder;
 import io.opendrs.engine.precheck.PrecheckContext;
 import io.opendrs.engine.precheck.PrecheckException;
@@ -34,6 +38,7 @@ import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BooleanSupplier;
 import javax.sql.DataSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -65,6 +70,8 @@ public class DefaultMigrationEngine implements MigrationEngine {
     private final PlanBuilder mysqlBidirectionalPlanBuilder;
     private final DebeziumCdcEngineFactory cdcEngineFactory;
     private final SchemaMigration structureMigration;
+    private final DataCheckRunner dataCheckRunner;
+    private final javax.sql.DataSource metadataDataSource;
     private final ReplayMetrics replayMetrics;
     private final io.opendrs.common.progress.FullLoadCheckpointListener fullLoadCheckpointListener;
     private final ExecutorService executor = Executors.newCachedThreadPool(new EngineThreadFactory());
@@ -98,6 +105,8 @@ public class DefaultMigrationEngine implements MigrationEngine {
         this.mappingValidator = new MappingValidator();
         this.structureMigration = new SchemaMigration(
                 factory, new io.opendrs.engine.schema.MigrationEngine(factory), mappingValidator);
+        this.dataCheckRunner = new DataCheckRunner(factory);
+        this.metadataDataSource = metadataDataSource;
         this.precheckProfiles = new PrecheckProfiles(List.of(new MysqlToPgProfile(), new MysqlBidirectionalProfile()));
         this.mysqlToPgPlanBuilder = new PlanBuilder(MysqlToPgProfile.registry());
         this.mysqlBidirectionalPlanBuilder = new PlanBuilder(MysqlBidirectionalProfile.registry());
@@ -150,6 +159,32 @@ public class DefaultMigrationEngine implements MigrationEngine {
         DefaultPrecheckTask task = new DefaultPrecheckTask(() -> runPrecheck(param, selection));
         task.start(executor);
         return task;
+    }
+
+    @Override
+    public DataCheckTask datacheck(DataCheckParam param) {
+        TableSelection selection = selection(param.selection());
+        DefaultDataCheckTask task = new DefaultDataCheckTask(
+                stop -> runDataCheck(param, selection, stop));
+        task.start(executor);
+        return task;
+    }
+
+    private void runDataCheck(
+            DataCheckParam param, TableSelection selection, BooleanSupplier stopRequested) {
+        List<TableId> sourceTables = expand(param.source(), selection);
+        List<TableId> targetTables = mappingValidator.mapTargets(selection, sourceTables);
+        // The engine-level param and the datacheck-level param share their simple name but live in
+        // different modules; this local one carries the resolved table pairs.
+        io.opendrs.engine.datacheck.DataCheckParam request =
+                new io.opendrs.engine.datacheck.DataCheckParam(
+                        param.source(), param.target(), sourceTables, targetTables,
+                        param.includeFloat(), param.logListener());
+        try (JdbcConnection metadata = new JdbcConnection(
+                DatabaseType.MYSQL, null, cfg -> metadataDataSource.getConnection())) {
+            InconsistentRowStore store = new InconsistentRowDBStore(metadata, param.taskId());
+            dataCheckRunner.run(request, store, stopRequested);
+        }
     }
 
     /** Releases the worker pool. Called by the service on shutdown. */

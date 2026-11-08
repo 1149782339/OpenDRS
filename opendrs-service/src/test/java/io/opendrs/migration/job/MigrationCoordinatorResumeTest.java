@@ -11,6 +11,8 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import io.opendrs.engine.common.log.MigrationLogListener;
+import io.opendrs.engine.core.DataCheckParam;
+import io.opendrs.engine.core.DataCheckTask;
 import io.opendrs.engine.core.DataMigrationParam;
 import io.opendrs.engine.core.DataMigrationTask;
 import io.opendrs.engine.core.DataMigrationTaskPhase;
@@ -277,6 +279,11 @@ class MigrationCoordinatorResumeTest {
 
     /** Records the data param and hands out one blocking data handle. */
     static final class CapturingEngine implements MigrationEngine {
+
+        @Override
+        public DataCheckTask datacheck(DataCheckParam param) {
+            throw new UnsupportedOperationException("data check is not used in this test");
+        }
 
         final FakeRun run = new FakeRun();
         final AtomicReference<DataMigrationParam> capturedParam = new AtomicReference<>();

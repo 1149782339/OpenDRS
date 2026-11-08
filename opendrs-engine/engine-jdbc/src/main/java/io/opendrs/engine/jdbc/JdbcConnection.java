@@ -11,6 +11,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -368,6 +369,69 @@ public class JdbcConnection implements AutoCloseable {
 
     public boolean hasSchemaPrivilege(String schema) throws SQLException {
         throw new UnsupportedOperationException("hasSchemaPrivilege is not implemented for " + type);
+    }
+
+    /**
+     * Reads the column definitions and primary key of one table. Returns {@code null} when the
+     * table has no readable columns (typically: it does not exist).
+     */
+    public TableDefinition readTable(TableId tableId) throws SQLException {
+        if (tableId == null || tableId.getTable() == null) {
+            throw new IllegalArgumentException("tableId is required");
+        }
+        String normalizedSchema = normalize(tableId.getSchema());
+        String normalizedTable = normalize(tableId.getTable());
+        DatabaseMetaData metadata = connection().getMetaData();
+
+        List<ColumnDefinition> columns = new ArrayList<>();
+        try (ResultSet rs = metadata.getColumns(
+                catalog(normalizedSchema), schemaPattern(normalizedSchema), normalizedTable, null)) {
+            while (rs.next()) {
+                String name = rs.getString("COLUMN_NAME");
+                if (name == null) {
+                    continue;
+                }
+                Object digits = rs.getObject("DECIMAL_DIGITS");
+                java.util.Optional<Integer> scale =
+                        digits == null ? java.util.Optional.empty()
+                                : java.util.Optional.of(((Number) digits).intValue());
+                boolean generated = false;
+                try {
+                    generated = "YES".equalsIgnoreCase(rs.getString("IS_AUTOINCREMENT"));
+                } catch (SQLException ignored) {
+                    // some drivers do not expose IS_AUTOINCREMENT
+                }
+                columns.add(ColumnDefinition.builder()
+                        .name(name)
+                        .typeName(rs.getString("TYPE_NAME"))
+                        .jdbcType(rs.getInt("DATA_TYPE"))
+                        .length(rs.getInt("COLUMN_SIZE"))
+                        .scale(scale)
+                        .isGenerated(generated)
+                        .position(rs.getInt("ORDINAL_POSITION"))
+                        .build());
+            }
+        }
+        if (columns.isEmpty()) {
+            return null;
+        }
+        columns.sort(Comparator.comparingInt(ColumnDefinition::getPosition));
+
+        List<String> primaryKey = new ArrayList<>();
+        try (ResultSet rs = metadata.getPrimaryKeys(
+                catalog(normalizedSchema), schemaPattern(normalizedSchema), normalizedTable)) {
+            while (rs.next()) {
+                String name = rs.getString("COLUMN_NAME");
+                if (name != null) {
+                    primaryKey.add(name);
+                }
+            }
+        }
+        return TableDefinition.builder()
+                .tableId(tableId)
+                .columnDefinitions(List.copyOf(columns))
+                .primaryKeyColumNames(List.copyOf(primaryKey))
+                .build();
     }
 
     /**

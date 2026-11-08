@@ -10,6 +10,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import io.opendrs.engine.common.metadata.DatabaseType;
+import io.opendrs.engine.core.DataCheckParam;
+import io.opendrs.engine.core.DataCheckTask;
 import io.opendrs.engine.core.DataMigrationParam;
 import io.opendrs.engine.core.DataMigrationTask;
 import io.opendrs.engine.core.DataMigrationTaskPhase;
@@ -327,6 +329,11 @@ class MigrationCoordinatorTest {
 
     /** Stands in for the engine: one immediate schema handle and one blocking data handle. */
     static final class FakeMigrationEngine implements MigrationEngine {
+
+        @Override
+        public DataCheckTask datacheck(DataCheckParam param) {
+            throw new UnsupportedOperationException("data check is not used in this test");
+        }
 
         final FakeRun run = new FakeRun();
         final AtomicInteger schemaCount = new AtomicInteger();

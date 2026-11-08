@@ -11,7 +11,7 @@ import io.opendrs.engine.jdbc.JdbcConnectionConfig;
  * selection whose include lists are all empty.
  */
 public sealed interface MigrationParam
-        permits SchemaMigrationParam, DataMigrationParam, PrecheckParam {
+        permits SchemaMigrationParam, DataMigrationParam, PrecheckParam, DataCheckParam {
 
     JdbcConnectionConfig source();
 

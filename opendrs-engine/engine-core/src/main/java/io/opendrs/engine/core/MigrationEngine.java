@@ -34,4 +34,7 @@ public interface MigrationEngine {
 
     /** Expands the selection and runs the direction's precheck checklist. */
     PrecheckTask precheck(PrecheckParam param);
+
+    /** Compares the serialized rows of the selected tables between source and target. */
+    DataCheckTask datacheck(DataCheckParam param);
 }
