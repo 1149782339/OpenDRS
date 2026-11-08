@@ -64,6 +64,16 @@ public class MySqlConnection extends JdbcConnection {
     static Properties connectProperties(JdbcConnectionConfig config) {
         Properties props = JdbcConnection.properties(config);
         props.setProperty("connectTimeout", "5000");
+        // MySQL TIMESTAMP has no offset on the wire. Connector/J otherwise interprets the
+        // server's literal in the JVM time zone (connectionTimeZone=LOCAL), which shifts the
+        // instant by the process/server offset — an Asia/Shanghai JVM against a UTC server
+        // reads 2024-01-01 10:00 as 02:00Z. Pin the session and the driver to UTC so TIMESTAMP
+        // reads are absolute instants, matching what PostgreSQL timestamptz returns.
+        // An explicit endpoint serverTimezone still wins.
+        if (config.extra("serverTimezone") == null) {
+            props.setProperty("connectionTimeZone", "UTC");
+            props.setProperty("forceConnectionTimeZoneToSession", "true");
+        }
         copyBooleanProperty(config, "useSsl", props, "useSSL");
         copyProperty(config, "serverTimezone", props, "serverTimezone");
         copyBooleanProperty(config, "allowPublicKeyRetrieval", props, "allowPublicKeyRetrieval");

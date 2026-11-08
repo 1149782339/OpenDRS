@@ -72,6 +72,19 @@ class ConnectionUrlTest {
 
         assertNull(props.getProperty("useSSL"));
         assertNull(props.getProperty("serverTimezone"));
+        // TIMESTAMP values are absolute instants: never let the JVM default shift them.
+        assertEquals("UTC", props.getProperty("connectionTimeZone"));
+        assertEquals("true", props.getProperty("forceConnectionTimeZoneToSession"));
+    }
+
+    @Test
+    void mysqlExplicitServerTimezoneWinsOverTheUtcDefault() {
+        Properties props = MySqlConnection.connectProperties(
+                mysql("hr", Map.of("serverTimezone", "Asia/Shanghai")));
+
+        assertEquals("Asia/Shanghai", props.getProperty("serverTimezone"));
+        assertNull(props.getProperty("connectionTimeZone"));
+        assertNull(props.getProperty("forceConnectionTimeZoneToSession"));
     }
 
     @Test
