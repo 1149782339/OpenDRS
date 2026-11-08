@@ -1,14 +1,14 @@
 package io.opendrs.datacheck.domain;
 
-/** Business phase of one check task, independent of the executor lifecycle. */
+/** Per-table business phase, independent of the executor lifecycle. */
 public enum DataCheckPhase {
 
-    /** Task row exists, nothing has run yet. */
-    CREATED,
+    /** The table has not started yet. */
+    PENDING,
 
     /** Full comparison is running. */
     FULL,
 
-    /** Full comparison finished and the check is following the change stream. */
+    /** Full comparison finished and the table is following the change stream. */
     INCREMENTAL
 }

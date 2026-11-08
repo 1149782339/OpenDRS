@@ -163,22 +163,18 @@ public class DefaultMigrationEngine implements MigrationEngine {
 
     @Override
     public DataCheckTask datacheck(DataCheckParam param) {
-        TableSelection selection = selection(param.selection());
-        DefaultDataCheckTask task = new DefaultDataCheckTask(
-                stop -> runDataCheck(param, selection, stop));
+        DefaultDataCheckTask task = new DefaultDataCheckTask(stop -> runDataCheck(param, stop));
         task.start(executor);
         return task;
     }
 
-    private void runDataCheck(
-            DataCheckParam param, TableSelection selection, BooleanSupplier stopRequested) {
-        List<TableId> sourceTables = expand(param.source(), selection);
-        List<TableId> targetTables = mappingValidator.mapTargets(selection, sourceTables);
+    private void runDataCheck(DataCheckParam param, BooleanSupplier stopRequested) {
         // The engine-level param and the datacheck-level param share their simple name but live in
-        // different modules; this local one carries the resolved table pairs.
+        // different modules; this local one carries the single table pair.
         io.opendrs.engine.datacheck.DataCheckParam request =
                 new io.opendrs.engine.datacheck.DataCheckParam(
-                        param.source(), param.target(), sourceTables, targetTables,
+                        param.source(), param.target(),
+                        param.sourceTable(), param.targetTable(),
                         param.includeFloat(), param.logListener());
         try (JdbcConnection metadata = new JdbcConnection(
                 DatabaseType.MYSQL, null, cfg -> metadataDataSource.getConnection())) {

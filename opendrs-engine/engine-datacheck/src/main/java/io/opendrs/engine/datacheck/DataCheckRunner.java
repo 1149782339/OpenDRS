@@ -47,13 +47,7 @@ public final class DataCheckRunner {
 
     public void run(
             DataCheckParam param, InconsistentRowStore store, BooleanSupplier stopRequested) {
-        for (int i = 0; i < param.sourceTables().size(); i++) {
-            if (stopRequested.getAsBoolean()) {
-                return;
-            }
-            checkTable(param, store,
-                    param.sourceTables().get(i), param.targetTables().get(i), stopRequested);
-        }
+        checkTable(param, store, param.sourceTable(), param.targetTable(), stopRequested);
     }
 
     private void checkTable(

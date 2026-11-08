@@ -1,9 +1,7 @@
 package io.opendrs.datacheck.api.response;
 
 import io.opendrs.datacheck.api.request.DataCheckOptions;
-import io.opendrs.datacheck.api.request.SelectedTable;
 import io.opendrs.datacheck.domain.DataCheckMode;
-import io.opendrs.datacheck.domain.DataCheckPhase;
 import io.opendrs.engine.core.TaskState;
 import java.time.Instant;
 import java.util.List;
@@ -15,9 +13,8 @@ public record DataCheckTaskResponse(
         Long pipelineId,
         String name,
         DataCheckMode mode,
-        DataCheckPhase phase,
         TaskState state,
-        List<SelectedTable> tables,
+        List<CheckedTable> tables,
         DataCheckOptions options,
         Long lagMs,
         String errorMessage,
