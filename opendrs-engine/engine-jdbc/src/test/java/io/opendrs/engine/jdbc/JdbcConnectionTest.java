@@ -9,6 +9,7 @@ import static org.mockito.Mockito.CALLS_REAL_METHODS;
 import static org.mockito.Mockito.mock;
 
 import io.opendrs.engine.common.metadata.DatabaseType;
+import io.opendrs.engine.common.metadata.TableDefinition;
 import io.opendrs.engine.common.metadata.TableId;
 import java.sql.DriverManager;
 import java.util.List;
@@ -79,6 +80,46 @@ class JdbcConnectionTest {
         List<TableId> tables = conn.listTables("APP", List.of());
         Set<String> names = tables.stream().map(TableId::getTable).collect(Collectors.toSet());
         assertEquals(Set.of("EMP", "DEPT", "TMP_SKIP"), names);
+    }
+
+
+    @Test
+    void getTablesIsUnsupportedOnOracle() {
+        assertThrows(UnsupportedOperationException.class, () -> conn.getTables("APP"));
+    }
+
+    @Test
+    void getTablesReturnsColumnsAndPrimaryKeys() throws java.sql.SQLException {
+        JdbcConnection probe = new JdbcConnection(DatabaseType.ORACLE, config(), cfg -> raw) {
+            @Override
+            public List<TableDefinition> getTables(String schema) throws java.sql.SQLException {
+                if (schema == null || schema.isBlank()) {
+                    return List.of();
+                }
+                List<TableId> ids = listTables(schema, List.of());
+                List<TableDefinition> tables = new java.util.ArrayList<>(ids.size());
+                for (TableId id : ids) {
+                    tables.add(readTableDefinition(id));
+                }
+                return tables;
+            }
+        };
+        try {
+            assertEquals(List.of(), probe.getTables(null));
+            assertEquals(List.of(), probe.getTables(" "));
+            List<TableDefinition> tables = probe.getTables("APP");
+            assertEquals(3, tables.size());
+            TableDefinition emp = tables.stream()
+                    .filter(t -> "EMP".equals(t.getTableId().getTable()))
+                    .findFirst()
+                    .orElseThrow();
+            assertEquals(List.of("ID"), emp.getPrimaryKeyColumNames());
+            assertEquals(1, emp.getColumnDefinitions().size());
+            assertEquals("ID", emp.getColumnDefinitions().getFirst().getName());
+            assertEquals(1, emp.getColumnDefinitions().getFirst().getPosition());
+        } finally {
+            // do not close: shares raw with conn fixture
+        }
     }
 
     @Test

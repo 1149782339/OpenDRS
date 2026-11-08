@@ -114,6 +114,8 @@ public class MySqlConnection extends JdbcConnection {
         return super.tableSchema(rs);
     }
 
+
+
     @Override
     public boolean hasSchemaPrivilege(String schema) throws SQLException {
         if (schema == null || schema.isBlank()) {

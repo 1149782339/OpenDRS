@@ -80,6 +80,17 @@ public class PostgresConnection extends JdbcConnection {
         return ident.toLowerCase(Locale.ROOT);
     }
 
+
+    @Override
+    protected boolean isSystemSchema(String schema) {
+        if (schema == null || schema.isBlank()) {
+            return false;
+        }
+        String name = schema.toLowerCase(Locale.ROOT);
+        return name.startsWith("pg_") || "information_schema".equals(name);
+    }
+
+
     @Override
     public boolean hasSchemaPrivilege(String schema) throws SQLException {
         if (schema == null || schema.isBlank()) {

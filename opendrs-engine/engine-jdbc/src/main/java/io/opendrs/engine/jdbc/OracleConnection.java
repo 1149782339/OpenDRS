@@ -1,7 +1,9 @@
 package io.opendrs.engine.jdbc;
 
 import io.opendrs.engine.common.metadata.DatabaseType;
+import io.opendrs.engine.common.metadata.TableDefinition;
 import java.sql.SQLException;
+import java.util.List;
 import java.util.Locale;
 import java.util.Properties;
 import java.util.regex.Pattern;
@@ -59,6 +61,12 @@ public class OracleConnection extends JdbcConnection {
     @Override
     public void ping() throws SQLException {
         queryOne("SELECT 1 FROM DUAL", rs -> rs.getInt(1));
+    }
+
+
+    @Override
+    public List<TableDefinition> getTables(String schema) throws SQLException {
+        throw new UnsupportedOperationException("getTables is not implemented for " + type());
     }
 
     @Override

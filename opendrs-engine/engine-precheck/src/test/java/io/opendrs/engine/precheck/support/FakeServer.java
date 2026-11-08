@@ -1,6 +1,7 @@
 package io.opendrs.engine.precheck.support;
 
 import io.opendrs.engine.common.metadata.DatabaseType;
+import io.opendrs.engine.common.metadata.TableDefinition;
 import io.opendrs.engine.common.metadata.TableId;
 import io.opendrs.engine.jdbc.JdbcConnection;
 import io.opendrs.engine.jdbc.JdbcConnectionConfig;
@@ -192,6 +193,21 @@ public final class FakeServer {
             return existingTables.stream()
                     .filter(key -> schemaOf(key).equalsIgnoreCase(schema))
                     .map(key -> TableId.of(schemaOf(key), tableOf(key)))
+                    .toList();
+        }
+
+
+        @Override
+        public List<TableDefinition> getTables(String schema) {
+            if (schema == null || schema.isBlank()) {
+                return List.of();
+            }
+            return listTables(schema, List.of()).stream()
+                    .map(id -> TableDefinition.builder()
+                            .tableId(id)
+                            .columnDefinitions(List.of())
+                            .primaryKeyColumNames(List.of())
+                            .build())
                     .toList();
         }
 
