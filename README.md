@@ -193,7 +193,8 @@ Maven 多模块，`io.opendrs`：
   - `engine-replay` — JDBC 事务回放，PostgreSQL / MySQL 目标方言
   - `engine-precheck` — 规则化预检查（按 源→目标 类型匹配 profile）
   - `engine-core` — 编排与表选择/映射
-- `opendrs-service` — Spring Boot：任务状态机（`job_phase` 阶段 × `job_state` 状态）、异步预检、任务调度、监控指标、MyBatis + Flyway
+- `opendrs-migration-service` — Spring Boot：任务状态机（`job_phase` 阶段 × `job_state` 状态）、异步预检、任务调度、监控指标、MyBatis + Flyway
+- `opendrs-datacheck-service` — Spring Boot：数据校验编排与不一致行查询（默认端口 8082）
 - `opendrs-web` — Vue 3 + Element Plus + ECharts（非 Maven 模块，`npm run build` 产出由 nginx 挂载）
 - `opendrs-common` — 引擎向 service 汇报的进度回调
 

@@ -10,9 +10,9 @@
         <version>0.1.0-SNAPSHOT</version>
     </parent>
 
-    <artifactId>opendrs-service</artifactId>
-    <name>opendrs-service</name>
-    <description>OpenDRS Spring Boot service</description>
+    <artifactId>opendrs-migration-service</artifactId>
+    <name>opendrs-migration-service</name>
+    <description>OpenDRS migration service: tasks, precheck orchestration, scheduling and persistence</description>
 
     <dependencies>
         <dependency>

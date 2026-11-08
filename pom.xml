@@ -21,7 +21,8 @@
     <modules>
         <module>opendrs-common</module>
         <module>opendrs-engine</module>
-        <module>opendrs-service</module>
+        <module>opendrs-migration-service</module>
+        <module>opendrs-datacheck-service</module>
     </modules>
 
     <properties>

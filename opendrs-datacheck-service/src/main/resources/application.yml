@@ -1,0 +1,25 @@
+spring:
+  application:
+    name: opendrs-datacheck
+  messages:
+    basename: messages
+    encoding: UTF-8
+    fallback-to-system-locale: false
+    use-code-as-default-message: false
+  datasource:
+    # Same metadata database as the migration service: datacheck_result_<taskId> tables live here.
+    url: jdbc:mysql://${OPENDRS_DB_HOST:localhost}:${OPENDRS_DB_PORT:3306}/${OPENDRS_DB_NAME:opendrs}?useSSL=false&allowPublicKeyRetrieval=true&characterEncoding=utf8
+    username: ${OPENDRS_DB_USER:opendrs}
+    password: ${OPENDRS_DB_PASSWORD:opendrs}
+
+server:
+  port: ${OPENDRS_DATACHECK_PORT:8082}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, prometheus
+  endpoint:
+    prometheus:
+      enabled: true
