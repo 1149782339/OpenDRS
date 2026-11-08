@@ -8,8 +8,6 @@ import io.opendrs.common.metadata.TableId;
 import io.opendrs.engine.capture.DebeziumEngineConfig.EngineSpec;
 import io.opendrs.common.selection.TableSelection;
 import io.opendrs.jdbc.JdbcConnectionConfig;
-import io.opendrs.jdbc.metadata.Table;
-import io.opendrs.jdbc.metadata.TableRef;
 import java.util.List;
 import java.util.Properties;
 import org.junit.jupiter.api.Test;
@@ -240,7 +238,7 @@ class DebeziumEngineConfigTest {
                 .build();
     }
 
-    private static List<Table> tables() {
-        return List.of(new Table(new TableRef("hr", "emp")), new Table(new TableRef("hr", "dept")));
+    private static List<TableId> tables() {
+        return List.of(TableId.of("hr", "emp"), TableId.of("hr", "dept"));
     }
 }

@@ -1,6 +1,6 @@
 package io.opendrs.engine.core;
 
-import io.opendrs.jdbc.metadata.Table;
+import io.opendrs.common.metadata.TableId;
 import java.util.List;
 
 /**
@@ -10,5 +10,5 @@ import java.util.List;
  * @param created target coordinates of the objects this run executed successfully
  * @param skipped target coordinates of the objects skipped because they already existed
  */
-record SchemaMigrationOutcome(List<Table> created, List<Table> skipped) {
+record SchemaMigrationOutcome(List<TableId> created, List<TableId> skipped) {
 }

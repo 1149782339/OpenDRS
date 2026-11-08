@@ -45,7 +45,7 @@ class MigrationEngineTest {
         jdbcConnection = mock(JdbcConnection.class);
         connection = mock(Connection.class);
         when(factory.open(any())).thenReturn(jdbcConnection);
-        when(jdbcConnection.unwrap()).thenReturn(connection);
+        when(jdbcConnection.connection()).thenReturn(connection);
     }
 
     @Test

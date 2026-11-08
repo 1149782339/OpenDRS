@@ -4,8 +4,6 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.opendrs.engine.core.DefaultMigrationEngine;
 import io.opendrs.engine.core.MigrationEngine;
 import io.opendrs.jdbc.JdbcConnectionFactory;
-import io.opendrs.jdbc.dialect.MysqlDialect;
-import io.opendrs.jdbc.dialect.PostgresDialect;
 import io.opendrs.engine.replay.mapping.MappingValidator;
 import io.opendrs.migration.metrics.MicrometerReplayMetrics;
 import io.opendrs.migration.service.JdbcFullLoadCheckpointListener;
@@ -36,15 +34,11 @@ public class CaptureConfig {
     @Bean(destroyMethod = "close")
     public MigrationEngine migrationEngine(
             JdbcConnectionFactory connectionFactory,
-            MysqlDialect mysqlDialect,
-            PostgresDialect postgresDialect,
             DataSource dataSource,
             MeterRegistry meterRegistry,
             JdbcFullLoadCheckpointListener fullLoadCheckpointListener) {
         return new DefaultMigrationEngine(
                 connectionFactory,
-                mysqlDialect,
-                postgresDialect,
                 dataSource,
                 new MicrometerReplayMetrics(meterRegistry),
                 fullLoadCheckpointListener);

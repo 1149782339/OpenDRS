@@ -208,7 +208,7 @@ public class DebeziumCdcEngineFactory implements CdcEngineFactory {
         ReplayConfig.Builder configBuilder = ReplayConfig.builder()
                 // Stateless provider: every call opens a fresh physical connection, so each
                 // parallel applier worker (via its own JdbcConnection) gets its own connection.
-                .connectionProvider(() -> connectionFactory.open(spec.target()).unwrap())
+                .connectionProvider(() -> connectionFactory.open(spec.target()).connection())
                 .tableNamingStrategy(specTableNaming(spec))
                 .columnNamingStrategy(new DefaultColumnNamingStrategy())
                 .applyDdlEnabled(true)

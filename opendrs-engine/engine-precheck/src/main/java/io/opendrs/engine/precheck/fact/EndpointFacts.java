@@ -8,8 +8,8 @@ import io.opendrs.jdbc.JdbcConnection;
 import io.opendrs.jdbc.JdbcConnectionConfig;
 import io.opendrs.jdbc.JdbcConnectionFactory;
 import io.opendrs.jdbc.JdbcException;
-import io.opendrs.jdbc.metadata.Table;
-import io.opendrs.jdbc.metadata.TableRef;
+import io.opendrs.common.metadata.TableId;
+import java.sql.SQLException;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -36,7 +36,7 @@ public abstract class EndpointFacts implements AutoCloseable {
     private DependencyUnavailableException unavailable;
     private ServerVersion version;
     private Map<String, String> parameters;
-    private Map<TableRef, TableFacts> tableFacts;
+    private Map<TableId, TableFacts> tableFacts;
 
     protected EndpointFacts(Side side, JdbcConnectionConfig config, JdbcConnectionFactory factory) {
         this.side = side;
@@ -81,7 +81,7 @@ public abstract class EndpointFacts implements AutoCloseable {
         if (version == null) {
             String raw;
             try {
-                raw = connection().unwrap().getMetaData().getDatabaseProductVersion();
+                raw = connection().connection().getMetaData().getDatabaseProductVersion();
             } catch (java.sql.SQLException ex) {
                 throw new JdbcException("读取数据库版本失败: " + ex.getMessage(), ex);
             }
@@ -93,55 +93,85 @@ public abstract class EndpointFacts implements AutoCloseable {
     /** Server parameters, keys lower-cased so lookups do not depend on the product's casing. */
     public final Map<String, String> parameters() {
         if (parameters == null) {
-            parameters = Map.copyOf(loadParameters(connection()));
+            try {
+                parameters = Map.copyOf(loadParameters(connection()));
+            } catch (SQLException ex) {
+                throw readFailed("读取服务端参数", ex);
+            }
         }
         return parameters;
     }
 
     public final CharsetInfo charset() {
-        return loadCharset(connection());
+        try {
+            return loadCharset(connection());
+        } catch (SQLException ex) {
+            throw readFailed("读取字符集", ex);
+        }
     }
 
     public final TimezoneInfo timezone() {
-        return loadTimezone(connection());
+        try {
+            return loadTimezone(connection());
+        } catch (SQLException ex) {
+            throw readFailed("读取时区", ex);
+        }
     }
 
     public final InstanceState instanceState() {
-        return loadInstanceState(connection());
+        try {
+            return loadInstanceState(connection());
+        } catch (SQLException ex) {
+            throw readFailed("读取实例状态", ex);
+        }
     }
 
     /** Required privileges that are not granted globally or on every one of {@code schemas}. */
     public final List<String> missingPermissions(Collection<String> schemas, List<String> required) {
-        return loadMissingPermissions(connection(), schemas, required);
+        try {
+            return loadMissingPermissions(connection(), schemas, required);
+        } catch (SQLException ex) {
+            throw readFailed("读取权限", ex);
+        }
     }
 
     /** Bulk table metadata for the given tables; loaded once, then served from the cache. */
-    public final Map<TableRef, TableFacts> tableFacts(Collection<Table> tables) {
+    public final Map<TableId, TableFacts> tableFacts(Collection<TableId> tables) {
         if (tableFacts == null) {
-            Map<TableRef, TableFacts> loaded = new LinkedHashMap<>();
-            loadTableFacts(connection(), tables, loaded);
-            for (Table table : tables) {
-                loaded.putIfAbsent(table.ref(), TableFacts.missing(table.ref()));
+            Map<TableId, TableFacts> loaded = new LinkedHashMap<>();
+            try {
+                loadTableFacts(connection(), tables, loaded);
+            } catch (SQLException ex) {
+                throw readFailed("读取表元数据", ex);
+            }
+            for (TableId id : tables) {
+                loaded.putIfAbsent(id, TableFacts.missing(id));
             }
             tableFacts = Map.copyOf(loaded);
         }
         return tableFacts;
     }
 
-    protected abstract Map<String, String> loadParameters(JdbcConnection conn);
+    private static JdbcException readFailed(String what, SQLException ex) {
+        return new JdbcException(what + "失败: " + ex.getMessage(), ex);
+    }
 
-    protected abstract CharsetInfo loadCharset(JdbcConnection conn);
+    protected abstract Map<String, String> loadParameters(JdbcConnection conn) throws SQLException;
 
-    protected abstract TimezoneInfo loadTimezone(JdbcConnection conn);
+    protected abstract CharsetInfo loadCharset(JdbcConnection conn) throws SQLException;
 
-    protected abstract InstanceState loadInstanceState(JdbcConnection conn);
+    protected abstract TimezoneInfo loadTimezone(JdbcConnection conn) throws SQLException;
+
+    protected abstract InstanceState loadInstanceState(JdbcConnection conn) throws SQLException;
 
     protected abstract List<String> loadMissingPermissions(
-            JdbcConnection conn, Collection<String> schemas, List<String> required);
+            JdbcConnection conn, Collection<String> schemas, List<String> required)
+            throws SQLException;
 
     /** Fills {@code out} for the tables that actually exist; the base class marks the rest missing. */
     protected abstract void loadTableFacts(
-            JdbcConnection conn, Collection<Table> tables, Map<TableRef, TableFacts> out);
+            JdbcConnection conn, Collection<TableId> tables, Map<TableId, TableFacts> out)
+            throws SQLException;
 
     /** Shared helper: {@code schema.table} key, lower-cased for products that fold identifiers. */
     protected static String key(String schema, String table) {

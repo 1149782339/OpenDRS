@@ -32,7 +32,7 @@ import io.opendrs.engine.replay.exception.ApplierException;
 import io.opendrs.engine.replay.jdbc.StatementBinder;
 import io.opendrs.engine.replay.metrics.ReplayMetrics;
 import io.opendrs.engine.replay.relation.FieldsMetaData;
-import io.opendrs.engine.replay.relation.TableDefinition;
+import io.opendrs.common.metadata.TableDefinition;
 import io.opendrs.engine.replay.relation.TableDefinitions;
 import io.opendrs.common.metadata.TableId;
 import io.opendrs.engine.replay.sql.SQLState;

@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import io.opendrs.common.metadata.DatabaseType;
@@ -14,9 +15,6 @@ import io.opendrs.common.selection.TableSelection;
 import io.opendrs.jdbc.JdbcConnection;
 import io.opendrs.jdbc.JdbcConnectionConfig;
 import io.opendrs.jdbc.JdbcConnectionFactory;
-import io.opendrs.jdbc.dialect.DbDialect;
-import io.opendrs.jdbc.metadata.Table;
-import io.opendrs.jdbc.metadata.TableRef;
 import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -28,7 +26,6 @@ class TableSelectionExpanderTest {
 
     private JdbcConnectionFactory factory;
     private JdbcConnection conn;
-    private DbDialect dialect;
     private TableSelectionExpander expander;
     private JdbcConnectionConfig source;
 
@@ -36,7 +33,6 @@ class TableSelectionExpanderTest {
     void setUp() {
         factory = Mockito.mock(JdbcConnectionFactory.class);
         conn = Mockito.mock(JdbcConnection.class);
-        dialect = Mockito.mock(DbDialect.class);
         when(factory.open(any(JdbcConnectionConfig.class))).thenReturn(conn);
         expander = new TableSelectionExpander(factory);
         source = JdbcConnectionConfig.builder()
@@ -48,7 +44,7 @@ class TableSelectionExpanderTest {
     }
 
     @Test
-    void explicitTablesSkipJdbcAndHonorExclude() {
+    void explicitTablesSkipJdbcAndHonorExclude() throws Exception {
         TableSelection selection = new TableSelection(
                 null,
                 List.of(table("hr", "emp"), table("hr", "dept"), table("hr", "tmp_skip")),
@@ -56,19 +52,19 @@ class TableSelectionExpanderTest {
                 List.of(table("hr", "tmp_skip")),
                 null);
 
-        List<Table> tables = expander.expand(source, selection, dialect);
+        List<TableId> tables = expander.expand(source, selection);
         assertEquals(Set.of("emp", "dept"), names(tables));
-        Mockito.verifyNoInteractions(factory);
-        Mockito.verifyNoInteractions(dialect);
+        verifyNoInteractions(factory);
+        verifyNoInteractions(conn);
     }
 
     @Test
-    void wholeSchemaListsLiveTablesAndSubtractsExcludes() {
-        when(dialect.listTables(eq(conn), eq("hr"), any()))
+    void wholeSchemaListsLiveTablesAndSubtractsExcludes() throws Exception {
+        when(conn.listTables(eq("hr"), any()))
                 .thenReturn(List.of(
-                        new Table(new TableRef("hr", "emp")),
-                        new Table(new TableRef("hr", "dept")),
-                        new Table(new TableRef("hr", "tmp_skip"))));
+                        TableId.of("hr", "emp"),
+                        TableId.of("hr", "dept"),
+                        TableId.of("hr", "tmp_skip")));
 
         TableSelection selection = new TableSelection(
                 List.of("hr"),
@@ -77,51 +73,48 @@ class TableSelectionExpanderTest {
                 List.of(table("hr", "dept"), table("hr", "tmp_skip")),
                 null);
 
-        List<Table> tables = expander.expand(source, selection, dialect);
+        List<TableId> tables = expander.expand(source, selection);
         assertEquals(Set.of("emp"), names(tables));
         // Excludes are applied after listing: one rule for both shapes.
-        verify(dialect).listTables(eq(conn), eq("hr"), eq(List.of()));
+        verify(conn).listTables(eq("hr"), eq(List.of()));
     }
 
     @Test
-    void everythingModeListsEverySchemaTheDialectReports() {
-        when(dialect.listSchemas(conn)).thenReturn(List.of("hr", "sales"));
-        when(dialect.listTables(eq(conn), eq("hr"), any()))
-                .thenReturn(List.of(new Table(new TableRef("hr", "emp"))));
-        when(dialect.listTables(eq(conn), eq("sales"), any()))
-                .thenReturn(List.of(new Table(new TableRef("sales", "orders"))));
+    void everythingModeListsEverySchemaTheConnectionReports() throws Exception {
+        when(conn.listSchemas()).thenReturn(List.of("hr", "sales"));
+        when(conn.listTables(eq("hr"), any())).thenReturn(List.of(TableId.of("hr", "emp")));
+        when(conn.listTables(eq("sales"), any())).thenReturn(List.of(TableId.of("sales", "orders")));
 
-        List<Table> tables = expander.expand(source, TableSelection.all(), dialect);
+        List<TableId> tables = expander.expand(source, TableSelection.all());
         assertEquals(Set.of("emp", "orders"), names(tables));
         assertEquals(Set.of("hr", "sales"), schemas(tables));
     }
 
     @Test
-    void everythingModeSkipsExcludedSchemas() {
-        when(dialect.listSchemas(conn)).thenReturn(List.of("hr", "sales"));
-        when(dialect.listTables(eq(conn), eq("hr"), any()))
-                .thenReturn(List.of(new Table(new TableRef("hr", "emp"))));
+    void everythingModeSkipsExcludedSchemas() throws Exception {
+        when(conn.listSchemas()).thenReturn(List.of("hr", "sales"));
+        when(conn.listTables(eq("hr"), any())).thenReturn(List.of(TableId.of("hr", "emp")));
 
         TableSelection selection = new TableSelection(null, null, List.of("sales"), null, null);
 
-        List<Table> tables = expander.expand(source, selection, dialect);
+        List<TableId> tables = expander.expand(source, selection);
         assertEquals(Set.of("emp"), names(tables));
-        verify(dialect, never()).listTables(eq(conn), eq("sales"), any());
+        verify(conn, never()).listTables(eq("sales"), any());
     }
 
     @Test
-    void nullSelectionMeansEverything() {
-        when(dialect.listSchemas(conn)).thenReturn(List.of("hr"));
-        when(dialect.listTables(eq(conn), eq("hr"), any()))
-                .thenReturn(List.of(new Table(new TableRef("hr", "emp"))));
+    void nullSelectionMeansEverything() throws Exception {
+        when(conn.listSchemas()).thenReturn(List.of("hr"));
+        when(conn.listTables(eq("hr"), any())).thenReturn(List.of(TableId.of("hr", "emp")));
 
-        List<Table> tables = expander.expand(source, null, dialect);
+        List<TableId> tables = expander.expand(source, null);
         assertEquals(Set.of("emp"), names(tables));
     }
 
     @Test
     void expandExplicitCoversNamedTablesOnly() {
-        assertTrue(expander.expandExplicit(new TableSelection(List.of("hr"), null, null, null, null)).isEmpty());
+        assertTrue(expander.expandExplicit(
+                new TableSelection(List.of("hr"), null, null, null, null)).isEmpty());
         assertTrue(expander.expandExplicit(TableSelection.all()).isEmpty());
 
         TableSelection named = new TableSelection(
@@ -130,13 +123,13 @@ class TableSelectionExpanderTest {
                 null,
                 List.of(table("sales", "skip")),
                 null);
-        List<Table> tables = expander.expandExplicit(named);
+        List<TableId> tables = expander.expandExplicit(named);
         assertEquals(Set.of("orders"), names(tables));
-        assertEquals("sales", tables.getFirst().ref().schema());
+        assertEquals("sales", tables.getFirst().getSchema());
     }
 
     @Test
-    void explicitSelectionIgnoresTheExcludedSchema() {
+    void explicitSelectionIgnoresTheExcludedSchema() throws Exception {
         TableSelection selection = new TableSelection(
                 null,
                 List.of(table("hr", "emp"), table("tmp", "x")),
@@ -144,20 +137,20 @@ class TableSelectionExpanderTest {
                 null,
                 null);
 
-        List<Table> tables = expander.expand(source, selection, dialect);
+        List<TableId> tables = expander.expand(source, selection);
         assertEquals(Set.of("emp"), names(tables));
-        Mockito.verifyNoInteractions(factory);
+        verifyNoInteractions(factory);
     }
 
     private static TableId table(String schema, String table) {
         return TableId.of(schema, table);
     }
 
-    private static Set<String> names(List<Table> tables) {
-        return tables.stream().map(table -> table.ref().table()).collect(Collectors.toSet());
+    private static Set<String> names(List<TableId> tables) {
+        return tables.stream().map(TableId::getTable).collect(Collectors.toSet());
     }
 
-    private static Set<String> schemas(List<Table> tables) {
-        return tables.stream().map(table -> table.ref().schema()).collect(Collectors.toSet());
+    private static Set<String> schemas(List<TableId> tables) {
+        return tables.stream().map(TableId::getSchema).collect(Collectors.toSet());
     }
 }

@@ -9,8 +9,7 @@ import io.opendrs.common.metadata.DatabaseType;
 import io.opendrs.engine.precheck.fact.FactStore;
 import io.opendrs.engine.precheck.profile.MysqlBidirectionalProfile;
 import io.opendrs.engine.precheck.support.FakeServer;
-import io.opendrs.jdbc.metadata.Table;
-import io.opendrs.jdbc.metadata.TableRef;
+import io.opendrs.common.metadata.TableId;
 import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
@@ -27,9 +26,9 @@ import org.junit.jupiter.api.Test;
  */
 class MysqlBidirectionalPrecheckTest {
 
-    private static final List<Table> DEFAULT_TABLES = List.of(
-            new Table(new TableRef("hr", "emp")),
-            new Table(new TableRef("hr", "dept")));
+    private static final List<TableId> DEFAULT_TABLES = List.of(
+            TableId.of("hr", "emp"),
+            TableId.of("hr", "dept"));
 
     private final List<PrecheckResults> published = new ArrayList<>();
     private PrecheckResults results;

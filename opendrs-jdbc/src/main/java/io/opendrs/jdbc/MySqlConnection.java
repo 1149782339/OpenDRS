@@ -1,14 +1,10 @@
-package io.opendrs.jdbc.dialect;
+package io.opendrs.jdbc;
 
-import io.opendrs.jdbc.JdbcConnection;
-import io.opendrs.jdbc.JdbcUrlBuilder;
-import io.opendrs.jdbc.JdbcConnectionConfig;
 import io.opendrs.common.metadata.DatabaseType;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
 import java.util.TreeSet;
@@ -20,7 +16,15 @@ import java.util.TreeSet;
  * <p>{@link #hasSchemaPrivilege} reads {@code information_schema.USER_PRIVILEGES} (global {@code *.*})
  * and {@code SCHEMA_PRIVILEGES} (that database or {@code %}). No SHOW GRANTS parsing and no DDL probes.
  */
-public class MysqlDialect extends AbstractDbDialect {
+public class MySqlConnection extends JdbcConnection {
+
+    static final String URL_PATTERN =
+            "jdbc:mysql://${" + HOSTNAME + "}:${" + PORT + "}/${" + DATABASE + "}";
+
+    private static final Field PORT_FIELD = Field.of(PORT, "3306");
+
+    private static final ConnectionFactory FACTORY =
+            patternBasedFactory(URL_PATTERN, MySqlConnection::connectProperties, PORT_FIELD);
 
     /**
      * GRANTEE in information_schema is {@code 'user'@'host'}; CURRENT_USER() is {@code user@host}.
@@ -45,8 +49,25 @@ public class MysqlDialect extends AbstractDbDialect {
     static final Set<String> SYSTEM_SCHEMAS =
             Set.of("mysql", "performance_schema", "sys", "information_schema");
 
-    public MysqlDialect() {
-        super(DatabaseType.MYSQL);
+    public MySqlConnection(JdbcConnectionConfig config) {
+        super(DatabaseType.MYSQL, config, FACTORY);
+    }
+
+    MySqlConnection(JdbcConnectionConfig config, ConnectionFactory factory) {
+        super(DatabaseType.MYSQL, config, factory);
+    }
+
+    /**
+     * Optional URL settings are sent as driver properties, which keeps {@link #URL_PATTERN} a
+     * constant (the same split Debezium uses: template for the address, properties for the rest).
+     */
+    static Properties connectProperties(JdbcConnectionConfig config) {
+        Properties props = JdbcConnection.properties(config);
+        props.setProperty("connectTimeout", "5000");
+        copyBooleanProperty(config, "useSsl", props, "useSSL");
+        copyProperty(config, "serverTimezone", props, "serverTimezone");
+        copyBooleanProperty(config, "allowPublicKeyRetrieval", props, "allowPublicKeyRetrieval");
+        return props;
     }
 
     /**
@@ -54,9 +75,9 @@ public class MysqlDialect extends AbstractDbDialect {
      * connected user can see, and it is the same source Debezium reads.
      */
     @Override
-    public List<String> listSchemas(JdbcConnection conn) {
+    public List<String> listSchemas() throws SQLException {
         Set<String> names = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
-        for (String name : conn.queryList("SHOW DATABASES", rs -> rs.getString(1))) {
+        for (String name : queryList("SHOW DATABASES", rs -> rs.getString(1))) {
             if (name != null && !name.isBlank() && !isSystemSchema(name)) {
                 names.add(name);
             }
@@ -67,19 +88,6 @@ public class MysqlDialect extends AbstractDbDialect {
     @Override
     protected boolean isSystemSchema(String schema) {
         return schema != null && SYSTEM_SCHEMAS.contains(schema.toLowerCase(Locale.ROOT));
-    }
-
-    @Override
-    public void applyConnectProperties(Properties props) {
-        props.setProperty("connectTimeout", "5000");
-    }
-
-    private static boolean asBoolean(Object value) {
-        if (value instanceof Boolean bool) {
-            return bool;
-        }
-        String text = String.valueOf(value).trim().toLowerCase(Locale.ROOT);
-        return "true".equals(text) || "1".equals(text);
     }
 
     @Override
@@ -107,18 +115,18 @@ public class MysqlDialect extends AbstractDbDialect {
     }
 
     @Override
-    public boolean hasSchemaPrivilege(JdbcConnection conn, String schema) {
+    public boolean hasSchemaPrivilege(String schema) throws SQLException {
         if (schema == null || schema.isBlank()) {
             return false;
         }
         try {
-            if (conn.queryOne(GLOBAL_CREATE_SQL, rs -> rs.getString(1)) != null) {
+            if (queryOne(GLOBAL_CREATE_SQL, rs -> rs.getString(1)) != null) {
                 return true;
             }
             List<String> schemaPrivileges =
-                    conn.queryList(SCHEMA_CREATE_SQL, rs -> rs.getString(1), schema);
+                    queryList(SCHEMA_CREATE_SQL, rs -> rs.getString(1), schema);
             return schemaPrivileges != null && !schemaPrivileges.isEmpty();
-        } catch (RuntimeException ex) {
+        } catch (SQLException ex) {
             return false;
         }
     }

@@ -3,9 +3,9 @@ package io.opendrs.engine.replay.jdbc;
 import io.opendrs.engine.replay.filter.ColumnFilter;
 import io.opendrs.engine.replay.dialect.CommonDatabaseDialect;
 import io.opendrs.engine.replay.event.DataChangeEvent;
-import io.opendrs.engine.replay.relation.ColumnDefinition;
+import io.opendrs.common.metadata.ColumnDefinition;
 import io.opendrs.engine.replay.relation.FieldsMetaData;
-import io.opendrs.engine.replay.relation.TableDefinition;
+import io.opendrs.common.metadata.TableDefinition;
 import org.apache.kafka.connect.data.Schema;
 
 import java.sql.PreparedStatement;

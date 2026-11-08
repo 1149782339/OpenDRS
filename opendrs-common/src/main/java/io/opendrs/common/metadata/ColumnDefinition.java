@@ -1,9 +1,4 @@
-package io.opendrs.engine.replay.relation;
-
-import io.opendrs.engine.replay.sql.ExpressibleObject;
-import io.opendrs.common.util.StringUtil;
-import io.opendrs.engine.replay.sql.ExpressionBuilder;
-import io.opendrs.engine.replay.sql.IdentifierRule;
+package io.opendrs.common.metadata;
 
 import java.util.Optional;
 
@@ -11,7 +6,7 @@ import java.util.Optional;
  * Column definition
  *
  */
-public class ColumnDefinition implements ExpressibleObject {
+public class ColumnDefinition {
     /**
      * Column name
      */
@@ -102,18 +97,6 @@ public class ColumnDefinition implements ExpressibleObject {
      */
     public int getPosition() {
         return position;
-    }
-
-    /**
-     * Append to expression builder, column should be quoted with the quoteString
-     *
-     * @param builder expression builder {@link ExpressionBuilder}
-     */
-    @Override
-    public void append(ExpressionBuilder builder) {
-        final IdentifierRule rule = builder.getIdentifierRule();
-        final String quoteString = rule.getQuoteString();
-        builder.append(StringUtil.quote(name, quoteString));
     }
 
     @Override

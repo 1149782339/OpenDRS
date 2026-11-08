@@ -1,8 +1,8 @@
 package io.opendrs.engine.capture;
 
 import io.opendrs.common.metadata.DatabaseType;
+import io.opendrs.jdbc.JdbcConnection;
 import io.opendrs.jdbc.JdbcConnectionConfig;
-import io.opendrs.jdbc.JdbcUrlBuilder;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
@@ -27,17 +27,17 @@ public final class DebeziumSourceFields {
         fields.put("database.password", config.getPassword() == null ? "" : config.getPassword());
         fields.put("database.dbname", config.getDatabase());
         if (config.getType() == DatabaseType.MYSQL) {
-            String useSsl = JdbcUrlBuilder.extraString(config, "useSsl");
+            String useSsl = JdbcConnection.extraString(config,"useSsl");
             if (useSsl != null && !useSsl.isBlank()) {
                 fields.put("database.ssl.mode", asBoolean(useSsl) ? "required" : "disabled");
             }
-            String serverTimezone = JdbcUrlBuilder.extraString(config, "serverTimezone");
+            String serverTimezone = JdbcConnection.extraString(config,"serverTimezone");
             if (serverTimezone != null && !serverTimezone.isBlank()) {
                 fields.put("database.connectionTimeZone", serverTimezone);
             }
             // Same caching_sha2_password public-key problem as the plain JDBC URL: on non-SSL
             // connections the driver must be allowed to ask the server for its public key.
-            String allowPublicKeyRetrieval = JdbcUrlBuilder.extraString(config, "allowPublicKeyRetrieval");
+            String allowPublicKeyRetrieval = JdbcConnection.extraString(config,"allowPublicKeyRetrieval");
             if (allowPublicKeyRetrieval != null && !allowPublicKeyRetrieval.isBlank()) {
                 fields.put("database.allowPublicKeyRetrieval", String.valueOf(asBoolean(allowPublicKeyRetrieval)));
             }

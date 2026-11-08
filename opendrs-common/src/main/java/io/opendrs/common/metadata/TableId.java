@@ -75,17 +75,37 @@ public class TableId {
         return id;
     }
 
+    /**
+     * The single namespace level a table belongs to: the schema when the driver has one, otherwise
+     * the catalog. MySQL reports the database as the catalog and has no schema; PostgreSQL and
+     * Oracle report it as the schema. Comparing this level makes the two spellings equal.
+     */
+    private String namespace() {
+        if (schema != null && !schema.isEmpty()) {
+            return schema;
+        }
+        return catalog != null && !catalog.isEmpty() ? catalog : null;
+    }
+
+    /**
+     * Two identifiers are equal when they name the same {@code namespace.table}. The catalog is
+     * ignored when a schema is present, so a three-part spelling from a Debezium source event
+     * ({@code database.owner.table}) equals the two-part selection spelling ({@code owner.table}).
+     *
+     * <p>Table names are compared as-is: a quoted name containing a dot stays distinct from a
+     * schema+table split that renders the same way.
+     */
     @Override
     public boolean equals(Object o) {
-        if (this == o) return true;
-        if (o == null || getClass() != o.getClass()) return false;
-        TableId tableId = (TableId) o;
-        return Objects.equals(catalog, tableId.catalog) && Objects.equals(schema, tableId.schema) && table.equals(tableId.table);
+        if (!(o instanceof TableId other)) {
+            return false;
+        }
+        return Objects.equals(namespace(), other.namespace()) && Objects.equals(table, other.table);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(catalog, schema, table);
+        return Objects.hash(namespace(), table);
     }
 
     @Override

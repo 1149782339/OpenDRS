@@ -2,7 +2,6 @@ package io.opendrs.engine.replay.naming;
 
 import io.opendrs.common.metadata.TableId;
 import io.opendrs.common.naming.TableNamingStrategy;
-import io.opendrs.jdbc.metadata.TableRef;
 import io.opendrs.engine.replay.mapping.MappingValidator;
 import io.opendrs.common.selection.TableSelection;
 
@@ -32,7 +31,6 @@ public final class MappedTableNamingStrategy implements TableNamingStrategy {
         if (sourceSchema == null || sourceTable == null) {
             return new TableId(null, sourceSchema, sourceTable);
         }
-        TableRef target = mappingValidator.resolveRef(tableSelection, sourceSchema, sourceTable);
-        return new TableId(null, target.schema(), target.table());
+        return mappingValidator.resolveTableId(tableSelection, sourceSchema, sourceTable);
     }
 }

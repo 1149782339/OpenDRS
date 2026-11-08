@@ -1,11 +1,11 @@
 package io.opendrs.engine.precheck.support;
 
 import io.opendrs.common.metadata.DatabaseType;
+import io.opendrs.common.metadata.TableId;
 import io.opendrs.jdbc.JdbcConnection;
 import io.opendrs.jdbc.JdbcConnectionConfig;
 import io.opendrs.jdbc.JdbcConnectionFactory;
 import io.opendrs.jdbc.JdbcException;
-import io.opendrs.jdbc.RowMapper;
 import java.sql.DatabaseMetaData;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -115,11 +115,17 @@ public final class FakeServer {
         };
     }
 
-    private final class Connection implements JdbcConnection {
+    private final class Connection extends JdbcConnection {
 
-        @Override
-        public DatabaseType type() {
-            return type;
+        Connection() {
+            super(FakeServer.this.type, JdbcConnectionConfig.builder()
+                    .type(FakeServer.this.type)
+                    .host("fake")
+                    .port(0)
+                    .database(database)
+                    .username("fake")
+                    .password("fake")
+                    .build(), null);
         }
 
         @Override
@@ -127,32 +133,28 @@ public final class FakeServer {
         }
 
         @Override
-        public java.sql.Connection unwrap() {
-            try {
-                java.sql.Connection raw = Mockito.mock(java.sql.Connection.class);
-                DatabaseMetaData metadata = Mockito.mock(DatabaseMetaData.class);
-                Mockito.when(raw.getMetaData()).thenReturn(metadata);
-                Mockito.when(metadata.getDatabaseProductVersion()).thenReturn(version);
-                return raw;
-            } catch (SQLException ex) {
-                throw new JdbcException(ex.getMessage(), ex);
-            }
+        public java.sql.Connection connection() throws SQLException {
+            java.sql.Connection raw = Mockito.mock(java.sql.Connection.class);
+            DatabaseMetaData metadata = Mockito.mock(DatabaseMetaData.class);
+            Mockito.when(raw.getMetaData()).thenReturn(metadata);
+            Mockito.when(metadata.getDatabaseProductVersion()).thenReturn(version);
+            return raw;
         }
 
         @Override
-        public <T> T queryOne(String sql, RowMapper<T> mapper) {
-            List<T> rows = queryList(sql, mapper);
+        public <T> T queryOne(String sql, ResultSetExtractor<T> extractor) {
+            List<T> rows = queryList(sql, extractor);
             return rows.isEmpty() ? null : rows.getFirst();
         }
 
         @Override
-        public <T> List<T> queryList(String sql, RowMapper<T> mapper) {
-            return queryList(sql, mapper, new Object[0]);
+        public <T> List<T> queryList(String sql, ResultSetExtractor<T> extractor) {
+            return queryList(sql, extractor, new Object[0]);
         }
 
         @Override
-        public <T> List<T> queryList(String sql, RowMapper<T> mapper, Object... params) {
-            return map(rowsFor(sql, params), mapper);
+        public <T> List<T> queryList(String sql, ResultSetExtractor<T> extractor, Object... params) {
+            return map(rowsFor(sql, params), extractor);
         }
 
         @Override
@@ -162,6 +164,40 @@ public final class FakeServer {
                         + " SYSTEM_VARIABLES_ADMIN, SESSION_VARIABLES_ADMIN or REPLICATION_APPLIER"
                         + " privilege(s) for this operation");
             }
+        }
+
+        @Override
+        public boolean schemaExists(String schema) {
+            return existingTables.stream()
+                    .anyMatch(key -> schemaOf(key).equalsIgnoreCase(schema));
+        }
+
+        @Override
+        public boolean tableExists(String schema, String table) {
+            String key = schema + "." + table;
+            return existingTables.stream().anyMatch(existing -> existing.equalsIgnoreCase(key));
+        }
+
+        @Override
+        public List<String> listSchemas() {
+            return existingTables.stream()
+                    .map(FakeServer::schemaOf)
+                    .distinct()
+                    .sorted()
+                    .toList();
+        }
+
+        @Override
+        public List<TableId> listTables(String schema, List<TableId> excludes) {
+            return existingTables.stream()
+                    .filter(key -> schemaOf(key).equalsIgnoreCase(schema))
+                    .map(key -> TableId.of(schemaOf(key), tableOf(key)))
+                    .toList();
+        }
+
+        @Override
+        public boolean hasSchemaPrivilege(String schema) {
+            return false;
         }
 
         @Override
@@ -239,7 +275,7 @@ public final class FakeServer {
         return dot < 0 ? key : key.substring(dot + 1);
     }
 
-    private static <T> List<T> map(List<Object[]> rows, RowMapper<T> mapper) {
+    private static <T> List<T> map(List<Object[]> rows, JdbcConnection.ResultSetExtractor<T> extractor) {
         if (rows.isEmpty()) {
             return List.of();
         }
@@ -261,7 +297,7 @@ public final class FakeServer {
             });
             List<T> out = new ArrayList<>();
             while (rs.next()) {
-                out.add(mapper.map(rs));
+                out.add(extractor.apply(rs));
             }
             return out;
         } catch (SQLException ex) {

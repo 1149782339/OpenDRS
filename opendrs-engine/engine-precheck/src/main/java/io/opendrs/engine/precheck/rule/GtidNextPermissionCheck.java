@@ -58,7 +58,7 @@ public final class GtidNextPermissionCheck implements CheckRule {
         try {
             facts.of(side).connection().execute("SET SESSION gtid_next='AUTOMATIC'");
             return new Evaluation(Verdict.PASS, List.of(Finding.note("可设置会话变量 gtid_next")));
-        } catch (JdbcException ex) {
+        } catch (JdbcException | java.sql.SQLException ex) {
             String detail = rootMessage(ex);
             return Evaluation.fail(
                     "无权设置 gtid_next 参数" + (detail.isEmpty() ? "" : "：" + detail),

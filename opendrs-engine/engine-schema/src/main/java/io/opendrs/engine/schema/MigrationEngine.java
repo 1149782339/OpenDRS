@@ -54,7 +54,7 @@ public class MigrationEngine {
         Objects.requireNonNull(configuration, "configuration");
         SchemaDialect dialect = dialectFor(source.getType());
         try (JdbcConnection connection = connectionFactory.open(source)) {
-            return new DefaultObjectExporter(connection.unwrap(), dialect, source.getType())
+            return new DefaultObjectExporter(connection.connection(), dialect, source.getType())
                     .export(configuration);
         }
     }
@@ -118,7 +118,7 @@ public class MigrationEngine {
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(conversionResults, "conversionResults");
         try (JdbcConnection connection = connectionFactory.open(target)) {
-            return new DefaultObjectImporter(connection.unwrap())
+            return new DefaultObjectImporter(connection.connection())
                     .importObjects(conversionResults, configuration);
         }
     }

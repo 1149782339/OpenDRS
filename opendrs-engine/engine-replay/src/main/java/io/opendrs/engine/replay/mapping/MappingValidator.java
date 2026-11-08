@@ -5,13 +5,11 @@ import io.opendrs.common.selection.SchemaMapping;
 import io.opendrs.common.selection.TableMapping;
 import io.opendrs.common.selection.TableMappings;
 import io.opendrs.common.selection.TableSelection;
-import io.opendrs.jdbc.metadata.Table;
-import io.opendrs.jdbc.metadata.TableRef;
 import io.opendrs.engine.replay.exception.MappingException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -55,45 +53,44 @@ public class MappingValidator {
     }
 
     public String resolve(TableSelection tables, String sourceSchema, String sourceTable) {
-        TableRef ref = resolveRef(tables, sourceSchema, sourceTable);
-        return ref.schema() + "." + ref.table();
+        TableId ref = resolveTableId(tables, sourceSchema, sourceTable);
+        return ref.getSchema() + "." + ref.getTable();
     }
 
-    public TableRef resolveRef(TableSelection tables, String sourceSchema, String sourceTable) {
+    public TableId resolveTableId(TableSelection tables, String sourceSchema, String sourceTable) {
         TableMappings mappings = tables == null ? null : tables.mappings();
         if (mappings != null && mappings.tables() != null) {
             for (TableMapping mapping : mappings.tables()) {
                 if (sourceSchema.equals(mapping.sourceSchema()) && sourceTable.equals(mapping.sourceTable())) {
-                    return new TableRef(mapping.targetSchema(), mapping.targetTable());
+                    return TableId.of(mapping.targetSchema(), mapping.targetTable());
                 }
             }
         }
         if (mappings != null && mappings.schema() != null) {
             for (SchemaMapping mapping : mappings.schema()) {
                 if (sourceSchema.equals(mapping.source())) {
-                    return new TableRef(mapping.target(), sourceTable);
+                    return TableId.of(mapping.target(), sourceTable);
                 }
             }
         }
-        return new TableRef(sourceSchema, sourceTable);
+        return TableId.of(sourceSchema, sourceTable);
     }
 
     /**
      * Applies schema/table mappings onto expanded source tables. Duplicate target coordinates
      * use the same conflict rule as {@link #validate}.
      */
-    public List<Table> mapTargets(TableSelection selection, List<Table> sourceTables) {
-        List<Table> safe = sourceTables == null ? List.of() : sourceTables;
-        Map<TableRef, Table> targets = new LinkedHashMap<>();
-        for (Table source : safe) {
-            TableRef mapped = resolveRef(selection, source.ref().schema(), source.ref().table());
-            if (targets.containsKey(mapped)) {
+    public List<TableId> mapTargets(TableSelection selection, List<TableId> sourceTables) {
+        List<TableId> safe = sourceTables == null ? List.of() : sourceTables;
+        Set<TableId> targets = new LinkedHashSet<>();
+        for (TableId source : safe) {
+            TableId mapped = resolveTableId(selection, source.getSchema(), source.getTable());
+            if (!targets.add(mapped)) {
                 throw new MappingException(
-                        "Two tables map to the same target: " + mapped.schema() + "." + mapped.table());
+                        "Two tables map to the same target: " + mapped.getSchema() + "." + mapped.getTable());
             }
-            targets.put(mapped, new Table(mapped));
         }
-        return new ArrayList<>(targets.values());
+        return new ArrayList<>(targets);
     }
 
     private Map<String, String> validateSchemaMappings(

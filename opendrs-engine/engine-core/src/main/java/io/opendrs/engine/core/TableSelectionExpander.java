@@ -5,24 +5,19 @@ import io.opendrs.common.selection.TableSelection;
 import io.opendrs.jdbc.JdbcConnection;
 import io.opendrs.jdbc.JdbcConnectionConfig;
 import io.opendrs.jdbc.JdbcConnectionFactory;
-import io.opendrs.jdbc.dialect.DbDialect;
-import io.opendrs.jdbc.dialect.DbDialects;
-import io.opendrs.jdbc.metadata.Table;
-import io.opendrs.jdbc.metadata.TableRef;
-import java.util.LinkedHashMap;
+import java.sql.SQLException;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 
 /**
- * Turns a {@link TableSelection} into concrete {@link Table} rows against live source metadata, so
+ * Turns a {@link TableSelection} into concrete {@link TableId} rows against live source metadata, so
  * that everything downstream — precheck rules, DDL conversion, the applier — works on real tables
  * and never on selection syntax.
  *
  * <p>Three rules, in this order:
  * <ol>
- *   <li>No include lists ⇒ every schema the connection can read ({@link DbDialect#listSchemas}),
+ *   <li>No include lists ⇒ every schema the connection can read ({@link JdbcConnection#listSchemas}),
  *       which is what "migrate the whole instance" means and what keeps newly created schemas in
  *       scope;</li>
  *   <li>whole schemas ⇒ every table of each of them, likewise listed live;</li>
@@ -43,17 +38,14 @@ public class TableSelectionExpander {
     }
 
     /** {@code null} selection means "no filter": the whole source. */
-    public List<Table> expand(JdbcConnectionConfig source, TableSelection selection) {
-        return expand(source, selection, DbDialects.of(source.getType()));
-    }
-
-    List<Table> expand(JdbcConnectionConfig source, TableSelection selection, DbDialect dialect) {
+    public List<TableId> expand(JdbcConnectionConfig source, TableSelection selection)
+            throws SQLException {
         TableSelection scope = selection == null ? TableSelection.all() : selection;
         if (!needsListing(scope)) {
             return expandExplicit(scope);
         }
         try (JdbcConnection conn = factory.open(source)) {
-            return expandWithConnection(conn, dialect, scope);
+            return expandWithConnection(conn, scope);
         }
     }
 
@@ -63,34 +55,34 @@ public class TableSelectionExpander {
      * connection there is nothing to enumerate, and the caller marks the table list as unknown
      * instead of pretending the source is empty.
      */
-    public List<Table> expandExplicit(TableSelection selection) {
+    public List<TableId> expandExplicit(TableSelection selection) {
         TableSelection scope = selection == null ? TableSelection.all() : selection;
-        Map<TableRef, Table> out = new LinkedHashMap<>();
+        Set<TableId> out = new LinkedHashSet<>();
         for (TableId id : scope.tables()) {
             add(out, scope, id.getSchema(), id.getTable());
         }
-        return List.copyOf(out.values());
+        return List.copyOf(out);
     }
 
-    private List<Table> expandWithConnection(JdbcConnection conn, DbDialect dialect, TableSelection scope) {
-        Map<TableRef, Table> out = new LinkedHashMap<>();
-        for (String schema : schemasToRead(conn, dialect, scope)) {
-            for (Table table : expandSchema(conn, dialect, scope, schema)) {
-                out.putIfAbsent(table.ref(), table);
-            }
+    private List<TableId> expandWithConnection(JdbcConnection conn, TableSelection scope)
+            throws SQLException {
+        Set<TableId> out = new LinkedHashSet<>();
+        for (String schema : schemasToRead(conn, scope)) {
+            out.addAll(expandSchema(conn, scope, schema));
         }
-        return List.copyOf(out.values());
+        return List.copyOf(out);
     }
 
     /**
-     * Which schemas need a table listing. "Everything" is resolved through the dialect rather than
-     * remembered, so a database created after the task started still lands in scope. Only the two
-     * listing shapes get here; a table-level selection is already explicit.
+     * Which schemas need a table listing. "Everything" is resolved through the connection rather
+     * than remembered, so a database created after the task started still lands in scope. Only the
+     * two listing shapes get here; a table-level selection is already explicit.
      */
-    private List<String> schemasToRead(JdbcConnection conn, DbDialect dialect, TableSelection scope) {
+    private List<String> schemasToRead(JdbcConnection conn, TableSelection scope)
+            throws SQLException {
         Set<String> schemas = new LinkedHashSet<>();
         if (scope.isAll()) {
-            schemas.addAll(dialect.listSchemas(conn));
+            schemas.addAll(conn.listSchemas());
         } else {
             schemas.addAll(scope.schemas());
         }
@@ -98,25 +90,24 @@ public class TableSelectionExpander {
         return List.copyOf(schemas);
     }
 
-    private List<Table> expandSchema(
-            JdbcConnection conn, DbDialect dialect, TableSelection scope, String schema) {
-        Map<TableRef, Table> out = new LinkedHashMap<>();
-        for (Table table : dialect.listTables(conn, schema, List.of())) {
-            add(out, scope, schema, table.ref().table());
+    private List<TableId> expandSchema(JdbcConnection conn, TableSelection scope, String schema)
+            throws SQLException {
+        Set<TableId> out = new LinkedHashSet<>();
+        for (TableId id : conn.listTables(schema, List.of())) {
+            add(out, scope, schema, id.getTable());
         }
-        return List.copyOf(out.values());
+        return List.copyOf(out);
     }
 
     /**
      * Keeps the selection's spelling of the schema (JDBC metadata reports a MySQL database as the
      * catalog) and drops excluded tables, so mappings and excludes resolve against one spelling.
      */
-    private static void add(Map<TableRef, Table> out, TableSelection scope, String schema, String table) {
+    private static void add(Set<TableId> out, TableSelection scope, String schema, String table) {
         if (scope.isSchemaExcluded(schema) || scope.isTableExcluded(schema, table)) {
             return;
         }
-        TableRef ref = new TableRef(schema, table);
-        out.putIfAbsent(ref, new Table(ref));
+        out.add(TableId.of(schema, table));
     }
 
     private static boolean needsListing(TableSelection scope) {

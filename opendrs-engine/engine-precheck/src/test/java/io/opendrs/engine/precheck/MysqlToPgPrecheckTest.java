@@ -11,8 +11,7 @@ import io.opendrs.engine.precheck.fact.FactStore;
 import io.opendrs.engine.precheck.profile.MysqlToPgProfile;
 import io.opendrs.engine.precheck.support.FakeServer;
 import io.opendrs.jdbc.JdbcConnectionConfig;
-import io.opendrs.jdbc.metadata.Table;
-import io.opendrs.jdbc.metadata.TableRef;
+import io.opendrs.common.metadata.TableId;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -27,9 +26,9 @@ import org.junit.jupiter.api.Test;
  */
 class MysqlToPgPrecheckTest {
 
-    private static final List<Table> DEFAULT_TABLES = List.of(
-            new Table(new TableRef("hr", "emp")),
-            new Table(new TableRef("hr", "dept")));
+    private static final List<TableId> DEFAULT_TABLES = List.of(
+            TableId.of("hr", "emp"),
+            TableId.of("hr", "dept"));
 
     private final List<PrecheckResults> published = new ArrayList<>();
     private PrecheckResults results;
@@ -139,10 +138,10 @@ class MysqlToPgPrecheckTest {
 
     @Test
     void noPrimaryKeyTablesAreReportedAndCappedAtTen() {
-        List<Table> tables = new ArrayList<>();
+        List<TableId> tables = new ArrayList<>();
         for (int i = 1; i <= 12; i++) {
             source.table("hr", "t" + i, "InnoDB", false);
-            tables.add(new Table(new TableRef("hr", "t" + i)));
+            tables.add(TableId.of("hr", "t" + i));
         }
         execute(Map.of(DatabaseType.MYSQL, source, DatabaseType.POSTGRESQL, target), tables);
 
@@ -160,8 +159,8 @@ class MysqlToPgPrecheckTest {
     void nonInnodbTableBlocksTheRun() {
         source.table("hr", "log", "MyISAM", true);
         execute(Map.of(DatabaseType.MYSQL, source, DatabaseType.POSTGRESQL, target), List.of(
-                new Table(new TableRef("hr", "emp")),
-                new Table(new TableRef("hr", "log"))));
+                TableId.of("hr", "emp"),
+                TableId.of("hr", "log")));
 
         PrecheckItem item = item(CheckIds.SOURCE_UNSUPPORTED_ENGINE);
         assertEquals(Verdict.FAIL, item.verdict());
@@ -241,7 +240,7 @@ class MysqlToPgPrecheckTest {
         execute(Map.of(DatabaseType.MYSQL, source, DatabaseType.POSTGRESQL, target), DEFAULT_TABLES);
     }
 
-    private void execute(Map<DatabaseType, FakeServer> servers, List<Table> tables) {
+    private void execute(Map<DatabaseType, FakeServer> servers, List<TableId> tables) {
         PrecheckContext context = new PrecheckContext(
                 config(DatabaseType.MYSQL, "10.0.0.2", 3306, "hr"),
                 config(DatabaseType.POSTGRESQL, "10.0.0.3", 5432, "appdb"),

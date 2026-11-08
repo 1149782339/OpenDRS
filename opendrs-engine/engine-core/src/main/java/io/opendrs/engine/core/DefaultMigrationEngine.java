@@ -26,10 +26,9 @@ import io.opendrs.jdbc.JdbcConnection;
 import io.opendrs.jdbc.JdbcConnectionConfig;
 import io.opendrs.jdbc.JdbcConnectionFactory;
 import io.opendrs.jdbc.JdbcException;
-import io.opendrs.jdbc.dialect.MysqlDialect;
-import io.opendrs.jdbc.dialect.PostgresDialect;
-import io.opendrs.jdbc.metadata.Table;
+import io.opendrs.common.metadata.TableId;
 import java.sql.Connection;
+import java.sql.SQLException;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
@@ -41,8 +40,8 @@ import org.slf4j.LoggerFactory;
 
 /**
  * Assembles the engine object graph with plain constructors. The service provides the mechanism
- * collaborators ({@link JdbcConnectionFactory}, dialects, metadata {@link DataSource} — backed by
- * its own beans); everything else is engine-owned.
+ * collaborators ({@link JdbcConnectionFactory}, connection types, metadata {@link DataSource} —
+ * backed by its own beans); everything else is engine-owned.
  *
  * <p>Each operation hands its work to an internal cached pool and returns the handle immediately.
  * That pool is deliberately separate from the service's job executor: a job thread parks on
@@ -72,19 +71,15 @@ public class DefaultMigrationEngine implements MigrationEngine {
 
     public DefaultMigrationEngine(
             JdbcConnectionFactory factory,
-            MysqlDialect mysqlDialect,
-            PostgresDialect postgresDialect,
             DataSource metadataDataSource) {
-        this(factory, mysqlDialect, postgresDialect, metadataDataSource, ReplayMetrics.NONE);
+        this(factory, metadataDataSource, ReplayMetrics.NONE);
     }
 
     public DefaultMigrationEngine(
             JdbcConnectionFactory factory,
-            MysqlDialect mysqlDialect,
-            PostgresDialect postgresDialect,
             DataSource metadataDataSource,
             ReplayMetrics replayMetrics) {
-        this(factory, mysqlDialect, postgresDialect, metadataDataSource, replayMetrics,
+        this(factory, metadataDataSource, replayMetrics,
                 io.opendrs.common.progress.FullLoadCheckpointListener.NONE);
     }
 
@@ -95,8 +90,6 @@ public class DefaultMigrationEngine implements MigrationEngine {
      */
     public DefaultMigrationEngine(
             JdbcConnectionFactory factory,
-            MysqlDialect mysqlDialect,
-            PostgresDialect postgresDialect,
             DataSource metadataDataSource,
             ReplayMetrics replayMetrics,
             io.opendrs.common.progress.FullLoadCheckpointListener fullLoadCheckpointListener) {
@@ -125,7 +118,7 @@ public class DefaultMigrationEngine implements MigrationEngine {
         TableSelection selection = selection(param.selection());
         MigrationLogListener listener = param.logListener();
         DefaultSchemaMigrationTask task = new DefaultSchemaMigrationTask(() -> {
-            List<Table> tables = expand(param.source(), selection);
+            List<TableId> tables = expand(param.source(), selection);
             if (tables.isEmpty()) {
                 throw new IllegalStateException("No tables matched the selection for schema migration: "
                         + describeSelection(selection));
@@ -166,7 +159,7 @@ public class DefaultMigrationEngine implements MigrationEngine {
 
     private CdcEngine startCapture(DataMigrationParam param, TableSelection selection, Runnable onSnapshot) {
         MigrationLogListener listener = param.logListener();
-        List<Table> tables = expand(param.source(), selection);
+        List<TableId> tables = expand(param.source(), selection);
         if (tables.isEmpty()) {
             throw new IllegalStateException("No tables matched the selection for task " + param.taskId()
                     + ": " + describeSelection(selection));
@@ -199,7 +192,7 @@ public class DefaultMigrationEngine implements MigrationEngine {
      * Builds the checklist for this direction, then runs it.
      *
      * <p>The table lists are expanded here because the engine owns the selection and the mapping;
-     * the precheck module only sees concrete {@link Table} rows. A failed source expansion is not
+     * the precheck module only sees concrete {@link TableId} rows. A failed source expansion is not
      * fatal: the selection is taken literally, {@code tablesKnown} goes false, and the table-level
      * checks report themselves blocked instead of inspecting an empty list.
      *
@@ -211,16 +204,16 @@ public class DefaultMigrationEngine implements MigrationEngine {
                 .orElseThrow(() -> new PrecheckException("No precheck profile for "
                         + param.source().getType() + " → " + param.target().getType()));
 
-        List<Table> sourceTables;
+        List<TableId> sourceTables;
         boolean tablesKnown = true;
         try {
-            sourceTables = expander.expand(param.source(), selection);
+            sourceTables = expand(param.source(), selection);
         } catch (JdbcException ex) {
             // The connection check reports this failure; the other rows depend on it.
             sourceTables = expander.expandExplicit(selection);
             tablesKnown = false;
         }
-        List<Table> targetTables = tablesKnown
+        List<TableId> targetTables = tablesKnown
                 ? mappingValidator.mapTargets(selection, sourceTables)
                 : List.of();
 
@@ -241,8 +234,12 @@ public class DefaultMigrationEngine implements MigrationEngine {
         }
     }
 
-    private List<Table> expand(io.opendrs.jdbc.JdbcConnectionConfig source, TableSelection selection) {
-        return expander.expand(source, selection);
+    private List<TableId> expand(io.opendrs.jdbc.JdbcConnectionConfig source, TableSelection selection) {
+        try {
+            return expander.expand(source, selection);
+        } catch (SQLException ex) {
+            throw new JdbcException(ex.getMessage(), ex);
+        }
     }
 
     /**

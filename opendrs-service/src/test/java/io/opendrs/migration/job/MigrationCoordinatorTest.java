@@ -19,7 +19,7 @@ import io.opendrs.engine.core.PrecheckTask;
 import io.opendrs.engine.core.SchemaMigrationParam;
 import io.opendrs.engine.core.SchemaMigrationTask;
 import io.opendrs.engine.core.TaskState;
-import io.opendrs.jdbc.metadata.Table;
+import io.opendrs.common.metadata.TableId;
 import io.opendrs.migration.api.request.MigrationOptions;
 import io.opendrs.migration.api.request.SelectedTable;
 import io.opendrs.migration.domain.ConnectionInfo;
@@ -388,12 +388,12 @@ class MigrationCoordinatorTest {
         }
 
         @Override
-        public List<Table> created() {
+        public List<TableId> created() {
             return List.of();
         }
 
         @Override
-        public List<Table> skipped() {
+        public List<TableId> skipped() {
             return List.of();
         }
 

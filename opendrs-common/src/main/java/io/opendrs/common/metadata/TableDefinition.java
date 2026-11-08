@@ -1,6 +1,4 @@
-package io.opendrs.engine.replay.relation;
-
-import io.opendrs.common.metadata.TableId;
+package io.opendrs.common.metadata;
 
 import java.util.List;
 import java.util.Map;

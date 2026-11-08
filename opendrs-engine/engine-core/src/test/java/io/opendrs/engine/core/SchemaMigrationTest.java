@@ -31,8 +31,6 @@ import io.opendrs.engine.schema.meta.ObjectId;
 import io.opendrs.jdbc.JdbcConnection;
 import io.opendrs.jdbc.JdbcConnectionConfig;
 import io.opendrs.jdbc.JdbcConnectionFactory;
-import io.opendrs.jdbc.metadata.Table;
-import io.opendrs.jdbc.metadata.TableRef;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.util.List;
@@ -58,7 +56,7 @@ class SchemaMigrationTest {
         schemaEngine = mock(io.opendrs.engine.schema.MigrationEngine.class);
         dialect = mock(DatabaseDialect.class);
         when(factory.open(any())).thenReturn(jdbcConnection);
-        when(jdbcConnection.unwrap()).thenReturn(connection);
+        when(jdbcConnection.connection()).thenReturn(connection);
         migration = new SchemaMigration(
                 factory, schemaEngine, new MappingValidator(), (target, tableNaming, columnNaming) -> dialect);
     }
@@ -76,9 +74,9 @@ class SchemaMigrationTest {
         SchemaMigrationOutcome outcome = migration.run(
                 SOURCE, TARGET, selection(), tables("customers", "orders"), MigrationLogListener.NONE);
 
-        assertThat(outcome.skipped()).extracting(table -> table.ref().table())
+        assertThat(outcome.skipped()).extracting(table -> table.getTable())
                 .containsExactly("customers");
-        assertThat(outcome.created()).extracting(table -> table.ref().table())
+        assertThat(outcome.created()).extracting(table -> table.getTable())
                 .containsExactly("orders");
         ArgumentCaptor<ConversionResults> pending = ArgumentCaptor.forClass(ConversionResults.class);
         verify(schemaEngine).importObjects(eq(TARGET), pending.capture(), any());
@@ -141,10 +139,10 @@ class SchemaMigrationTest {
         when(dialect.tableExists(connection, tableId("customers"))).thenReturn(true);
         when(dialect.tableExists(connection, tableId("orders"))).thenReturn(false);
 
-        List<Table> missing =
+        List<TableId> missing =
                 migration.missingTargets(TARGET, tables("customers", "orders"), selection());
 
-        assertThat(missing).extracting(table -> table.ref().table()).containsExactly("orders");
+        assertThat(missing).extracting(table -> table.getTable()).containsExactly("orders");
     }
 
     @Test
@@ -206,9 +204,9 @@ class SchemaMigrationTest {
         return TableSelection.builder().includeSchema("shop").build();
     }
 
-    private static List<Table> tables(String... names) {
+    private static List<TableId> tables(String... names) {
         return java.util.Arrays.stream(names)
-                .map(name -> new Table(new TableRef("shop", name)))
+                .map(name -> TableId.of("shop", name))
                 .toList();
     }
 

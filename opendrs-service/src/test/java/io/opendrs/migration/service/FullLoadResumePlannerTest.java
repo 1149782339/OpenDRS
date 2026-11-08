@@ -72,7 +72,7 @@ class FullLoadResumePlannerTest {
         DatabaseMetaData metaData = mock(DatabaseMetaData.class);
         when(raw.getMetaData()).thenReturn(metaData);
         when(metaData.getIdentifierQuoteString()).thenReturn("`");
-        when(targetConnection.unwrap()).thenReturn(raw);
+        when(targetConnection.connection()).thenReturn(raw);
         when(connectionFactory.open(any())).thenReturn(targetConnection);
     }
 
@@ -116,7 +116,7 @@ class FullLoadResumePlannerTest {
     @Test
     void sourceNamesMapThroughTheMappingChainForTruncate() throws Exception {
         // PG target: double-quoted, and the schema mapping renames db "hr" to "public".
-        org.mockito.Mockito.when(targetConnection.unwrap().getMetaData().getIdentifierQuoteString())
+        org.mockito.Mockito.when(targetConnection.connection().getMetaData().getIdentifierQuoteString())
                 .thenReturn("\"");
         when(checkpointMapper.findDoneTables(PIPELINE_ID)).thenReturn(Set.of("hr.emp"));
         TableSelection selection = new TableSelection(
@@ -158,7 +158,7 @@ class FullLoadResumePlannerTest {
     }
 
     @Test
-    void truncateFailureDegradesToTheUpsertFallback() {
+    void truncateFailureDegradesToTheUpsertFallback() throws Exception {
         when(checkpointMapper.findDoneTables(PIPELINE_ID)).thenReturn(Set.of("hr.emp"));
         doThrow(new RuntimeException("access denied")).when(targetConnection).execute(anyString());
 

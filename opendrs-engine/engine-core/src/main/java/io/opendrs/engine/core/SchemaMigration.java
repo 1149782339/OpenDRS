@@ -30,8 +30,6 @@ import io.opendrs.engine.schema.meta.ObjectType;
 import io.opendrs.jdbc.JdbcConnection;
 import io.opendrs.jdbc.JdbcConnectionConfig;
 import io.opendrs.jdbc.JdbcConnectionFactory;
-import io.opendrs.jdbc.metadata.Table;
-import io.opendrs.jdbc.metadata.TableRef;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -99,7 +97,7 @@ final class SchemaMigration {
             JdbcConnectionConfig source,
             JdbcConnectionConfig target,
             TableSelection selection,
-            List<Table> tables,
+            List<TableId> tables,
             MigrationLogListener listener) throws SchemaMigrationException {
         return run(source, target, selection, tables, listener, ExportConfiguration.builder().build());
     }
@@ -117,7 +115,7 @@ final class SchemaMigration {
             JdbcConnectionConfig source,
             JdbcConnectionConfig target,
             TableSelection selection,
-            List<Table> tables,
+            List<TableId> tables,
             MigrationLogListener listener) throws SchemaMigrationException {
         return run(source, target, selection, tables, listener, ExportConfiguration.builder()
                 .includePrimaryKey(true)
@@ -131,7 +129,7 @@ final class SchemaMigration {
             JdbcConnectionConfig source,
             JdbcConnectionConfig target,
             TableSelection selection,
-            List<Table> tables,
+            List<TableId> tables,
             MigrationLogListener listener,
             ExportConfiguration structure) throws SchemaMigrationException {
         TableNamingStrategy tableNaming = new MappedTableNamingStrategy(mappingValidator, selection);
@@ -141,7 +139,7 @@ final class SchemaMigration {
         // One description of the run drives both stages: export decides what to read, convert decides
         // what to emit. Keeping them apart is how a table-only pass used to leak indexes into the DDL.
         ExportConfiguration exportConfiguration = ExportConfiguration.builder()
-                .selection(TableSelection.ofTables(sourceIds(tables)))
+                .selection(TableSelection.ofTables(tables))
                 .includePrimaryKey(structure.includePrimaryKey())
                 .includeUniqueKeys(structure.includeUniqueKeys())
                 .includeSecondaryIndexes(structure.includeSecondaryIndexes())
@@ -173,7 +171,7 @@ final class SchemaMigration {
                         .build());
 
         List<ObjectId> existing = existingTargets(target, converted, tableNaming, columnNaming, schemas);
-        List<Table> skipped = new ArrayList<>();
+        List<TableId> skipped = new ArrayList<>();
         for (ObjectId id : existing) {
             if (id.type() == ObjectType.SCHEMA) {
                 listener.emit(
@@ -181,10 +179,10 @@ final class SchemaMigration {
                         "target schema already exists, skipped: " + schemas.resolveSchemaName(id.schema()));
                 continue;
             }
-            Table table = targetTable(tableNaming, id);
-            skipped.add(table);
+            TableId tableId = targetTable(tableNaming, id);
+            skipped.add(tableId);
             listener.emit(
-                    MigrationLogLevel.INFO, "target table already exists, skipped: " + ref(table));
+                    MigrationLogLevel.INFO, "target table already exists, skipped: " + ref(tableId));
         }
         ConversionResults pending = excluding(converted, existing);
 
@@ -202,7 +200,7 @@ final class SchemaMigration {
             throw new SchemaMigrationException("creating target objects failed: " + ex.getMessage(), ex);
         }
 
-        List<Table> created = new ArrayList<>();
+        List<TableId> created = new ArrayList<>();
         List<String> failures = new ArrayList<>();
         for (Map.Entry<ObjectId, ConversionResult> entry : imported.entries()) {
             ConversionStatus status = entry.getValue().getStatus();
@@ -220,20 +218,19 @@ final class SchemaMigration {
     }
 
     /** Target tables the selection expects but the target does not have yet. */
-    List<Table> missingTargets(
-            JdbcConnectionConfig target, List<Table> sourceTables, TableSelection selection)
+    List<TableId> missingTargets(
+            JdbcConnectionConfig target, List<TableId> sourceTables, TableSelection selection)
             throws SchemaMigrationException {
         TableNamingStrategy tableNaming = new MappedTableNamingStrategy(mappingValidator, selection);
         DatabaseDialect dialect =
                 targetDialects.forTarget(target, tableNaming, new DefaultColumnNamingStrategy());
-        List<Table> missing = new ArrayList<>();
+        List<TableId> missing = new ArrayList<>();
         try (JdbcConnection connection = factory.open(target)) {
-            Connection raw = connection.unwrap();
-            for (Table table : sourceTables) {
-                TableId targetId = tableNaming.resolveTableId(
-                        TableId.of(table.ref().schema(), table.ref().table()));
+            Connection raw = connection.connection();
+            for (TableId tableId : sourceTables) {
+                TableId targetId = tableNaming.resolveTableId(tableId);
                 if (!dialect.tableExists(raw, targetId)) {
-                    missing.add(new Table(new TableRef(targetId.getSchema(), targetId.getTable())));
+                    missing.add(TableId.of(targetId.getSchema(), targetId.getTable()));
                 }
             }
         } catch (SQLException ex) {
@@ -252,7 +249,7 @@ final class SchemaMigration {
         DatabaseDialect dialect = targetDialects.forTarget(target, tableNaming, columnNaming);
         List<ObjectId> existing = new ArrayList<>();
         try (JdbcConnection connection = factory.open(target)) {
-            Connection raw = connection.unwrap();
+            Connection raw = connection.connection();
             for (Map.Entry<DatabaseObject, ConversionResult> entry : converted.entries()) {
                 ObjectId id = entry.getKey().id();
                 boolean present = id.type() == ObjectType.SCHEMA
@@ -327,21 +324,13 @@ final class SchemaMigration {
         return pending;
     }
 
-    private static List<TableId> sourceIds(List<Table> tables) {
-        List<TableId> ids = new ArrayList<>(tables.size());
-        for (Table table : tables) {
-            ids.add(TableId.of(table.ref().schema(), table.ref().table()));
-        }
-        return ids;
-    }
-
-    private static Table targetTable(TableNamingStrategy tableNaming, ObjectId id) {
+    private static TableId targetTable(TableNamingStrategy tableNaming, ObjectId id) {
         TableId target = tableNaming.resolveTableId(id.tableId());
-        return new Table(new TableRef(target.getSchema(), target.getTable()));
+        return TableId.of(target.getSchema(), target.getTable());
     }
 
-    private static String ref(Table table) {
-        return table.ref().schema() + "." + table.ref().table();
+    private static String ref(TableId tableId) {
+        return tableId.getSchema() + "." + tableId.getTable();
     }
 
     private static MigrationLogLevel levelOf(ConversionStatus status) {

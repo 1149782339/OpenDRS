@@ -96,7 +96,7 @@ class MigrationCoordinatorResumeTest {
         DatabaseMetaData metaData = mock(DatabaseMetaData.class);
         when(raw.getMetaData()).thenReturn(metaData);
         when(metaData.getIdentifierQuoteString()).thenReturn("`");
-        when(targetConnection.unwrap()).thenReturn(raw);
+        when(targetConnection.connection()).thenReturn(raw);
         when(connectionFactory.open(any())).thenReturn(targetConnection);
         notes = new ArrayList<>();
     }
