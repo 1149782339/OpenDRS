@@ -12,7 +12,7 @@ import io.opendrs.engine.precheck.Side;
 import io.opendrs.engine.precheck.Verdict;
 import io.opendrs.engine.precheck.fact.EndpointFacts;
 import io.opendrs.engine.precheck.fact.FactStore;
-import io.opendrs.jdbc.JdbcConnectionConfig;
+import io.opendrs.engine.jdbc.JdbcConnectionConfig;
 import java.sql.SQLException;
 import java.util.List;
 

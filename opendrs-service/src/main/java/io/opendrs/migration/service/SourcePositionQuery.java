@@ -1,7 +1,7 @@
 package io.opendrs.migration.service;
 
-import io.opendrs.jdbc.JdbcConnection;
-import io.opendrs.jdbc.JdbcConnectionFactory;
+import io.opendrs.engine.jdbc.JdbcConnection;
+import io.opendrs.engine.jdbc.JdbcConnectionFactory;
 import io.opendrs.migration.domain.ConnectionInfo;
 import java.sql.SQLException;
 import java.util.Map;

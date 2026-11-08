@@ -3,7 +3,7 @@ package io.opendrs.migration.config;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.opendrs.engine.core.DefaultMigrationEngine;
 import io.opendrs.engine.core.MigrationEngine;
-import io.opendrs.jdbc.JdbcConnectionFactory;
+import io.opendrs.engine.jdbc.JdbcConnectionFactory;
 import io.opendrs.engine.replay.mapping.MappingValidator;
 import io.opendrs.migration.metrics.MicrometerReplayMetrics;
 import io.opendrs.migration.service.JdbcFullLoadCheckpointListener;

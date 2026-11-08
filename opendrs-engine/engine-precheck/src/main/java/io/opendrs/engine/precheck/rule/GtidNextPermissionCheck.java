@@ -10,7 +10,7 @@ import io.opendrs.engine.precheck.PrecheckContext;
 import io.opendrs.engine.precheck.Side;
 import io.opendrs.engine.precheck.Verdict;
 import io.opendrs.engine.precheck.fact.FactStore;
-import io.opendrs.jdbc.JdbcException;
+import io.opendrs.engine.jdbc.JdbcException;
 import java.util.List;
 
 /**

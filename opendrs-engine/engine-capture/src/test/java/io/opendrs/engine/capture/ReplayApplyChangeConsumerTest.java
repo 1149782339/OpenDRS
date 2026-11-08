@@ -160,7 +160,7 @@ class ReplayApplyChangeConsumerTest {
     private ReplayApplyChangeConsumer consumer(
             FullLoadCheckpointListener listener,
             Applier<Collection<SourceRecord>> applier,
-            io.opendrs.common.log.MigrationLogListener logListener) {
+            io.opendrs.engine.common.log.MigrationLogListener logListener) {
         ReplayConfig config = ReplayConfig.builder()
                 .connectionProvider(() -> {
                     throw new UnsupportedOperationException("no target in unit test");

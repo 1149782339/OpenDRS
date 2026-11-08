@@ -1,8 +1,8 @@
 package io.opendrs.engine.schema.export;
 
-import io.opendrs.common.metadata.DatabaseType;
-import io.opendrs.common.metadata.TableId;
-import io.opendrs.common.selection.TableSelection;
+import io.opendrs.engine.common.metadata.DatabaseType;
+import io.opendrs.engine.common.metadata.TableId;
+import io.opendrs.engine.common.selection.TableSelection;
 import io.opendrs.engine.schema.dialect.SchemaDialect;
 import io.opendrs.engine.schema.meta.DatabaseObject;
 import io.opendrs.engine.schema.meta.ObjectId;

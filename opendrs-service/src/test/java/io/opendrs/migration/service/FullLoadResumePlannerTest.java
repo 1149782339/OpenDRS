@@ -10,15 +10,15 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
-import io.opendrs.common.log.MigrationLogLevel;
-import io.opendrs.common.log.MigrationLogListener;
-import io.opendrs.common.metadata.TableId;
+import io.opendrs.engine.common.log.MigrationLogLevel;
+import io.opendrs.engine.common.log.MigrationLogListener;
+import io.opendrs.engine.common.metadata.TableId;
 import io.opendrs.engine.replay.mapping.MappingValidator;
-import io.opendrs.common.selection.SchemaMapping;
-import io.opendrs.common.selection.TableMappings;
-import io.opendrs.common.selection.TableSelection;
-import io.opendrs.jdbc.JdbcConnection;
-import io.opendrs.jdbc.JdbcConnectionFactory;
+import io.opendrs.engine.common.selection.SchemaMapping;
+import io.opendrs.engine.common.selection.TableMappings;
+import io.opendrs.engine.common.selection.TableSelection;
+import io.opendrs.engine.jdbc.JdbcConnection;
+import io.opendrs.engine.jdbc.JdbcConnectionFactory;
 import io.opendrs.migration.domain.ConnectionInfo;
 import io.opendrs.migration.domain.DbType;
 import io.opendrs.migration.mapper.FullLoadCheckpointMapper;
@@ -149,7 +149,7 @@ class FullLoadResumePlannerTest {
     void expansionFailureFallsBackToTheNormalFullLoad() {
         when(checkpointMapper.findDoneTables(PIPELINE_ID)).thenReturn(Set.of("hr.emp"));
         // A whole-instance selection needs a live source listing; the source is unreachable.
-        doThrow(new io.opendrs.jdbc.JdbcException("source down"))
+        doThrow(new io.opendrs.engine.jdbc.JdbcException("source down"))
                 .when(connectionFactory).open(any());
 
         assertThat(planner.resumeTables(TASK_ID, PIPELINE_ID, null, mysql("hr"), mysql("hr")))

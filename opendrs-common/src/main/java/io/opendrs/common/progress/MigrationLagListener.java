@@ -15,7 +15,7 @@ package io.opendrs.common.progress;
  * the number grow, which is exactly what an operator needs to see.
  *
  * <p>Called on the Debezium change-consumer thread, so implementations must be thread-safe and
- * must not block. Like {@link io.opendrs.common.log.MigrationLogListener}, a broken sink must never
+ * must not block. Like {@link io.opendrs.engine.common.log.MigrationLogListener}, a broken sink must never
  * fail a healthy migration: {@link #emitApplied} and {@link #emitHeartbeat} swallow exceptions.
  */
 @FunctionalInterface

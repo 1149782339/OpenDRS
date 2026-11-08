@@ -1,7 +1,7 @@
 package io.opendrs.engine.precheck;
 
-import io.opendrs.jdbc.JdbcConnectionConfig;
-import io.opendrs.common.metadata.TableId;
+import io.opendrs.engine.jdbc.JdbcConnectionConfig;
+import io.opendrs.engine.common.metadata.TableId;
 import java.util.LinkedHashSet;
 import java.util.List;
 
@@ -59,7 +59,7 @@ public record PrecheckContext(
             }
         }
         if (schemas.isEmpty()) {
-            if (config.getType() == io.opendrs.common.metadata.DatabaseType.POSTGRESQL) {
+            if (config.getType() == io.opendrs.engine.common.metadata.DatabaseType.POSTGRESQL) {
                 schemas.add("public");
             } else if (config.getDatabase() != null && !config.getDatabase().isBlank()) {
                 schemas.add(config.getDatabase());

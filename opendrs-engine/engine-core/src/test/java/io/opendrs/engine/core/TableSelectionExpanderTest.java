@@ -9,12 +9,12 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
-import io.opendrs.common.metadata.DatabaseType;
-import io.opendrs.common.metadata.TableId;
-import io.opendrs.common.selection.TableSelection;
-import io.opendrs.jdbc.JdbcConnection;
-import io.opendrs.jdbc.JdbcConnectionConfig;
-import io.opendrs.jdbc.JdbcConnectionFactory;
+import io.opendrs.engine.common.metadata.DatabaseType;
+import io.opendrs.engine.common.metadata.TableId;
+import io.opendrs.engine.common.selection.TableSelection;
+import io.opendrs.engine.jdbc.JdbcConnection;
+import io.opendrs.engine.jdbc.JdbcConnectionConfig;
+import io.opendrs.engine.jdbc.JdbcConnectionFactory;
 import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;

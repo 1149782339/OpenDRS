@@ -187,13 +187,15 @@ mvn -q -DskipTests package && (cd opendrs-web && npm run build) \
 Maven 多模块，`io.opendrs`：
 
 - `opendrs-engine` — 无框架引擎层，对外只有 `MigrationEngine` 四个方法（`supportsPrecheck` / `migrateSchema` / `migrateData` / `precheck`），句柄立即返回、阻塞跑在引擎自己的守护线程池：
+  - `engine-common` — 元数据、表选择/映射、命名策略、日志与工具
+  - `engine-jdbc` — 连接生命周期与元数据读取（MySQL / PostgreSQL / Oracle）
   - `engine-capture` — 嵌入式 Debezium（MySQL binlog），offset / schema history 持久化在任务元数据库
   - `engine-replay` — JDBC 事务回放，PostgreSQL / MySQL 目标方言
   - `engine-precheck` — 规则化预检查（按 源→目标 类型匹配 profile）
   - `engine-core` — 编排与表选择/映射
 - `opendrs-service` — Spring Boot：任务状态机（`job_phase` 阶段 × `job_state` 状态）、异步预检、任务调度、监控指标、MyBatis + Flyway
 - `opendrs-web` — Vue 3 + Element Plus + ECharts（非 Maven 模块，`npm run build` 产出由 nginx 挂载）
-- `opendrs-jdbc` / `opendrs-common` — 连接与方言基础设施、共享元数据类型
+- `opendrs-common` — 引擎向 service 汇报的进度回调
 
 ## License
 

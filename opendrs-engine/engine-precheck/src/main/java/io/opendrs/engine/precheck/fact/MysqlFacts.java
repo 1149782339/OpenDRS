@@ -1,10 +1,10 @@
 package io.opendrs.engine.precheck.fact;
 
 import io.opendrs.engine.precheck.Side;
-import io.opendrs.jdbc.JdbcConnection;
-import io.opendrs.jdbc.JdbcConnectionConfig;
-import io.opendrs.jdbc.JdbcConnectionFactory;
-import io.opendrs.common.metadata.TableId;
+import io.opendrs.engine.jdbc.JdbcConnection;
+import io.opendrs.engine.jdbc.JdbcConnectionConfig;
+import io.opendrs.engine.jdbc.JdbcConnectionFactory;
+import io.opendrs.engine.common.metadata.TableId;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Collection;

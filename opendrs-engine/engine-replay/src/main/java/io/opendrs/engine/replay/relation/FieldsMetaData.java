@@ -1,6 +1,6 @@
 package io.opendrs.engine.replay.relation;
 
-import io.opendrs.common.naming.ColumnNamingStrategy;
+import io.opendrs.engine.common.naming.ColumnNamingStrategy;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;

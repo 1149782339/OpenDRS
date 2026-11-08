@@ -10,7 +10,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-import io.opendrs.common.metadata.DatabaseType;
+import io.opendrs.engine.common.metadata.DatabaseType;
 import io.opendrs.engine.core.MigrationEngine;
 import io.opendrs.engine.core.PrecheckParam;
 import io.opendrs.engine.core.PrecheckTask;

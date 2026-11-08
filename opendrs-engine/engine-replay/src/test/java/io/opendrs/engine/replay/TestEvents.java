@@ -1,7 +1,7 @@
 package io.opendrs.engine.replay;
 
-import io.opendrs.common.metadata.DatabaseType;
-import io.opendrs.common.metadata.TableId;
+import io.opendrs.engine.common.metadata.DatabaseType;
+import io.opendrs.engine.common.metadata.TableId;
 import io.opendrs.engine.replay.event.DataChangeEvent;
 import io.opendrs.engine.replay.event.Operation;
 import io.opendrs.engine.replay.event.TransactionEvent;

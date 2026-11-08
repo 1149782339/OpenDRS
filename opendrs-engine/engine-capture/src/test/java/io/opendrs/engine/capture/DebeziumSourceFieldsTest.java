@@ -2,8 +2,8 @@ package io.opendrs.engine.capture;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
-import io.opendrs.common.metadata.DatabaseType;
-import io.opendrs.jdbc.JdbcConnectionConfig;
+import io.opendrs.engine.common.metadata.DatabaseType;
+import io.opendrs.engine.jdbc.JdbcConnectionConfig;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 

@@ -1,7 +1,7 @@
 package io.opendrs.engine.schema.convert.converters;
 
-import io.opendrs.common.metadata.DatabaseType;
-import io.opendrs.common.util.Pair;
+import io.opendrs.engine.common.metadata.DatabaseType;
+import io.opendrs.engine.common.util.Pair;
 import io.opendrs.engine.schema.convert.ConversionConfiguration;
 import io.opendrs.engine.schema.convert.ConversionException;
 

@@ -1,11 +1,11 @@
 package io.opendrs.engine.precheck.support;
 
-import io.opendrs.common.metadata.DatabaseType;
-import io.opendrs.common.metadata.TableId;
-import io.opendrs.jdbc.JdbcConnection;
-import io.opendrs.jdbc.JdbcConnectionConfig;
-import io.opendrs.jdbc.JdbcConnectionFactory;
-import io.opendrs.jdbc.JdbcException;
+import io.opendrs.engine.common.metadata.DatabaseType;
+import io.opendrs.engine.common.metadata.TableId;
+import io.opendrs.engine.jdbc.JdbcConnection;
+import io.opendrs.engine.jdbc.JdbcConnectionConfig;
+import io.opendrs.engine.jdbc.JdbcConnectionFactory;
+import io.opendrs.engine.jdbc.JdbcException;
 import java.sql.DatabaseMetaData;
 import java.sql.ResultSet;
 import java.sql.SQLException;

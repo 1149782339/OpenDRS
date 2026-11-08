@@ -1,7 +1,7 @@
 package io.opendrs.engine.replay.relation;
 
-import io.opendrs.common.metadata.TableDefinition;
-import io.opendrs.common.metadata.TableId;
+import io.opendrs.engine.common.metadata.TableDefinition;
+import io.opendrs.engine.common.metadata.TableId;
 
 import io.opendrs.engine.replay.annotation.ThreadSafe;
 import io.opendrs.engine.replay.dialect.DatabaseDialect;

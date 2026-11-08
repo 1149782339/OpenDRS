@@ -1,15 +1,15 @@
 package io.opendrs.engine.replay.applier;
 
-import io.opendrs.common.metadata.DatabaseType;
+import io.opendrs.engine.common.metadata.DatabaseType;
 import io.opendrs.engine.replay.event.ChangeEvent;
 import io.opendrs.engine.replay.event.DataChangeEvent;
 import io.opendrs.engine.replay.event.Operation;
 import io.opendrs.engine.replay.event.SchemaChangeEvent;
 import io.opendrs.engine.replay.event.TransactionEvent;
-import io.opendrs.common.naming.ColumnNamingStrategy;
-import io.opendrs.common.naming.TableNamingStrategy;
+import io.opendrs.engine.common.naming.ColumnNamingStrategy;
+import io.opendrs.engine.common.naming.TableNamingStrategy;
 import io.opendrs.engine.replay.relation.FieldsMetaData;
-import io.opendrs.common.metadata.TableId;
+import io.opendrs.engine.common.metadata.TableId;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;

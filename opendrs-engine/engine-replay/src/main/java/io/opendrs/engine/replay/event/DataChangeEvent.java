@@ -1,8 +1,8 @@
 package io.opendrs.engine.replay.event;
 
-import io.opendrs.common.metadata.DatabaseType;
+import io.opendrs.engine.common.metadata.DatabaseType;
 import io.opendrs.engine.replay.relation.FieldsMetaData;
-import io.opendrs.common.metadata.TableId;
+import io.opendrs.engine.common.metadata.TableId;
 
 import java.util.Map;
 

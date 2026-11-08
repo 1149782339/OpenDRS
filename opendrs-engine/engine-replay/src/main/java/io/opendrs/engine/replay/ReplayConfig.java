@@ -1,12 +1,12 @@
 package io.opendrs.engine.replay;
 
 import io.opendrs.engine.replay.connection.ConnectionProvider;
-import io.opendrs.common.naming.ColumnNamingStrategy;
+import io.opendrs.engine.common.naming.ColumnNamingStrategy;
 import io.opendrs.engine.replay.metrics.ReplayDirection;
 import io.opendrs.engine.replay.metrics.ReplayMetrics;
 import io.opendrs.engine.replay.naming.DefaultColumnNamingStrategy;
 import io.opendrs.engine.replay.naming.DefaultTableNamingStrategy;
-import io.opendrs.common.naming.TableNamingStrategy;
+import io.opendrs.engine.common.naming.TableNamingStrategy;
 import java.util.Objects;
 
 /**
@@ -18,7 +18,7 @@ public final class ReplayConfig {
     public static final String MYSQL_DIALECT_NAME = "MysqlDialect";
 
     /** Dialect matching the target database. */
-    public static String dialectNameFor(io.opendrs.common.metadata.DatabaseType targetType) {
+    public static String dialectNameFor(io.opendrs.engine.common.metadata.DatabaseType targetType) {
         return switch (targetType) {
             case POSTGRESQL -> POSTGRES_DIALECT_NAME;
             case MYSQL -> MYSQL_DIALECT_NAME;

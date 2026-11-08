@@ -6,12 +6,12 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import io.opendrs.common.metadata.DatabaseType;
+import io.opendrs.engine.common.metadata.DatabaseType;
 import io.opendrs.engine.precheck.fact.FactStore;
 import io.opendrs.engine.precheck.profile.MysqlToPgProfile;
 import io.opendrs.engine.precheck.support.FakeServer;
-import io.opendrs.jdbc.JdbcConnectionConfig;
-import io.opendrs.common.metadata.TableId;
+import io.opendrs.engine.jdbc.JdbcConnectionConfig;
+import io.opendrs.engine.common.metadata.TableId;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;

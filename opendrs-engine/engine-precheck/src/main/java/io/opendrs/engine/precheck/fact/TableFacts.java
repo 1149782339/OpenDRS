@@ -1,6 +1,6 @@
 package io.opendrs.engine.precheck.fact;
 
-import io.opendrs.common.metadata.TableId;
+import io.opendrs.engine.common.metadata.TableId;
 
 /**
  * What one table looks like on one endpoint. Collected in bulk (one query per endpoint, not one per

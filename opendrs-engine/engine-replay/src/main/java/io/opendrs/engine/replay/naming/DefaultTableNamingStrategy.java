@@ -1,8 +1,8 @@
 package io.opendrs.engine.replay.naming;
 
-import io.opendrs.common.naming.TableNamingStrategy;
+import io.opendrs.engine.common.naming.TableNamingStrategy;
 
-import io.opendrs.common.metadata.TableId;
+import io.opendrs.engine.common.metadata.TableId;
 
 /**
  * Default  table naming strategy without any changes

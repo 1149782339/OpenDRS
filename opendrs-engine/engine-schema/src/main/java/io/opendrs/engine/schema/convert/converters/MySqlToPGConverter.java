@@ -5,7 +5,7 @@ import io.opendrs.engine.schema.convert.listener.MySqlToPGParserListener;
 import io.opendrs.engine.schema.convert.listener.ParserErrorListener;
 import io.opendrs.engine.schema.convert.parser.mysql.MySqlLexer;
 import io.opendrs.engine.schema.convert.parser.mysql.MySqlParser;
-import io.opendrs.common.metadata.DatabaseType;
+import io.opendrs.engine.common.metadata.DatabaseType;
 import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CodePointCharStream;
 import org.antlr.v4.runtime.CommonTokenStream;

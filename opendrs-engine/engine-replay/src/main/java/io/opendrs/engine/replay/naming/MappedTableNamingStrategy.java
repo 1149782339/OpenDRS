@@ -1,9 +1,9 @@
 package io.opendrs.engine.replay.naming;
 
-import io.opendrs.common.metadata.TableId;
-import io.opendrs.common.naming.TableNamingStrategy;
+import io.opendrs.engine.common.metadata.TableId;
+import io.opendrs.engine.common.naming.TableNamingStrategy;
 import io.opendrs.engine.replay.mapping.MappingValidator;
-import io.opendrs.common.selection.TableSelection;
+import io.opendrs.engine.common.selection.TableSelection;
 
 /**
  * Maps MySQL source {@link TableId} (catalog=db) onto OpenDRS task mappings at the consumer

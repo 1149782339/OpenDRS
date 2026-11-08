@@ -1,8 +1,8 @@
 package io.opendrs.engine.core;
 
-import io.opendrs.common.log.MigrationLogLevel;
-import io.opendrs.common.log.MigrationLogListener;
-import io.opendrs.common.metadata.DatabaseType;
+import io.opendrs.engine.common.log.MigrationLogLevel;
+import io.opendrs.engine.common.log.MigrationLogListener;
+import io.opendrs.engine.common.metadata.DatabaseType;
 import io.opendrs.engine.capture.CdcEngine;
 import io.opendrs.engine.capture.DebeziumCdcEngineFactory;
 import io.opendrs.engine.capture.DebeziumEngineConfig;
@@ -19,14 +19,14 @@ import io.opendrs.engine.precheck.profile.MysqlBidirectionalProfile;
 import io.opendrs.engine.precheck.profile.MysqlToPgProfile;
 import io.opendrs.engine.replay.exception.ApplierException;
 import io.opendrs.engine.replay.mapping.MappingValidator;
-import io.opendrs.common.selection.TableSelection;
+import io.opendrs.engine.common.selection.TableSelection;
 import io.opendrs.engine.replay.metrics.ReplayMetrics;
 import io.opendrs.engine.schema.SchemaMigrationException;
-import io.opendrs.jdbc.JdbcConnection;
-import io.opendrs.jdbc.JdbcConnectionConfig;
-import io.opendrs.jdbc.JdbcConnectionFactory;
-import io.opendrs.jdbc.JdbcException;
-import io.opendrs.common.metadata.TableId;
+import io.opendrs.engine.jdbc.JdbcConnection;
+import io.opendrs.engine.jdbc.JdbcConnectionConfig;
+import io.opendrs.engine.jdbc.JdbcConnectionFactory;
+import io.opendrs.engine.jdbc.JdbcException;
+import io.opendrs.engine.common.metadata.TableId;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.util.List;
@@ -234,7 +234,7 @@ public class DefaultMigrationEngine implements MigrationEngine {
         }
     }
 
-    private List<TableId> expand(io.opendrs.jdbc.JdbcConnectionConfig source, TableSelection selection) {
+    private List<TableId> expand(io.opendrs.engine.jdbc.JdbcConnectionConfig source, TableSelection selection) {
         try {
             return expander.expand(source, selection);
         } catch (SQLException ex) {

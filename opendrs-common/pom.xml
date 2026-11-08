@@ -12,7 +12,7 @@
 
     <artifactId>opendrs-common</artifactId>
     <name>opendrs-common</name>
-    <description>Shared vocabulary across modules: table coordinates, naming strategies, identifier utilities, database types</description>
+    <description>Service-facing progress callbacks shared with the engine</description>
 
     <dependencies>
         <dependency>

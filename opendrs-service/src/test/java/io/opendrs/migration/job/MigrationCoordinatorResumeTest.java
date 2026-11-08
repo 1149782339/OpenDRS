@@ -10,7 +10,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
-import io.opendrs.common.log.MigrationLogListener;
+import io.opendrs.engine.common.log.MigrationLogListener;
 import io.opendrs.engine.core.DataMigrationParam;
 import io.opendrs.engine.core.DataMigrationTask;
 import io.opendrs.engine.core.DataMigrationTaskPhase;
@@ -21,8 +21,8 @@ import io.opendrs.engine.core.SchemaMigrationParam;
 import io.opendrs.engine.core.SchemaMigrationTask;
 import io.opendrs.engine.core.TaskState;
 import io.opendrs.engine.replay.mapping.MappingValidator;
-import io.opendrs.jdbc.JdbcConnection;
-import io.opendrs.jdbc.JdbcConnectionFactory;
+import io.opendrs.engine.jdbc.JdbcConnection;
+import io.opendrs.engine.jdbc.JdbcConnectionFactory;
 import io.opendrs.migration.api.request.MigrationOptions;
 import io.opendrs.migration.api.request.SelectedTable;
 import io.opendrs.migration.domain.ConnectionInfo;
@@ -171,7 +171,7 @@ class MigrationCoordinatorResumeTest {
                 connectionMapper,
                 registry,
                 engine,
-                io.opendrs.common.log.MigrationLogListener.NONE,
+                io.opendrs.engine.common.log.MigrationLogListener.NONE,
                 null,
                 null,
                 null,
@@ -210,7 +210,7 @@ class MigrationCoordinatorResumeTest {
         thread.join(5_000);
     }
 
-    private MigrationCoordinator job(MigrationTask task, io.opendrs.common.log.MigrationLogListener logListener) {
+    private MigrationCoordinator job(MigrationTask task, io.opendrs.engine.common.log.MigrationLogListener logListener) {
         return new MigrationCoordinator(
                 task.getId(),
                 task.getMode(),
@@ -226,7 +226,7 @@ class MigrationCoordinatorResumeTest {
                 resumePlanner);
     }
 
-    private io.opendrs.common.log.MigrationLogListener notingListener() {
+    private io.opendrs.engine.common.log.MigrationLogListener notingListener() {
         return (level, message) -> notes.add(level + ":" + message);
     }
 
@@ -283,8 +283,8 @@ class MigrationCoordinatorResumeTest {
         volatile boolean finiteData;
 
         @Override
-        public boolean supportsPrecheck(io.opendrs.common.metadata.DatabaseType source,
-                io.opendrs.common.metadata.DatabaseType target) {
+        public boolean supportsPrecheck(io.opendrs.engine.common.metadata.DatabaseType source,
+                io.opendrs.engine.common.metadata.DatabaseType target) {
             return false;
         }
 

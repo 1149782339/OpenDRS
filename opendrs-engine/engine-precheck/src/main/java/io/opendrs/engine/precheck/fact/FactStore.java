@@ -1,10 +1,10 @@
 package io.opendrs.engine.precheck.fact;
 
-import io.opendrs.common.metadata.DatabaseType;
+import io.opendrs.engine.common.metadata.DatabaseType;
 import io.opendrs.engine.precheck.PrecheckContext;
 import io.opendrs.engine.precheck.Side;
-import io.opendrs.jdbc.JdbcConnectionConfig;
-import io.opendrs.jdbc.JdbcConnectionFactory;
+import io.opendrs.engine.jdbc.JdbcConnectionConfig;
+import io.opendrs.engine.jdbc.JdbcConnectionFactory;
 import java.util.EnumMap;
 import java.util.Map;
 

@@ -1,8 +1,8 @@
 package io.opendrs.engine.capture;
 
-import io.opendrs.common.metadata.DatabaseType;
-import io.opendrs.jdbc.JdbcConnection;
-import io.opendrs.jdbc.JdbcConnectionConfig;
+import io.opendrs.engine.common.metadata.DatabaseType;
+import io.opendrs.engine.jdbc.JdbcConnection;
+import io.opendrs.engine.jdbc.JdbcConnectionConfig;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;

@@ -1,6 +1,6 @@
 package io.opendrs.engine.schema.convert.listener;
 
-import io.opendrs.common.util.StringUtil;
+import io.opendrs.engine.common.util.StringUtil;
 import io.opendrs.engine.schema.convert.ConversionMessage;
 import io.opendrs.engine.schema.convert.ConversionMessage.Level;
 import io.opendrs.engine.schema.convert.parser.mysql.MySqlParser;

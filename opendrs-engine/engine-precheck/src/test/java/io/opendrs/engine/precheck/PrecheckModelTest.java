@@ -5,8 +5,8 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import io.opendrs.common.metadata.DatabaseType;
-import io.opendrs.jdbc.JdbcConnectionConfig;
+import io.opendrs.engine.common.metadata.DatabaseType;
+import io.opendrs.engine.jdbc.JdbcConnectionConfig;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 

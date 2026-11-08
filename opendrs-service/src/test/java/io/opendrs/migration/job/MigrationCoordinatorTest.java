@@ -9,7 +9,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import io.opendrs.common.metadata.DatabaseType;
+import io.opendrs.engine.common.metadata.DatabaseType;
 import io.opendrs.engine.core.DataMigrationParam;
 import io.opendrs.engine.core.DataMigrationTask;
 import io.opendrs.engine.core.DataMigrationTaskPhase;
@@ -19,7 +19,7 @@ import io.opendrs.engine.core.PrecheckTask;
 import io.opendrs.engine.core.SchemaMigrationParam;
 import io.opendrs.engine.core.SchemaMigrationTask;
 import io.opendrs.engine.core.TaskState;
-import io.opendrs.common.metadata.TableId;
+import io.opendrs.engine.common.metadata.TableId;
 import io.opendrs.migration.api.request.MigrationOptions;
 import io.opendrs.migration.api.request.SelectedTable;
 import io.opendrs.migration.domain.ConnectionInfo;

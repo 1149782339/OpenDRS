@@ -3,11 +3,11 @@ package io.opendrs.engine.capture;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import io.opendrs.common.metadata.DatabaseType;
-import io.opendrs.common.metadata.TableId;
+import io.opendrs.engine.common.metadata.DatabaseType;
+import io.opendrs.engine.common.metadata.TableId;
 import io.opendrs.engine.capture.DebeziumEngineConfig.EngineSpec;
-import io.opendrs.common.selection.TableSelection;
-import io.opendrs.jdbc.JdbcConnectionConfig;
+import io.opendrs.engine.common.selection.TableSelection;
+import io.opendrs.engine.jdbc.JdbcConnectionConfig;
 import java.util.List;
 import java.util.Properties;
 import org.junit.jupiter.api.Test;

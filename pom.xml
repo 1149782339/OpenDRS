@@ -21,7 +21,6 @@
     <modules>
         <module>opendrs-common</module>
         <module>opendrs-engine</module>
-        <module>opendrs-jdbc</module>
         <module>opendrs-service</module>
     </modules>
 

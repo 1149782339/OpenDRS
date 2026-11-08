@@ -7,7 +7,7 @@ import io.opendrs.engine.replay.context.TaskContext;
 import io.opendrs.engine.replay.event.ChangeEvent;
 import io.opendrs.engine.replay.event.DataChangeEvent;
 import io.opendrs.engine.replay.exception.ApplierException;
-import io.opendrs.common.metadata.TableId;
+import io.opendrs.engine.common.metadata.TableId;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;

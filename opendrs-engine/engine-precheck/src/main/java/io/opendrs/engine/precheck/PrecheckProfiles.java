@@ -1,6 +1,6 @@
 package io.opendrs.engine.precheck;
 
-import io.opendrs.common.metadata.DatabaseType;
+import io.opendrs.engine.common.metadata.DatabaseType;
 import java.util.List;
 import java.util.Optional;
 

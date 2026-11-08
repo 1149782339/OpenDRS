@@ -1,9 +1,9 @@
 package io.opendrs.engine.schema.convert;
 
-import io.opendrs.common.metadata.DatabaseType;
-import io.opendrs.common.naming.ColumnNamingStrategy;
-import io.opendrs.common.naming.SchemaNamingStrategy;
-import io.opendrs.common.naming.TableNamingStrategy;
+import io.opendrs.engine.common.metadata.DatabaseType;
+import io.opendrs.engine.common.naming.ColumnNamingStrategy;
+import io.opendrs.engine.common.naming.SchemaNamingStrategy;
+import io.opendrs.engine.common.naming.TableNamingStrategy;
 
 /**
  * Conversion configuration used by sql converter.

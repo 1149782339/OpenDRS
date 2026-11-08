@@ -1,8 +1,8 @@
 package io.opendrs.engine.replay.sql;
 
-import io.opendrs.common.metadata.ColumnDefinition;
-import io.opendrs.common.metadata.TableId;
-import io.opendrs.common.util.StringUtil;
+import io.opendrs.engine.common.metadata.ColumnDefinition;
+import io.opendrs.engine.common.metadata.TableId;
+import io.opendrs.engine.common.util.StringUtil;
 import io.opendrs.engine.replay.annotation.NotThreadSafe;
 
 import java.util.Iterator;

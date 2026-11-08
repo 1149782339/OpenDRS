@@ -1,11 +1,11 @@
 package io.opendrs.engine.capture;
 
-import io.opendrs.common.metadata.DatabaseType;
+import io.opendrs.engine.common.metadata.DatabaseType;
 import io.opendrs.engine.replay.SnapshotStrategy;
-import io.opendrs.jdbc.JdbcConnectionConfig;
-import io.opendrs.common.metadata.TableId;
+import io.opendrs.engine.jdbc.JdbcConnectionConfig;
+import io.opendrs.engine.common.metadata.TableId;
 import io.opendrs.engine.replay.GtidLoopConfig;
-import io.opendrs.common.selection.TableSelection;
+import io.opendrs.engine.common.selection.TableSelection;
 import io.opendrs.engine.replay.metrics.ReplayDirection;
 import io.opendrs.engine.replay.metrics.ReplayMetrics;
 import io.opendrs.engine.capture.transport.ResolvedCdcTransport;

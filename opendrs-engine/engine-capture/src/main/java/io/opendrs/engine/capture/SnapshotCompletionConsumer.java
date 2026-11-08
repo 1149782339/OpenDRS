@@ -2,8 +2,8 @@ package io.opendrs.engine.capture;
 
 import io.debezium.engine.DebeziumEngine;
 import io.debezium.engine.RecordChangeEvent;
-import io.opendrs.common.log.MigrationLogLevel;
-import io.opendrs.common.log.MigrationLogListener;
+import io.opendrs.engine.common.log.MigrationLogLevel;
+import io.opendrs.engine.common.log.MigrationLogListener;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.apache.kafka.connect.source.SourceRecord;

@@ -1,14 +1,14 @@
 package io.opendrs.migration.service;
 
-import io.opendrs.common.log.MigrationLogLevel;
-import io.opendrs.common.metadata.TableId;
+import io.opendrs.engine.common.log.MigrationLogLevel;
+import io.opendrs.engine.common.metadata.TableId;
 import io.opendrs.engine.core.TableSelectionExpander;
 import io.opendrs.engine.replay.mapping.MappingValidator;
-import io.opendrs.common.selection.TableSelection;
+import io.opendrs.engine.common.selection.TableSelection;
 import io.opendrs.engine.replay.sql.ExpressionBuilder;
 import io.opendrs.engine.replay.sql.IdentifierRule;
-import io.opendrs.jdbc.JdbcConnection;
-import io.opendrs.jdbc.JdbcConnectionFactory;
+import io.opendrs.engine.jdbc.JdbcConnection;
+import io.opendrs.engine.jdbc.JdbcConnectionFactory;
 import io.opendrs.migration.domain.ConnectionInfo;
 import io.opendrs.migration.mapper.FullLoadCheckpointMapper;
 import java.sql.SQLException;
