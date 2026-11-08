@@ -37,6 +37,12 @@ const router = createRouter({
       meta: { titleKey: 'nav.taskCreate' },
     },
     {
+      path: '/tasks/:id/datacheck/create',
+      name: 'datacheck-create',
+      component: () => import('@/views/DataCheckCreate.vue'),
+      meta: { titleKey: 'datacheck.createPage.title' },
+    },
+    {
       path: '/tasks/:id',
       name: 'task-detail',
       component: () => import('@/views/TaskDetail.vue'),

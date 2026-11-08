@@ -162,6 +162,9 @@ export interface MigrationTaskResponse {
   mode: MigrationMode
   source: ConnectionInfo
   target: ConnectionInfo
+  /** Endpoint ids, used to enumerate schemas/tables when creating a data check. */
+  sourceConnectionId: number
+  targetConnectionId: number
   options: MigrationOptions
   phase: MigrationPhase
   state: TaskState | null

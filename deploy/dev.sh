@@ -3,7 +3,7 @@
 #
 #   ./deploy/dev.sh
 #
-# Compiles on the host (fast: warm ~/.m2 and node_modules), then refreshes the backend
+# Compiles on the host (fast: warm ~/.m2 and node_modules), then refreshes the service
 # image and restarts the stack. Nothing is compiled inside the container.
 set -euo pipefail
 
@@ -14,13 +14,20 @@ COMPOSE="${COMPOSE:-docker-compose}"
 # so re-running this script never disturbs a running migration demo.
 # -p opendrs pins the project name: with this file under deploy/ the default would
 #   become "deploy", breaking container/volume sharing with data-sources.sh and CI.
-COMPOSE_FILES=(-p opendrs -f deploy/docker-compose.yml)
+# Kafka/Apicurio sit behind the "kafka" compose profile: DIRECT (the default) does not
+# need them, which keeps the local stack free of the Docker Hub / Quay pulls. Set
+# OPENDRS_TRANSPORT_CHANNEL=KAFKA (or COMPOSE_PROFILES=kafka) to include them.
+COMPOSE_PROFILE_ARGS=()
+if [ "${OPENDRS_TRANSPORT_CHANNEL:-DIRECT}" = "KAFKA" ]; then
+  COMPOSE_PROFILE_ARGS+=(--profile kafka)
+fi
+COMPOSE_FILES=(-p opendrs "${COMPOSE_PROFILE_ARGS[@]}" -f deploy/docker-compose.yml)
 
 cd "$ROOT"
 
 log() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 
-log "1/4  building backend jar (tests skipped)"
+log "1/4  building service jar (tests skipped)"
 # The MSYS variables Git Bash injects here break the maven shell entry point.
 # Unset them in this shell instead of wrapping mvn in env(1): mvn is an extensionless
 # shell script, and env.exe would bypass bash and fail with "No such file or directory".
@@ -31,10 +38,10 @@ log "2/4  building frontend bundle"
 (cd opendrs-web && npm run build)
 
 log "3/4  refreshing images and restarting the stack"
-# The jar changed in step 1, so the backend image must rebuild from scratch. Podman's
+# The jar changed in step 1, so the service image must rebuild from scratch. Podman's
 # classic builder (no buildx on this host) does not always invalidate the COPY layer on
 # Windows — a plain `--build` can reuse a stale app.jar and run yesterday's code.
-"$COMPOSE" "${COMPOSE_FILES[@]}" build --no-cache backend
+"$COMPOSE" "${COMPOSE_FILES[@]}" build --no-cache opendrs-service
 "$COMPOSE" "${COMPOSE_FILES[@]}" up -d --wait
 
 log "4/4  waiting for http://localhost"
@@ -58,6 +65,6 @@ for _ in $(seq 1 90); do
   sleep 1
 done
 
-printf '\nAPI did not answer within 90s. Last backend logs:\n\n'
-"$COMPOSE" "${COMPOSE_FILES[@]}" logs --tail 60 backend
+printf '\nAPI did not answer within 90s. Last service logs:\n\n'
+"$COMPOSE" "${COMPOSE_FILES[@]}" logs --tail 60 opendrs-service
 exit 1

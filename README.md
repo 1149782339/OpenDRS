@@ -1,6 +1,6 @@
 # OpenDRS
 
-Open data replication service（开源数据复制服务）。通过 Web 界面完成 **MySQL → PostgreSQL** 的全量 + 增量迁移，以及 **MySQL ↔ MySQL 双向同步**。增量基于嵌入式 Debezium 读取 binlog，目标端按事务回放。
+Open data replication service（开源数据复制服务）。通过 Web 界面完成 **MySQL → PostgreSQL** 的全量 + 增量迁移、**MySQL ↔ MySQL 双向同步**，以及迁移后的**逐行数据校验**。增量基于嵌入式 Debezium 读取 binlog，目标端按事务回放。
 
 ## 功能
 
@@ -13,28 +13,34 @@ Open data replication service（开源数据复制服务）。通过 Web 界面�
 | 双向同步 | 两个方向各自全量+增量；GTID 打标 + 对端过滤防止回环 |
 | 任务监控 | 目标库回放 TPS、同步时延、事务执行/提交耗时（Prometheus 指标 + ECharts 展示） |
 | 任务状态机 | 启动 / 暂停（仅增量）/ 恢复 / 重启 / 结束 / 删除，非法操作置灰 |
+| 数据校验 | 对迁移范围内的表逐行比对源/目标内容，按表统计「不一致 / 仅源端 / 仅目标端」并分页查看明细（当前仅全量） |
 
 ## 快速开始
 
 要求：Docker（或 Podman）+ Docker Compose、JDK 21、Maven 3.8+、Node.js 18+。
 
 ```bash
-# 一键构建并启动全部服务（后端 jar + 前端 bundle + compose 重建）
+# 一键构建并启动全部服务（服务 jar + 前端 bundle + compose 重建）
 sh deploy/dev.sh
 ```
 
-启动完成后访问 **http://localhost**（nginx 反代 `/api` 到后端）。`dev.sh` 末尾会自动探测 `http://127.0.0.1/api/v1/migration/connections` 直到就绪。
+启动完成后访问 **http://localhost**（nginx 反代 `/api` 到 opendrs-service）。`dev.sh` 末尾会自动探测 `http://127.0.0.1/api/v1/migration/connections` 直到就绪。
 
-compose 栈包含：
+compose 应用栈包含：
 
 | 服务 | 端口 | 说明 |
 |---|---|---|
 | frontend (nginx) | 80 | Web UI + API 反代 |
-| backend | 8080 | Spring Boot 应用（host 网络） |
-| mysql | 3406 | 演示源库 + 服务元数据库（root/123456，库 `opendrs`） |
-| mysql2 | 3307 | 双向同步演示对端（root/123456，库 `bidir_test`） |
-| postgres | 5432 | 演示目标库（opendrs/opendrs，库 `opendrs`） |
+| opendrs-service | 8080 | Spring Boot 服务：迁移 + 数据校验（host 网络） |
+| mysql | 3406 | 服务元数据库（root/123456，库 `opendrs`） |
 | prometheus | 9090 | 回放指标采集 |
+
+需要真实数据源时，额外启动 `scripts/test/docker-compose.yml`（或 `scripts/test/data-sources.sh`）：
+
+| 服务 | 端口 | 说明 |
+|---|---|---|
+| e2e-mysql1 | 3306 | binlog + GTID 开启的 MySQL 源库（e2e_mysql/123456，库 `e2e_db`） |
+| e2e-postgres1 | 5432 | PostgreSQL 目标库（e2e_postgres/123456，库 `e2e_db`） |
 
 ## 使用流程
 
@@ -98,16 +104,27 @@ compose 栈包含：
 
 ### 4. 观察任务
 
-任务详情页三个页签：
+任务详情页四个页签：
 
 - **基本信息** — 任务/实例信息 + 迁移进度（源位点、抓取位点、回放位点、回放时延；双向任务分正向/反向两块）
 
 ![任务详情（双向任务的正/反向同步进度）](docs/images/task-detail.png)
 
+- **数据校验** — 创建并查看该迁移任务下的逐行内容对比，见 [5. 数据校验](#5-数据校验)
 - **迁移日志** — 引擎与任务日志，可按级别筛选
 - **任务监控** — 目标库回放 TPS（count/s）、数据同步时延（s）、事务平均执行/提交耗时
 
 ![任务监控](docs/images/task-monitor.png)
+
+### 5. 数据校验
+
+迁移任务详情页的 **数据校验** 页签用于确认源/目标内容是否一致：
+
+- **创建** — 输入任务名称，选择对比类型（当前仅「内容对比」；行数对比暂不支持），在穿梭框中勾选要校验的源表。可选的源表受父迁移任务的同步范围限制，目标表按迁移映射自动解析并在创建时固化。
+- **模式** — 当前仅支持全量内容对比（`FULL_ONLY`）；增量对比尚未实现，创建页不可选。
+- **执行** — 每张表独立执行：按主键排序流式读取两端、逐行归一化比对，不一致行写入该任务独立的结果表。
+- **报表** — 按表显示状态与差异数量，可按「不一致 / 仅源端 / 仅目标端」筛选，结果按主键分页；报告导出暂不支持。
+- **注意** — 校验期间对目标库的额外写入会影响结果准确性；无主键的表不参与校验。
 
 ## 支持的同步方式
 
@@ -139,7 +156,7 @@ compose 栈包含：
 
 ## API 概览
 
-统一前缀 `/api/v1/migration`，响应包 `{code, message, data}`（1000 成功）。示例：
+统一响应包 `{code, message, data}`（1000 成功）。迁移接口前缀 `/api/v1/migration`，数据校验接口前缀 `/api/v1/datacheck`。示例：
 
 ```bash
 # 列出数据源
@@ -166,37 +183,64 @@ curl http://localhost/api/v1/migration/tasks/{id}/precheck
 curl 'http://localhost/api/v1/migration/tasks/{id}/logs?page=1&size=50'
 ```
 
+### 数据校验
+
+```bash
+# 列出父迁移任务下的校验任务 / 可校验的源对象
+curl 'http://localhost/api/v1/datacheck/tasks?migrationTaskId=1'
+curl 'http://localhost/api/v1/datacheck/tasks/candidates?migrationTaskId=1'
+
+# 创建（当前仅全量内容对比）
+curl -X POST http://localhost/api/v1/datacheck/tasks \
+  -H 'Content-Type: application/json' \
+  -d '{"migrationTaskId":1,"name":"check-sample","mode":"FULL_ONLY",
+       "tables":[{"schema":"test","table":"sample"}]}'
+
+# 生命周期与结果
+curl -X POST http://localhost/api/v1/datacheck/tasks/{id}/start
+curl -X POST http://localhost/api/v1/datacheck/tasks/{id}/stop       # 暂停
+curl -X POST http://localhost/api/v1/datacheck/tasks/{id}/terminate  # 结束
+curl http://localhost/api/v1/datacheck/tasks/{id}/tables
+curl 'http://localhost/api/v1/datacheck/tasks/{id}/results?tableId=test.sample&flag=0&page=1&size=20'
+```
+
+`flag`：`0` 不一致、`1` 仅源端、`2` 仅目标端，省略表示全部。
+
 ## 本地开发
 
 ```bash
-# 后端：编译 / 测试 / 打包
+# 服务：编译 / 测试 / 打包
 mvn compile
 mvn test                      # 单测；端到端用例走 scripts/test framework（需容器）
 mvn -DskipTests package
 
+# 启动服务（迁移 + 数据校验同进程）
+mvn -pl opendrs-service -am -DskipTests package
+java -jar opendrs-service/target/opendrs-service-*.jar
+
 # 前端：热更新开发（代理 /api 到 :8080）
 cd opendrs-web && npm run dev     # http://localhost:5173
 
-# 修改后重新部署（等价于 dev.sh 的构建部分）
-mvn -q -DskipTests package && (cd opendrs-web && npm run build) \
-  && docker compose up -d --build
+# 修改后重新部署
+sh deploy/dev.sh
 ```
 
 ## 架构速览
 
 Maven 多模块，`io.opendrs`：
 
-- `opendrs-engine` — 无框架引擎层，对外只有 `MigrationEngine` 四个方法（`supportsPrecheck` / `migrateSchema` / `migrateData` / `precheck`），句柄立即返回、阻塞跑在引擎自己的守护线程池：
+- `opendrs-engine` — 无框架引擎层，对外只有 `MigrationEngine` 五个方法（`supportsPrecheck` / `migrateSchema` / `migrateData` / `precheck` / `datacheck`），句柄立即返回、阻塞跑在引擎自己的守护线程池：
   - `engine-common` — 元数据、表选择/映射、命名策略、日志与工具
   - `engine-jdbc` — 连接生命周期与元数据读取（MySQL / PostgreSQL / Oracle）
+  - `engine-schema` — 结构迁移：从源库 DDL 生成目标表/索引/约束，供全量与增量 DDL 复用
   - `engine-capture` — 嵌入式 Debezium（MySQL binlog），offset / schema history 持久化在任务元数据库
   - `engine-replay` — JDBC 事务回放，PostgreSQL / MySQL 目标方言
   - `engine-precheck` — 规则化预检查（按 源→目标 类型匹配 profile）
+  - `engine-datacheck` — 行内容校验：按主键排序流读、归一化与差异落库
   - `engine-core` — 编排与表选择/映射
-- `opendrs-migration-service` — Spring Boot：任务状态机（`job_phase` 阶段 × `job_state` 状态）、异步预检、任务调度、监控指标、MyBatis + Flyway
-- `opendrs-datacheck-service` — Spring Boot：数据校验编排与不一致行查询（默认端口 8082）
+- `opendrs-service` — 唯一的 Spring Boot 应用：迁移任务状态机（`job_phase` 阶段 × `job_state` 状态）、异步预检、任务调度、监控指标、MyBatis + Flyway，以及数据校验编排与不一致行查询（`io.opendrs.migration.*` 与 `io.opendrs.datacheck.*` 同一进程，默认端口 8080）
 - `opendrs-web` — Vue 3 + Element Plus + ECharts（非 Maven 模块，`npm run build` 产出由 nginx 挂载）
-- `opendrs-common` — 引擎向 service 汇报的进度回调
+- `opendrs-common` — 跨模块共享的 API 响应包、错误码与 i18n 消息，以及引擎向 service 汇报的进度回调
 
 ## License
 

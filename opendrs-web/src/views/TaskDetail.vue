@@ -23,6 +23,7 @@ import { ElMessage } from 'element-plus'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
+import DataCheckPanel from '@/components/DataCheckPanel.vue'
 import TaskMonitor from '@/components/TaskMonitor.vue'
 
 const { t, locale } = useI18n()
@@ -34,8 +35,15 @@ const task = ref<MigrationTaskResponse | null>(null)
 const status = ref<MigrationStatusResponse | null>(null)
 const loading = ref(false)
 
-type DetailTab = 'info' | 'logs' | 'monitor'
-const activeTab = ref<DetailTab>('info')
+type DetailTab = 'info' | 'datacheck' | 'logs' | 'monitor'
+
+/** Returning from the data-check creation page uses `?tab=datacheck`. */
+function initialTab(): DetailTab {
+  const tab = route.query.tab
+  return tab === 'datacheck' || tab === 'logs' || tab === 'monitor' ? tab : 'info'
+}
+
+const activeTab = ref<DetailTab>(initialTab())
 /** 日志懒加载：第一次进入「迁移日志」页签才拉数据，之后切走再切回保留已加载内容。 */
 const logsVisited = ref(false)
 
@@ -286,6 +294,10 @@ onUnmounted(() => {
           </section>
         </template>
         <el-empty v-else-if="!loading" :description="t('detail.notExist')" />
+      </el-tab-pane>
+
+      <el-tab-pane :label="t('detail.tabs.datacheck')" name="datacheck" lazy>
+        <DataCheckPanel :task-id="taskId" />
       </el-tab-pane>
 
       <el-tab-pane :label="t('detail.tabs.logs')" name="logs">

@@ -54,6 +54,9 @@ public enum ErrorMessage {
     PRECHECK_NO_RESULTS("error.precheck.noResults"),
     PRECHECK_NOT_SUPPORTED("error.precheck.notSupported"),
 
+    DATACHECK_CANDIDATES_FAILED("error.datacheck.candidatesFailed"),
+    DATACHECK_TABLE_OUT_OF_SCOPE("error.datacheck.tableOutOfScope"),
+
     SYSTEM_DB_ERROR("error.system.db"),
     SYSTEM_INTERNAL_ERROR("error.system.internal");
 
