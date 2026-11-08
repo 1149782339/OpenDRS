@@ -18,6 +18,15 @@ public record Null() implements LogicalValue {
         return LogicalType.NULL.hashCode();
     }
 
+    /**
+     * A SQL NULL contributes no text: writing {@code "null"} would collide with the literal string
+     * {@code "null"}, and the column boundary is carried by the caller's separator.
+     */
+    @Override
+    public void serialize(StringBuilder builder) {
+        // deliberately empty
+    }
+
     @Override
     public java.lang.String toString() {
         return "null";

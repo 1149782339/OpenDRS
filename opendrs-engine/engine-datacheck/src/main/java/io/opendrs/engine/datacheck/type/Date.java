@@ -25,6 +25,11 @@ public record Date(int epochDay) implements LogicalValue {
 
     /** Days since the Unix epoch are the value itself; no date formatting is needed to compare. */
     @Override
+    public void serialize(StringBuilder builder) {
+        builder.append(epochDay);
+    }
+
+    @Override
     public java.lang.String toString() {
         return java.lang.Integer.toString(epochDay);
     }

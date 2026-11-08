@@ -1,7 +1,5 @@
 package io.opendrs.engine.datacheck.type.serialize;
 
-import io.opendrs.engine.common.metadata.DatabaseType;
-import io.opendrs.engine.common.util.Pair;
 import io.opendrs.engine.datacheck.type.LogicalValue;
 
 /**
@@ -13,15 +11,15 @@ import io.opendrs.engine.datacheck.type.LogicalValue;
  * MySQL {@code tinyint(1)} against a PostgreSQL {@code boolean}, ...), so the implementation is
  * allowed to look at both values and normalize them against each other.
  */
-public interface Serialize {
+public interface Serializer {
 
     /**
      * Serializes one source/target pair.
      *
      * @param source the value read from the source side
      * @param target the value read from the target side
-     * @param databaseType the database the source value was read from
-     * @return the canonical text of both sides, first = source, second = target
+     * @param columnIndex 0-based index into the source/target column definitions
+     * @param context the row buffers, owned and reused by the caller
      */
-    Pair<String, String> serialize(LogicalValue source, LogicalValue target, DatabaseType databaseType);
+    void serialize(LogicalValue source, LogicalValue target, int columnIndex, SerializeContext context);
 }

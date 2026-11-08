@@ -25,6 +25,11 @@ public record TimestampTz(long nanos) implements LogicalValue {
 
     /** The absolute instant is already an epoch count; the zone adds nothing to the comparison. */
     @Override
+    public void serialize(StringBuilder builder) {
+        builder.append(nanos);
+    }
+
+    @Override
     public java.lang.String toString() {
         return java.lang.Long.toString(nanos);
     }

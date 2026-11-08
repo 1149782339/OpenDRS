@@ -5,6 +5,8 @@ import java.util.Objects;
 
 public record Binary(byte[] bytes) implements LogicalValue {
 
+    private static final char[] HEX = "0123456789abcdef".toCharArray();
+
     public Binary {
         bytes = bytes == null ? null : bytes.clone();
     }
@@ -37,7 +39,20 @@ public record Binary(byte[] bytes) implements LogicalValue {
 
     /** Lowercase hex, the textual form of a byte string on both sides. */
     @Override
+    public void serialize(StringBuilder builder) {
+        if (bytes == null) {
+            builder.append("null");
+            return;
+        }
+        for (byte b : bytes) {
+            builder.append(HEX[(b >> 4) & 0x0F]).append(HEX[b & 0x0F]);
+        }
+    }
+
+    @Override
     public java.lang.String toString() {
-        return bytes == null ? "null" : java.util.HexFormat.of().formatHex(bytes);
+        StringBuilder builder = new StringBuilder(bytes == null ? 4 : bytes.length * 2);
+        serialize(builder);
+        return builder.toString();
     }
 }

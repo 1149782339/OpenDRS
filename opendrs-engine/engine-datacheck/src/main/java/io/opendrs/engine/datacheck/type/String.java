@@ -25,6 +25,11 @@ public record String(java.lang.String value) implements LogicalValue {
     }
 
     @Override
+    public void serialize(StringBuilder builder) {
+        builder.append(value == null ? "null" : value);
+    }
+
+    @Override
     public java.lang.String toString() {
         return value == null ? "null" : value;
     }

@@ -27,7 +27,14 @@ public record Decimal(BigDecimal value) implements LogicalValue {
 
     /** Plain decimal without trailing zeros, so the scale a database reports does not show up. */
     @Override
+    public void serialize(StringBuilder builder) {
+        builder.append(value == null ? "null" : value.stripTrailingZeros().toPlainString());
+    }
+
+    @Override
     public java.lang.String toString() {
-        return value == null ? "null" : value.stripTrailingZeros().toPlainString();
+        StringBuilder builder = new StringBuilder();
+        serialize(builder);
+        return builder.toString();
     }
 }

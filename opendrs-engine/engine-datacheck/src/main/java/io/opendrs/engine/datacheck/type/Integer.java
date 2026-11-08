@@ -23,6 +23,11 @@ public record Integer(int value) implements LogicalValue {
     }
 
     @Override
+    public void serialize(StringBuilder builder) {
+        builder.append(value);
+    }
+
+    @Override
     public java.lang.String toString() {
         return java.lang.Integer.toString(value);
     }

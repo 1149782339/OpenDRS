@@ -35,20 +35,33 @@ public record Bit(byte[] bytes) implements LogicalValue {
 
     /** Bit string with the leading zeros MySQL does not pad with dropped. */
     @Override
-    public java.lang.String toString() {
+    public void serialize(StringBuilder builder) {
         if (bytes == null) {
-            return "null";
+            builder.append("null");
+            return;
         }
-        java.lang.StringBuilder bits = new java.lang.StringBuilder(bytes.length * 8);
+        if (bytes.length == 0) {
+            return;
+        }
+        boolean started = false;
         for (byte b : bytes) {
             for (int shift = 7; shift >= 0; shift--) {
-                bits.append((b >> shift) & 1);
+                int bit = (b >> shift) & 1;
+                if (bit == 1 || started) {
+                    builder.append(bit);
+                    started = true;
+                }
             }
         }
-        int firstOne = 0;
-        while (firstOne < bits.length() - 1 && bits.charAt(firstOne) == '0') {
-            firstOne++;
+        if (!started) {
+            builder.append('0');
         }
-        return bits.substring(firstOne);
+    }
+
+    @Override
+    public java.lang.String toString() {
+        StringBuilder builder = new StringBuilder(bytes == null ? 4 : bytes.length);
+        serialize(builder);
+        return builder.toString();
     }
 }

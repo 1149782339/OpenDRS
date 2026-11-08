@@ -23,6 +23,11 @@ public record Bool(boolean value) implements LogicalValue {
     }
 
     @Override
+    public void serialize(StringBuilder builder) {
+        builder.append(value);
+    }
+
+    @Override
     public java.lang.String toString() {
         return java.lang.Boolean.toString(value);
     }

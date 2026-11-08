@@ -25,6 +25,11 @@ public record Time(long nanosOfDay) implements LogicalValue {
 
     /** Nanos since midnight are the value itself; MySQL's out-of-day range needs no special case. */
     @Override
+    public void serialize(StringBuilder builder) {
+        builder.append(nanosOfDay);
+    }
+
+    @Override
     public java.lang.String toString() {
         return java.lang.Long.toString(nanosOfDay);
     }

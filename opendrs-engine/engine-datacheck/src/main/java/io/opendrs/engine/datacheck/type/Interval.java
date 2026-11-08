@@ -31,22 +31,32 @@ public record Interval(int years, int months, int days, long nanos) implements L
 
     /** ISO-8601 duration, e.g. {@code P1Y2M3DT4.5S}, built from the fields as stored. */
     @Override
-    public java.lang.String toString() {
-        java.lang.StringBuilder duration = new java.lang.StringBuilder("P");
+    public void serialize(StringBuilder builder) {
+        int start = builder.length();
+        builder.append('P');
         if (years != 0) {
-            duration.append(years).append('Y');
+            builder.append(years).append('Y');
         }
         if (months != 0) {
-            duration.append(months).append('M');
+            builder.append(months).append('M');
         }
         if (days != 0) {
-            duration.append(days).append('D');
+            builder.append(days).append('D');
         }
         if (nanos != 0) {
-            duration.append('T')
+            builder.append('T')
                     .append(java.math.BigDecimal.valueOf(nanos, 9).stripTrailingZeros().toPlainString())
                     .append('S');
         }
-        return duration.length() == 1 ? "P0D" : duration.toString();
+        if (builder.length() == start + 1) {
+            builder.append("0D");
+        }
+    }
+
+    @Override
+    public java.lang.String toString() {
+        StringBuilder builder = new StringBuilder();
+        serialize(builder);
+        return builder.toString();
     }
 }

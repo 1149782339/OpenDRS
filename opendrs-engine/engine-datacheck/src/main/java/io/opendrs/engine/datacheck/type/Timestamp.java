@@ -24,6 +24,11 @@ public record Timestamp(long nanos) implements LogicalValue {
 
     /** Nanos since the Unix epoch are the value itself; no date formatting is needed to compare. */
     @Override
+    public void serialize(StringBuilder builder) {
+        builder.append(nanos);
+    }
+
+    @Override
     public java.lang.String toString() {
         return java.lang.Long.toString(nanos);
     }
