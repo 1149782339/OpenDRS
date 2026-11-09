@@ -183,7 +183,7 @@ public final class DataCheckRunner {
                         context.source().append(COLUMN_SEPARATOR);
                         context.target().append(COLUMN_SEPARATOR);
                     }
-                    java.lang.String pk = primaryKey(sourceResult, sourcePkIndexes);
+                    String pk = primaryKey(sourceResult, sourcePkIndexes);
                     if (hash(context.source()) == hash(context.target())) {
                         matchedRows++;
                         consistent.add(pk);
