@@ -4,7 +4,7 @@
 
 English | [简体中文](README_CN.md)
 
-**Open Data Replication Service** — an open-source data replication platform for heterogeneous databases, driven from a web UI.
+**Open Data Replication Service** — an open-source data replication platform for heterogeneous databases, driven from a bilingual (English / 中文) web UI.
 
 OpenDRS is a service for full-load migration, change-data sync, and row-level data check across databases. You configure sources and tasks in the browser; the engine captures changes, applies them on the target as transactions, and gives you precheck, operations, and data check in one place — no need to assemble a CDC connector, a sink, and a UI yourself. Incremental capture today uses embedded [Debezium](https://debezium.io).
 
@@ -50,6 +50,7 @@ OpenDRS turns that pipeline into a service you can deploy. You configure data so
 - **Precheck** — Connectivity, versions, privileges, path-specific CDC settings, primary keys, target instance health, table presence, and more are scored as pass, warn, or block. Blocking findings must be fixed before you start.
 - **Bidirectional sync on supported paths** — Each direction runs its own full load and incremental stream, with loop prevention. Currently available for MySQL ↔ MySQL (GTID tagging and peer-side filtering).
 - **Operable tasks** — Start, pause (incremental phase only), resume, restart, terminate, and delete. Actions that aren't valid for the current state are disabled in the UI.
+- **Bilingual web UI** — Every page is available in English and Simplified Chinese; switch languages with one click in the top bar.
 - **Observability** — Target-side apply TPS, sync lag, and transaction execute / commit time, collected with Prometheus and shown with ECharts.
 - **Row-level data check** — After a migration's full load has finished, compare selected tables row by row. Modes: full only, full then incremental, or incremental only (Kafka transport required). The report shows per-table status, difference counts, and incremental lag.
 
@@ -214,7 +215,7 @@ The table below is about **product positioning**. It is not a benchmark and incl
 | Positioning | End-to-end replication service with a web UI | CDC event platform (you bring the sink) | MySQL binlog subscription and dispatch | Offline batch sync framework | Flink-based real-time / batch integration |
 | Full + incremental | One task, automatically chained | Snapshot + streaming events; you build replay | Primarily incremental subscription | Batch is the main job | Supported; you build the pipeline |
 | Target writes | Built-in JDBC transactional apply | Hook up Kafka / a sink | Write a consumer or publish to a message queue | Built-in writer plugins | Configure a pipeline / sink |
-| Web operations UI | Yes (wizard, precheck, monitoring) | No (connector / platform oriented) | canal-admin | No (job configuration) | No (YAML / SQL) |
+| Web operations UI | Yes, English / 中文 (wizard, precheck, monitoring) | No (connector / platform oriented) | canal-admin | No (job configuration) | No (YAML / SQL) |
 | Sources / targets | Multi-source / multi-target platform; see the [path matrix](#supported-replication-paths) for what is shipped today | Many CDC sources | MySQL | Large plugin ecosystem | Many sources and targets |
 | Transport | In-process (`DIRECT`) or Kafka | Commonly Kafka Connect; also embedded | Server / message queue | In-process channels | Flink job |
 
