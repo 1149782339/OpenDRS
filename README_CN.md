@@ -89,13 +89,9 @@ OpenDRS 按多源、多目标平台来设计。**已支持**表示该链路可�
 |---|---|---|---|
 | MySQL | PostgreSQL | 已支持 | 单向。结构迁移（MySQL DDL → PostgreSQL）、全量快照、增量 CDC。模式：全量 + 增量，或仅全量。 |
 | MySQL | MySQL | 已支持 | 全量快照与增量 CDC。可单向，也可双向（必须全量 + 增量）。不做结构迁移，两端表需已存在。双向用 GTID 打标防止回环。 |
-<!-- BEGIN PLANNED PATHS
-     仅为后续方向示例，main 上尚未实现。
-     路线图有变时，可整段删除或改写。 -->
 | Oracle | PostgreSQL | 计划中 | |
 | PostgreSQL | MySQL | 计划中 | |
 | MySQL | Oracle | 计划中 | |
-<!-- END PLANNED PATHS -->
 
 ### 当前已支持链路的前提
 

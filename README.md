@@ -89,13 +89,9 @@ OpenDRS is built as a multi-source, multi-target platform. **Supported** means t
 |---|---|---|---|
 | MySQL | PostgreSQL | Supported | Unidirectional. Schema migration (MySQL DDL → PostgreSQL), full snapshot, and incremental CDC. Modes: full + incremental, or full load only. |
 | MySQL | MySQL | Supported | Full snapshot and incremental CDC. Unidirectional, or bidirectional (full + incremental only). No schema migration — tables must already exist. Bidirectional uses GTID tagging to prevent loops. |
-<!-- BEGIN PLANNED PATHS
-     Example future directions only — not implemented on main.
-     Delete or edit this block if the roadmap changes. -->
 | Oracle | PostgreSQL | Planned | |
 | PostgreSQL | MySQL | Planned | |
 | MySQL | Oracle | Planned | |
-<!-- END PLANNED PATHS -->
 
 ### Requirements on currently supported paths
 
