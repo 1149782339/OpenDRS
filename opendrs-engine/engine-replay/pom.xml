@@ -21,7 +21,7 @@
     <dependencies>
         <dependency>
             <groupId>io.opendrs</groupId>
-            <artifactId>opendrs-common</artifactId>
+            <artifactId>engine-common</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
@@ -31,7 +31,7 @@
         </dependency>
         <dependency>
             <groupId>io.opendrs</groupId>
-            <artifactId>opendrs-jdbc</artifactId>
+            <artifactId>engine-jdbc</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>

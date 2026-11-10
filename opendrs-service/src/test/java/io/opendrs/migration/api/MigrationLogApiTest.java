@@ -4,7 +4,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-import io.opendrs.common.log.MigrationLogLevel;
+import io.opendrs.engine.common.log.MigrationLogLevel;
 import io.opendrs.migration.api.request.MigrationOptions;
 import io.opendrs.migration.domain.ConnectionInfo;
 import io.opendrs.migration.domain.DbType;

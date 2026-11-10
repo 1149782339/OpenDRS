@@ -1,6 +1,6 @@
 package io.opendrs.engine.precheck.profile;
 
-import io.opendrs.common.metadata.DatabaseType;
+import io.opendrs.engine.common.metadata.DatabaseType;
 import io.opendrs.engine.precheck.CheckIds;
 import io.opendrs.engine.precheck.PrecheckProfile;
 import io.opendrs.engine.precheck.RuleBinding;

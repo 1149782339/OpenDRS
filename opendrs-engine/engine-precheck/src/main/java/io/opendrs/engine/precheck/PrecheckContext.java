@@ -1,8 +1,7 @@
 package io.opendrs.engine.precheck;
 
-import io.opendrs.jdbc.JdbcConnectionConfig;
-import io.opendrs.jdbc.metadata.Table;
-import io.opendrs.jdbc.metadata.TableRef;
+import io.opendrs.engine.jdbc.JdbcConnectionConfig;
+import io.opendrs.engine.common.metadata.TableId;
 import java.util.LinkedHashSet;
 import java.util.List;
 
@@ -21,8 +20,8 @@ import java.util.List;
 public record PrecheckContext(
         JdbcConnectionConfig source,
         JdbcConnectionConfig target,
-        List<Table> sourceTables,
-        List<Table> targetTables,
+        List<TableId> sourceTables,
+        List<TableId> targetTables,
         boolean tablesKnown,
         boolean bidirectional) {
 
@@ -52,16 +51,15 @@ public record PrecheckContext(
         }
     }
 
-    private static List<String> schemasOf(List<Table> tables, JdbcConnectionConfig config) {
+    private static List<String> schemasOf(List<TableId> tables, JdbcConnectionConfig config) {
         LinkedHashSet<String> schemas = new LinkedHashSet<>();
-        for (Table table : tables) {
-            TableRef ref = table.ref();
-            if (ref.schema() != null && !ref.schema().isBlank()) {
-                schemas.add(ref.schema());
+        for (TableId id : tables) {
+            if (id.getSchema() != null && !id.getSchema().isBlank()) {
+                schemas.add(id.getSchema());
             }
         }
         if (schemas.isEmpty()) {
-            if (config.getType() == io.opendrs.common.metadata.DatabaseType.POSTGRESQL) {
+            if (config.getType() == io.opendrs.engine.common.metadata.DatabaseType.POSTGRESQL) {
                 schemas.add("public");
             } else if (config.getDatabase() != null && !config.getDatabase().isBlank()) {
                 schemas.add(config.getDatabase());

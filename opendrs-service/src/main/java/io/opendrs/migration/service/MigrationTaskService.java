@@ -3,8 +3,8 @@ package io.opendrs.migration.service;
 import io.opendrs.common.error.ErrorCode;
 import io.opendrs.common.error.ExceptionFactory;
 import io.opendrs.common.i18n.ErrorMessage;
-import io.opendrs.common.log.MigrationLogLevel;
-import io.opendrs.common.metadata.DatabaseType;
+import io.opendrs.engine.common.log.MigrationLogLevel;
+import io.opendrs.engine.common.metadata.DatabaseType;
 import io.opendrs.migration.api.request.CreateMigrationTaskRequest;
 import io.opendrs.migration.api.request.MigrationOptions;
 import io.opendrs.migration.api.response.MigrationStatusResponse;
@@ -428,6 +428,8 @@ public class MigrationTaskService {
                 task.getMode(),
                 toDto(source).masked(),
                 toDto(target).masked(),
+                task.getSourceConnectionId(),
+                task.getTargetConnectionId(),
                 task.getOptionsJson(),
                 task.getPhase(),
                 task.getState(),
@@ -458,12 +460,13 @@ public class MigrationTaskService {
         if (pipelines.size() > 1) {
             reverse = pipelines.stream().filter(p -> p != forward).findFirst().orElse(null);
         }
+        MigrationStatusResponse.Offset forwardOffset = forward == null ? null : offsetOf(task, forward);
         return new MigrationStatusResponse(
                 task.getId(),
                 task.getPhase(),
                 task.getState(),
-                new MigrationStatusResponse.Progress(lagMs(task, forward)),
-                forward == null ? null : offsetOf(task, forward),
+                progressOf(task, forward, forwardOffset == null ? null : forwardOffset.source()),
+                forwardOffset,
                 reverse == null ? null : offsetOf(task, reverse),
                 task.getErrorMessage());
     }
@@ -507,13 +510,35 @@ public class MigrationTaskService {
      * shows a dash rather than a stale number.
      */
     private Long lagMs(MigrationTask task, TaskPipeline forward) {
+        // List view does not query the source live; capture lag still uses heartbeat / event ts.
+        MigrationStatusResponse.Progress progress = progressOf(task, forward, null);
+        return progress == null ? null : progress.lagMs();
+    }
+
+    /**
+     * Live lags, computed at read time from watermarks the capture/replay paths published.
+     *
+     * <p>Only meaningful once the snapshot is done and the binlog is being followed: during the
+     * full load every "event" is a snapshot row whose timestamp is the read time, and after the run
+     * ends the registry entry describes a pipeline that no longer exists. Everywhere else the column
+     * shows a dash rather than a stale number. {@code lagMs} is the end-to-end number.
+     */
+    private MigrationStatusResponse.Progress progressOf(
+            MigrationTask task, TaskPipeline forward, String sourcePosition) {
         if (task.getState() != TaskState.RUNNING || task.getPhase() != MigrationPhase.INCREMENTAL) {
-            return null;
+            return new MigrationStatusResponse.Progress(null);
         }
         if (forward == null) {
-            return null;
+            return new MigrationStatusResponse.Progress(null);
         }
-        return lagRegistry.lagMs(forward.getId()).orElse(null);
+        return lagRegistry.lags(forward.getId(), System.currentTimeMillis(), sourcePosition)
+                .map(lags -> new MigrationStatusResponse.Progress(
+                        lags.endToEndLagMs(),
+                        lags.endToEndLagMs(),
+                        lags.captureLagMs(),
+                        lags.replayLagMs(),
+                        lags.replayBacklog()))
+                .orElse(new MigrationStatusResponse.Progress(null));
     }
 
     private static io.opendrs.migration.api.request.ConnectionInfo toDto(ConnectionInfo connection) {

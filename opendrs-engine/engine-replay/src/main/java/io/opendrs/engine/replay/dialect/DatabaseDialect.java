@@ -1,13 +1,13 @@
 package io.opendrs.engine.replay.dialect;
 
-import io.opendrs.common.metadata.DatabaseType;
+import io.opendrs.engine.common.metadata.DatabaseType;
 
 import io.opendrs.engine.replay.annotation.ThreadSafe;
 import io.opendrs.engine.replay.jdbc.StatementBinder;
-import io.opendrs.engine.replay.relation.ColumnDefinition;
+import io.opendrs.engine.common.metadata.ColumnDefinition;
 import io.opendrs.engine.replay.relation.FieldsMetaData;
-import io.opendrs.engine.replay.relation.TableDefinition;
-import io.opendrs.common.metadata.TableId;
+import io.opendrs.engine.common.metadata.TableDefinition;
+import io.opendrs.engine.common.metadata.TableId;
 import io.opendrs.engine.replay.sql.SQLState;
 import org.apache.kafka.connect.data.Schema;
 

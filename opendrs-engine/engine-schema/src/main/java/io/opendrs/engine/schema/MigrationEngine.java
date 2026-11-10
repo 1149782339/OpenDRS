@@ -1,6 +1,6 @@
 package io.opendrs.engine.schema;
 
-import io.opendrs.common.metadata.DatabaseType;
+import io.opendrs.engine.common.metadata.DatabaseType;
 import io.opendrs.engine.schema.convert.ConversionConfiguration;
 import io.opendrs.engine.schema.convert.ConversionResult;
 import io.opendrs.engine.schema.convert.ConversionResults;
@@ -18,9 +18,9 @@ import io.opendrs.engine.schema.imports.DefaultObjectImporter;
 import io.opendrs.engine.schema.imports.ImportConfiguration;
 import io.opendrs.engine.schema.imports.ImportResults;
 import io.opendrs.engine.schema.meta.DatabaseObject;
-import io.opendrs.jdbc.JdbcConnection;
-import io.opendrs.jdbc.JdbcConnectionConfig;
-import io.opendrs.jdbc.JdbcConnectionFactory;
+import io.opendrs.engine.jdbc.JdbcConnection;
+import io.opendrs.engine.jdbc.JdbcConnectionConfig;
+import io.opendrs.engine.jdbc.JdbcConnectionFactory;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
@@ -54,7 +54,7 @@ public class MigrationEngine {
         Objects.requireNonNull(configuration, "configuration");
         SchemaDialect dialect = dialectFor(source.getType());
         try (JdbcConnection connection = connectionFactory.open(source)) {
-            return new DefaultObjectExporter(connection.unwrap(), dialect, source.getType())
+            return new DefaultObjectExporter(connection.connection(), dialect, source.getType())
                     .export(configuration);
         }
     }
@@ -107,7 +107,7 @@ public class MigrationEngine {
      * Executes a converted batch on {@code target}, in the batch's dependency order.
      *
      * <p>Opens and closes its own connection. Schema remapping is driven by the
-     * {@link io.opendrs.common.naming.SchemaNamingStrategy} in {@code configuration}; see
+     * {@link io.opendrs.engine.common.naming.SchemaNamingStrategy} in {@code configuration}; see
      * {@link ImportConfiguration}.
      */
     public ImportResults importObjects(
@@ -118,7 +118,7 @@ public class MigrationEngine {
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(conversionResults, "conversionResults");
         try (JdbcConnection connection = connectionFactory.open(target)) {
-            return new DefaultObjectImporter(connection.unwrap())
+            return new DefaultObjectImporter(connection.connection())
                     .importObjects(conversionResults, configuration);
         }
     }

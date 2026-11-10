@@ -162,6 +162,9 @@ export interface MigrationTaskResponse {
   mode: MigrationMode
   source: ConnectionInfo
   target: ConnectionInfo
+  /** Endpoint ids, used to enumerate schemas/tables when creating a data check. */
+  sourceConnectionId: number
+  targetConnectionId: number
   options: MigrationOptions
   phase: MigrationPhase
   state: TaskState | null
@@ -200,13 +203,18 @@ export interface TaskReplayMetrics {
 }
 
 export interface MigrationProgress {
+  /** Main number: end-to-end lag (compatibility). */
   lagMs: number | null
+  endToEndLagMs?: number | null
+  captureLagMs?: number | null
+  replayLagMs?: number | null
+  replayBacklog?: number | null
 }
 
 export interface MigrationOffset {
   /** 源位点（实时查询，file:pos），不可达为 null */
   source: string | null
-  /** 抓取位点（Debezium 已读到） */
+  /** 抓取位点（KAFKA: 已成功写出；DIRECT: Debezium 已交给 apply） */
   captured: string | null
   /** 回放位点（目标库已提交） */
   applied: string | null

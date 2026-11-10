@@ -13,8 +13,8 @@ import static org.mockito.Mockito.when;
 
 import io.opendrs.common.error.AppException;
 import io.opendrs.common.error.ErrorCode;
-import io.opendrs.common.log.MigrationLogLevel;
-import io.opendrs.common.log.MigrationLogListener;
+import io.opendrs.engine.common.log.MigrationLogLevel;
+import io.opendrs.engine.common.log.MigrationLogListener;
 import io.opendrs.migration.domain.MigrationLog;
 import io.opendrs.migration.domain.MigrationTask;
 import io.opendrs.migration.mapper.MigrationLogMapper;

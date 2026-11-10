@@ -22,7 +22,7 @@ import org.apache.kafka.connect.source.SourceRecord;
  * envelope here because the converter sits downstream in {@code engine-replay}, which this module
  * depends on, not the other way round.
  */
-final class SourceEventTimes {
+public final class SourceEventTimes {
 
     /** Lower-cased {@code io.debezium.connector.SnapshotRecord} names that mean "snapshot phase". */
     private static final Set<String> SNAPSHOT_MARKERS =
@@ -38,7 +38,7 @@ final class SourceEventTimes {
      * The source timestamp of a live change, or {@code null} when the record is not one: snapshot
      * rows, heartbeats, transaction metadata, tombstones and the notification channel all fall out.
      */
-    static Long streamingEventTimeMs(SourceRecord record) {
+    public static Long streamingEventTimeMs(SourceRecord record) {
         if (record == null || !(record.value() instanceof Struct value)) {
             return null;
         }
@@ -63,7 +63,7 @@ final class SourceEventTimes {
      * harmless here: it only refreshes "the connector is alive", and this deployment writes no
      * tombstones ({@code tombstones.on.delete=false}).
      */
-    static boolean isHeartbeat(SourceRecord record) {
+    public static boolean isHeartbeat(SourceRecord record) {
         if (record == null) {
             return false;
         }

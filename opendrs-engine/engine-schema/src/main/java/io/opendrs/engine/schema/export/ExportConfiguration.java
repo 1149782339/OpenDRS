@@ -1,6 +1,6 @@
 package io.opendrs.engine.schema.export;
 
-import io.opendrs.common.selection.TableSelection;
+import io.opendrs.engine.common.selection.TableSelection;
 
 /**
  * What to read from the source, and which structural elements the batch should carry.

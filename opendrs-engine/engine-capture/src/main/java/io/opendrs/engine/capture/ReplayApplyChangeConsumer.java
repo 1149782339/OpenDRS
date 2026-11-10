@@ -2,7 +2,7 @@ package io.opendrs.engine.capture;
 
 import io.debezium.engine.DebeziumEngine;
 import io.debezium.engine.RecordChangeEvent;
-import io.opendrs.common.log.MigrationLogListener;
+import io.opendrs.engine.common.log.MigrationLogListener;
 import io.opendrs.common.progress.FullLoadCheckpointListener;
 import io.opendrs.common.progress.MigrationLagListener;
 import io.opendrs.engine.replay.GtidLoopConfig;

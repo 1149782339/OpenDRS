@@ -1,6 +1,6 @@
 package io.opendrs.engine.schema.imports;
 
-import io.opendrs.common.naming.SchemaNamingStrategy;
+import io.opendrs.engine.common.naming.SchemaNamingStrategy;
 
 /**
  * Options for one import batch.

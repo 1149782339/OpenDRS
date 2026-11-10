@@ -82,13 +82,13 @@ jobs:
       - name: Build frontend bundle
         run: cd opendrs-web && npm ci && npm run build
 
-      # Application stack (backend + frontend + prometheus + metadata MySQL) plus the
+      # Application stack (opendrs-service + frontend + prometheus + metadata MySQL) plus the
       # migration data sources from scripts/test (source MySQL :3306, target PostgreSQL :5432).
       # -p opendrs pins the project (default would follow deploy/, breaking volume
       #   sharing with scripts/test/data-sources.sh); the deploy file must come first
       #   so relative paths in the second file resolve consistently.
       - name: Start stacks
-        run: docker compose -p opendrs -f deploy/docker-compose.yml -f scripts/test/docker-compose.yml up -d --wait
+        run: docker compose -p opendrs --profile kafka -f deploy/docker-compose.yml -f scripts/test/docker-compose.yml up -d --wait
 
       - name: Wait for API through nginx
         run: |
@@ -98,7 +98,7 @@ jobs:
             [ "$code" = "200" ] && exit 0
             sleep 1
           done
-          docker compose -p opendrs -f deploy/docker-compose.yml -f scripts/test/docker-compose.yml logs --tail 60 backend
+          docker compose -p opendrs -f deploy/docker-compose.yml -f scripts/test/docker-compose.yml logs --tail 60 opendrs-service
           exit 1
 
       - uses: astral-sh/setup-uv@v5
@@ -114,4 +114,4 @@ jobs:
 
       - name: Teardown
         if: always()
-        run: docker compose -p opendrs -f deploy/docker-compose.yml -f scripts/test/docker-compose.yml down -v
+        run: docker compose -p opendrs --profile kafka -f deploy/docker-compose.yml -f scripts/test/docker-compose.yml down -v

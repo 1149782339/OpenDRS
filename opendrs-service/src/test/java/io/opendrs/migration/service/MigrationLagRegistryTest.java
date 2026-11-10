@@ -127,4 +127,43 @@ class MigrationLagRegistryTest {
         assertThat(registry.lagMs(1L))
                 .hasValueSatisfying(lag -> assertThat(lag).isLessThan(2_000L));
     }
+
+    @Test
+    void kafkaCaughtUpZerosEndToEndWithoutIdleWait() {
+        MigrationLagRegistry registry = new MigrationLagRegistry();
+        MigrationLagListener listener = registry.listenerFor(3L);
+        long now = System.currentTimeMillis();
+        listener.onCapturedEvent("bin:9", now - 25_000, now);
+        listener.onProduced(0, 41, now - 100);
+        listener.onApplied(now - 25_000, now);
+        listener.onAppliedPosition("bin:9", now);
+        listener.onReplayed(0, 41, now - 80);
+        listener.onLogEnd(0, 42, now);
+
+        assertThat(registry.lags(3L, now + 2_000, "bin:9")).hasValueSatisfying(lags -> {
+            assertThat(lags.endToEndLagMs()).isZero();
+            assertThat(lags.replayLagMs()).isZero();
+            assertThat(lags.replayBacklog()).isZero();
+            assertThat(lags.captureLagMs()).isZero();
+        });
+    }
+
+    @Test
+    void kafkaBacklogShowsCaptureReplayAndEndToEnd() {
+        MigrationLagRegistry registry = new MigrationLagRegistry();
+        MigrationLagListener listener = registry.listenerFor(4L);
+        long now = System.currentTimeMillis();
+        listener.onCapturedEvent("bin:80", now - 6_000, now - 200);
+        listener.onProduced(0, 100, now - 200);
+        listener.onApplied(now - 9_000, now - 1_000);
+        listener.onAppliedPosition("bin:20", now - 1_000);
+        listener.onReplayed(0, 40, now - 4_000);
+
+        assertThat(registry.lags(4L, now, "bin:90")).hasValueSatisfying(lags -> {
+            assertThat(lags.endToEndLagMs()).isEqualTo(9_000L);
+            assertThat(lags.replayLagMs()).isEqualTo(3_800L);
+            assertThat(lags.captureLagMs()).isEqualTo(6_000L);
+            assertThat(lags.replayBacklog()).isEqualTo(60L);
+        });
+    }
 }

@@ -1,7 +1,7 @@
 package io.opendrs.migration.domain;
 
-import io.opendrs.common.metadata.DatabaseType;
-import io.opendrs.jdbc.JdbcConnectionConfig;
+import io.opendrs.engine.common.metadata.DatabaseType;
+import io.opendrs.engine.jdbc.JdbcConnectionConfig;
 import java.time.Instant;
 import java.util.Map;
 
@@ -117,7 +117,7 @@ public class ConnectionInfo {
     }
 
     /**
-     * Boundary projection: stored connection row to the neutral {@code opendrs-jdbc} descriptor.
+     * Boundary projection: stored connection row to the neutral {@code engine-jdbc} descriptor.
      * Every {@code JdbcConnectionFactory.open} call in the service goes through this.
      */
     public JdbcConnectionConfig toJdbcConfig() {

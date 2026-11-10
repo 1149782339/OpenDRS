@@ -9,7 +9,9 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import io.opendrs.common.metadata.DatabaseType;
+import io.opendrs.engine.common.metadata.DatabaseType;
+import io.opendrs.engine.core.DataCheckParam;
+import io.opendrs.engine.core.DataCheckTask;
 import io.opendrs.engine.core.DataMigrationParam;
 import io.opendrs.engine.core.DataMigrationTask;
 import io.opendrs.engine.core.DataMigrationTaskPhase;
@@ -19,7 +21,7 @@ import io.opendrs.engine.core.PrecheckTask;
 import io.opendrs.engine.core.SchemaMigrationParam;
 import io.opendrs.engine.core.SchemaMigrationTask;
 import io.opendrs.engine.core.TaskState;
-import io.opendrs.jdbc.metadata.Table;
+import io.opendrs.engine.common.metadata.TableId;
 import io.opendrs.migration.api.request.MigrationOptions;
 import io.opendrs.migration.api.request.SelectedTable;
 import io.opendrs.migration.domain.ConnectionInfo;
@@ -328,6 +330,11 @@ class MigrationCoordinatorTest {
     /** Stands in for the engine: one immediate schema handle and one blocking data handle. */
     static final class FakeMigrationEngine implements MigrationEngine {
 
+        @Override
+        public DataCheckTask datacheck(DataCheckParam param) {
+            throw new UnsupportedOperationException("data check is not used in this test");
+        }
+
         final FakeRun run = new FakeRun();
         final AtomicInteger schemaCount = new AtomicInteger();
         final AtomicInteger dataCount = new AtomicInteger();
@@ -388,12 +395,12 @@ class MigrationCoordinatorTest {
         }
 
         @Override
-        public List<Table> created() {
+        public List<TableId> created() {
             return List.of();
         }
 
         @Override
-        public List<Table> skipped() {
+        public List<TableId> skipped() {
             return List.of();
         }
 

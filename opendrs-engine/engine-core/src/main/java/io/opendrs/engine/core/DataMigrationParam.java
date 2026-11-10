@@ -1,13 +1,13 @@
 package io.opendrs.engine.core;
 
-import io.opendrs.common.log.MigrationLogListener;
+import io.opendrs.engine.common.log.MigrationLogListener;
 import io.opendrs.common.progress.MigrationLagListener;
 import io.opendrs.engine.replay.GtidLoopConfig;
 import io.opendrs.engine.replay.SnapshotStrategy;
-import io.opendrs.common.selection.TableSelection;
+import io.opendrs.engine.common.selection.TableSelection;
 import io.opendrs.engine.replay.metrics.ReplayDirection;
 import io.opendrs.engine.capture.transport.ResolvedCdcTransport;
-import io.opendrs.jdbc.JdbcConnectionConfig;
+import io.opendrs.engine.jdbc.JdbcConnectionConfig;
 import java.util.Objects;
 import java.util.function.Consumer;
 

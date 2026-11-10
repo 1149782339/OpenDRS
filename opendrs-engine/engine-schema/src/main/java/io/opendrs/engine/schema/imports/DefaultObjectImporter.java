@@ -1,6 +1,6 @@
 package io.opendrs.engine.schema.imports;
 
-import io.opendrs.common.naming.SchemaNamingStrategy;
+import io.opendrs.engine.common.naming.SchemaNamingStrategy;
 import io.opendrs.engine.schema.convert.ConversionResult;
 import io.opendrs.engine.schema.convert.ConversionResults;
 import io.opendrs.engine.schema.convert.ConversionStatus;

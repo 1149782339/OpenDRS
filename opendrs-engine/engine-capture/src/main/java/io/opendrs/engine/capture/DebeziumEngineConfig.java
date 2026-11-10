@@ -1,11 +1,11 @@
 package io.opendrs.engine.capture;
 
-import io.opendrs.common.metadata.DatabaseType;
+import io.opendrs.engine.common.metadata.DatabaseType;
 import io.opendrs.engine.replay.SnapshotStrategy;
-import io.opendrs.jdbc.JdbcConnectionConfig;
-import io.opendrs.jdbc.metadata.Table;
+import io.opendrs.engine.jdbc.JdbcConnectionConfig;
+import io.opendrs.engine.common.metadata.TableId;
 import io.opendrs.engine.replay.GtidLoopConfig;
-import io.opendrs.common.selection.TableSelection;
+import io.opendrs.engine.common.selection.TableSelection;
 import io.opendrs.engine.replay.metrics.ReplayDirection;
 import io.opendrs.engine.replay.metrics.ReplayMetrics;
 import io.opendrs.engine.capture.transport.ResolvedCdcTransport;
@@ -187,9 +187,9 @@ public final class DebeziumEngineConfig {
         return topicPrefix(pipelineId) + ".notification";
     }
 
-    static String tableIncludeList(List<Table> tables) {
+    static String tableIncludeList(List<TableId> tables) {
         return tables.stream()
-                .map(table -> literal(table.ref().schema()) + "\\." + literal(table.ref().table()))
+                .map(table -> literal(table.getSchema()) + "\\." + literal(table.getTable()))
                 .collect(Collectors.joining(","));
     }
 
@@ -255,7 +255,7 @@ public final class DebeziumEngineConfig {
             long taskId,
             long pipelineId,
             JdbcConnectionConfig source,
-            List<Table> tables,
+            List<TableId> tables,
             Long databaseServerId,
             JdbcConnectionConfig target,
             TableSelection tableSelection,
@@ -327,7 +327,7 @@ public final class DebeziumEngineConfig {
         }
 
         /** Compact form for callers without a persisted pipeline; the task id stands in as pipeline id. */
-        public EngineSpec(long taskId, JdbcConnectionConfig source, List<Table> tables, Long databaseServerId) {
+        public EngineSpec(long taskId, JdbcConnectionConfig source, List<TableId> tables, Long databaseServerId) {
             this(taskId, taskId, source, tables, databaseServerId, null, null,
                     ReplayMetrics.NONE, null, ReplayDirection.FORWARD, null, null, null, null, null, null, null);
         }
@@ -335,7 +335,7 @@ public final class DebeziumEngineConfig {
         public EngineSpec(
                 long taskId,
                 JdbcConnectionConfig source,
-                List<Table> tables,
+                List<TableId> tables,
                 Long databaseServerId,
                 JdbcConnectionConfig target,
                 TableSelection tableSelection) {
@@ -346,7 +346,7 @@ public final class DebeziumEngineConfig {
         public EngineSpec(
                 long taskId,
                 JdbcConnectionConfig source,
-                List<Table> tables,
+                List<TableId> tables,
                 Long databaseServerId,
                 JdbcConnectionConfig target,
                 TableSelection tableSelection,
@@ -359,7 +359,7 @@ public final class DebeziumEngineConfig {
                 long taskId,
                 long pipelineId,
                 JdbcConnectionConfig source,
-                List<Table> tables,
+                List<TableId> tables,
                 Long databaseServerId,
                 JdbcConnectionConfig target,
                 TableSelection tableSelection,
@@ -372,7 +372,7 @@ public final class DebeziumEngineConfig {
                 long taskId,
                 long pipelineId,
                 JdbcConnectionConfig source,
-                List<Table> tables,
+                List<TableId> tables,
                 Long databaseServerId,
                 JdbcConnectionConfig target,
                 TableSelection tableSelection,

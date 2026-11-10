@@ -5,12 +5,11 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import io.opendrs.common.metadata.DatabaseType;
+import io.opendrs.engine.common.metadata.DatabaseType;
 import io.opendrs.engine.precheck.fact.FactStore;
 import io.opendrs.engine.precheck.profile.MysqlBidirectionalProfile;
 import io.opendrs.engine.precheck.support.FakeServer;
-import io.opendrs.jdbc.metadata.Table;
-import io.opendrs.jdbc.metadata.TableRef;
+import io.opendrs.engine.common.metadata.TableId;
 import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
@@ -27,9 +26,9 @@ import org.junit.jupiter.api.Test;
  */
 class MysqlBidirectionalPrecheckTest {
 
-    private static final List<Table> DEFAULT_TABLES = List.of(
-            new Table(new TableRef("hr", "emp")),
-            new Table(new TableRef("hr", "dept")));
+    private static final List<TableId> DEFAULT_TABLES = List.of(
+            TableId.of("hr", "emp"),
+            TableId.of("hr", "dept"));
 
     private final List<PrecheckResults> published = new ArrayList<>();
     private PrecheckResults results;
@@ -126,9 +125,9 @@ class MysqlBidirectionalPrecheckTest {
     private PrecheckResults run(PrecheckContext context) {
         PrecheckPlan plan = new PlanBuilder(MysqlBidirectionalProfile.registry())
                 .build(new MysqlBidirectionalProfile(), context);
-        try (FactStore facts = new FactStore(context, new io.opendrs.jdbc.JdbcConnectionFactory() {
+        try (FactStore facts = new FactStore(context, new io.opendrs.engine.jdbc.JdbcConnectionFactory() {
             @Override
-            public io.opendrs.jdbc.JdbcConnection open(io.opendrs.jdbc.JdbcConnectionConfig config) {
+            public io.opendrs.engine.jdbc.JdbcConnection open(io.opendrs.engine.jdbc.JdbcConnectionConfig config) {
                 return ("10.0.0.3".equals(config.getHost()) ? target : source).connection();
             }
         })) {
@@ -146,8 +145,8 @@ class MysqlBidirectionalPrecheckTest {
                 bidirectional);
     }
 
-    private static io.opendrs.jdbc.JdbcConnectionConfig config(String host) {
-        return io.opendrs.jdbc.JdbcConnectionConfig.builder()
+    private static io.opendrs.engine.jdbc.JdbcConnectionConfig config(String host) {
+        return io.opendrs.engine.jdbc.JdbcConnectionConfig.builder()
                 .type(DatabaseType.MYSQL)
                 .host(host)
                 .port(3306)

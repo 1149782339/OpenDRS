@@ -59,7 +59,7 @@ public class MigrationCoordinatorFactory {
                 logService.listenerFor(task.getId()),
                 null,
                 serverIdAllocator,
-                lagRegistry::listenerFor,
+                pipelineId -> lagRegistry.listenerFor(pipelineId, task.getId()),
                 pipelineMapper,
                 resumePlanner,
                 transportProperties);

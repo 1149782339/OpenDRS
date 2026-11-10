@@ -1,8 +1,8 @@
 package io.opendrs.migration.job;
 
-import io.opendrs.common.log.MigrationLogLevel;
-import io.opendrs.common.log.MigrationLogListener;
-import io.opendrs.common.metadata.DatabaseType;
+import io.opendrs.engine.common.log.MigrationLogLevel;
+import io.opendrs.engine.common.log.MigrationLogListener;
+import io.opendrs.engine.common.metadata.DatabaseType;
 import io.opendrs.common.progress.MigrationLagListener;
 import io.opendrs.engine.core.DataMigrationParam;
 import io.opendrs.engine.core.DataMigrationTask;
@@ -12,7 +12,7 @@ import io.opendrs.engine.core.SchemaMigrationParam;
 import io.opendrs.engine.core.SchemaMigrationTask;
 import io.opendrs.engine.core.TaskState;
 import io.opendrs.engine.replay.GtidLoopConfig;
-import io.opendrs.common.selection.TableSelection;
+import io.opendrs.engine.common.selection.TableSelection;
 import io.opendrs.migration.api.request.MigrationOptions;
 import io.opendrs.migration.domain.ConnectionInfo;
 import io.opendrs.migration.domain.MigrationPhase;

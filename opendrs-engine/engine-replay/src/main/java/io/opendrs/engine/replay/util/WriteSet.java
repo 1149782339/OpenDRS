@@ -1,6 +1,6 @@
 package io.opendrs.engine.replay.util;
 
-import io.opendrs.common.metadata.TableId;
+import io.opendrs.engine.common.metadata.TableId;
 import io.opendrs.engine.replay.annotation.ThreadSafe;
 import io.opendrs.engine.replay.event.ApplierEvent;
 import io.opendrs.engine.replay.event.ChangeEvent;

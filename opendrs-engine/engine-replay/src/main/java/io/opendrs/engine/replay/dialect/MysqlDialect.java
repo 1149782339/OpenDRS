@@ -1,9 +1,9 @@
 package io.opendrs.engine.replay.dialect;
 
-import io.opendrs.common.metadata.DatabaseType;
-import io.opendrs.common.metadata.TableId;
+import io.opendrs.engine.common.metadata.DatabaseType;
+import io.opendrs.engine.common.metadata.TableId;
 import io.opendrs.engine.replay.ReplayConfig;
-import io.opendrs.engine.replay.relation.ColumnDefinition;
+import io.opendrs.engine.common.metadata.ColumnDefinition;
 import io.opendrs.engine.replay.sql.ExpressionBuilder;
 import io.opendrs.engine.replay.sql.IdentifierRule;
 import io.opendrs.engine.replay.sql.SQLState;

@@ -23,6 +23,7 @@ import { ElMessage } from 'element-plus'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
+import DataCheckPanel from '@/components/DataCheckPanel.vue'
 import TaskMonitor from '@/components/TaskMonitor.vue'
 
 const { t, locale } = useI18n()
@@ -34,8 +35,15 @@ const task = ref<MigrationTaskResponse | null>(null)
 const status = ref<MigrationStatusResponse | null>(null)
 const loading = ref(false)
 
-type DetailTab = 'info' | 'logs' | 'monitor'
-const activeTab = ref<DetailTab>('info')
+type DetailTab = 'info' | 'datacheck' | 'logs' | 'monitor'
+
+/** Returning from the data-check creation page uses `?tab=datacheck`. */
+function initialTab(): DetailTab {
+  const tab = route.query.tab
+  return tab === 'datacheck' || tab === 'logs' || tab === 'monitor' ? tab : 'info'
+}
+
+const activeTab = ref<DetailTab>(initialTab())
 /** 日志懒加载：第一次进入「迁移日志」页签才拉数据，之后切走再切回保留已加载内容。 */
 const logsVisited = ref(false)
 
@@ -59,22 +67,26 @@ const stateView = computed(() => {
 })
 const tone = computed(() => stateView.value.tone)
 const stateLabel = computed(() => stateView.value.label)
-/** 迁移进度：位点与回放时延来自 /status 接口，随轮询刷新。 */
+/** 迁移进度：位点与时延来自 /status 接口，随轮询刷新。主数字是端到端时延。 */
 const offset = computed(() => status.value?.offset ?? null)
-const lagText = computed(() => {
-  const lagMs = status.value?.progress.lagMs
+function formatLagMs(lagMs: number | null | undefined) {
   if (lagMs == null) return DASH
   return lagMs >= 10_000 ? `${(lagMs / 1000).toFixed(0)} s` : `${(lagMs / 1000).toFixed(1)} s`
-})
+}
+const lagText = computed(() => formatLagMs(status.value?.progress.lagMs ?? status.value?.progress.endToEndLagMs))
+const captureLagText = computed(() => formatLagMs(status.value?.progress.captureLagMs))
+const replayLagText = computed(() => formatLagMs(status.value?.progress.replayLagMs))
 
 /**
  * 同步进度的一个方向块。双向同步任务拆成「正向同步进度」「反向同步进度」两块，各自有位点；
- * 单向任务只有一块、不显示标题。回放时延目前只有正向一份（/status 的 lagMs）。
+ * 单向任务只有一块、不显示标题。时延目前只有正向一份（/status 的 lagMs / captureLagMs / replayLagMs）。
  */
 interface ProgressBlock {
   title: string | null
   offset: MigrationOffset | null
   lag: string | null
+  captureLag: string | null
+  replayLag: string | null
 }
 
 const progressBlocks = computed<ProgressBlock[]>(() => {
@@ -82,12 +94,14 @@ const progressBlocks = computed<ProgressBlock[]>(() => {
     title: null,
     offset: offset.value,
     lag: lagText.value,
+    captureLag: captureLagText.value,
+    replayLag: replayLagText.value,
   }
   const reverse = status.value?.reverse ?? null
   if (!reverse) return [forward]
   return [
-    { title: t('detail.forward'), offset: forward.offset, lag: forward.lag },
-    { title: t('detail.reverse'), offset: reverse, lag: null },
+    { title: t('detail.forward'), offset: forward.offset, lag: forward.lag, captureLag: forward.captureLag, replayLag: forward.replayLag },
+    { title: t('detail.reverse'), offset: reverse, lag: null, captureLag: null, replayLag: null },
   ]
 })
 /** 迁移阶段独立成栏，任何状态都显示：失败时一眼看出死在结构/全量/增量哪一步。 */
@@ -281,11 +295,19 @@ onUnmounted(() => {
                 <div class="v mono">{{ block.offset?.applied ?? DASH }}</div>
                 <div class="k">{{ t('detail.lag') }}</div>
                 <div class="v">{{ block.lag ?? DASH }}</div>
+                <div class="k">{{ t('detail.captureLag') }}</div>
+                <div class="v">{{ block.captureLag ?? DASH }}</div>
+                <div class="k">{{ t('detail.replayLag') }}</div>
+                <div class="v">{{ block.replayLag ?? DASH }}</div>
               </div>
             </template>
           </section>
         </template>
         <el-empty v-else-if="!loading" :description="t('detail.notExist')" />
+      </el-tab-pane>
+
+      <el-tab-pane :label="t('detail.tabs.datacheck')" name="datacheck" lazy>
+        <DataCheckPanel :task-id="taskId" />
       </el-tab-pane>
 
       <el-tab-pane :label="t('detail.tabs.logs')" name="logs">

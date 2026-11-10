@@ -4,14 +4,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import io.debezium.config.Configuration;
 import io.debezium.connector.mysql.MySqlConnectorConfig;
-import io.debezium.relational.TableId;
 import io.debezium.relational.Tables.TableFilter;
-import io.opendrs.common.metadata.DatabaseType;
+import io.opendrs.engine.common.metadata.DatabaseType;
+import io.opendrs.engine.common.metadata.TableId;
 import io.opendrs.engine.capture.DebeziumEngineConfig.EngineSpec;
-import io.opendrs.common.selection.TableSelection;
-import io.opendrs.jdbc.JdbcConnectionConfig;
-import io.opendrs.jdbc.metadata.Table;
-import io.opendrs.jdbc.metadata.TableRef;
+import io.opendrs.engine.common.selection.TableSelection;
+import io.opendrs.engine.jdbc.JdbcConnectionConfig;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Properties;
@@ -29,19 +27,19 @@ class DebeziumSelectionFilterTest {
     void tableModeCapturesOnlyTheSelectedTables() {
         TableFilter filter = filterFor(TableSelection.ofTables(List.of(table("test", "orders"))));
 
-        assertThat(filter.isIncluded(TableId.parse("test.orders"))).isTrue();
-        assertThat(filter.isIncluded(TableId.parse("test.users"))).isFalse();
-        assertThat(filter.isIncluded(TableId.parse("other.orders"))).isFalse();
+        assertThat(filter.isIncluded(dbz("test.orders"))).isTrue();
+        assertThat(filter.isIncluded(dbz("test.users"))).isFalse();
+        assertThat(filter.isIncluded(dbz("other.orders"))).isFalse();
     }
 
     @Test
     void schemaModeCapturesEveryTableOfTheSelectedSchemas() {
         TableFilter filter = filterFor(TableSelection.ofSchemas(List.of("test", "sales")));
 
-        assertThat(filter.isIncluded(TableId.parse("test.orders"))).isTrue();
-        assertThat(filter.isIncluded(TableId.parse("test.anything_else"))).isTrue();
-        assertThat(filter.isIncluded(TableId.parse("sales.orders"))).isTrue();
-        assertThat(filter.isIncluded(TableId.parse("other.orders"))).isFalse();
+        assertThat(filter.isIncluded(dbz("test.orders"))).isTrue();
+        assertThat(filter.isIncluded(dbz("test.anything_else"))).isTrue();
+        assertThat(filter.isIncluded(dbz("sales.orders"))).isTrue();
+        assertThat(filter.isIncluded(dbz("other.orders"))).isFalse();
     }
 
     @Test
@@ -51,8 +49,8 @@ class DebeziumSelectionFilterTest {
 
         TableFilter filter = filterFor(selection);
 
-        assertThat(filter.isIncluded(TableId.parse("test.orders"))).isTrue();
-        assertThat(filter.isIncluded(TableId.parse("test.tmp_skip"))).isFalse();
+        assertThat(filter.isIncluded(dbz("test.orders"))).isTrue();
+        assertThat(filter.isIncluded(dbz("test.tmp_skip"))).isFalse();
     }
 
     @Test
@@ -62,10 +60,10 @@ class DebeziumSelectionFilterTest {
 
         TableFilter filter = filterFor(selection);
 
-        assertThat(filter.isIncluded(TableId.parse("test.orders"))).isTrue();
-        assertThat(filter.isIncluded(TableId.parse("brand_new.table_created_later"))).isTrue();
-        assertThat(filter.isIncluded(TableId.parse("test.tmp_skip"))).isFalse();
-        assertThat(filter.isIncluded(TableId.parse("tmp.anything"))).isFalse();
+        assertThat(filter.isIncluded(dbz("test.orders"))).isTrue();
+        assertThat(filter.isIncluded(dbz("brand_new.table_created_later"))).isTrue();
+        assertThat(filter.isIncluded(dbz("test.tmp_skip"))).isFalse();
+        assertThat(filter.isIncluded(dbz("tmp.anything"))).isFalse();
     }
 
     @Test
@@ -73,14 +71,14 @@ class DebeziumSelectionFilterTest {
         TableFilter filter = filterFor(TableSelection.ofTables(List.of(table("test", "a.b"))));
 
         // A dotted table name cannot go through TableId.parse (it would split), so build it.
-        assertThat(filter.isIncluded(new TableId("test", null, "a.b"))).isTrue();
-        assertThat(filter.isIncluded(new TableId("test", null, "axb"))).isFalse();
+        assertThat(filter.isIncluded(new io.debezium.relational.TableId("test", null, "a.b"))).isTrue();
+        assertThat(filter.isIncluded(new io.debezium.relational.TableId("test", null, "axb"))).isFalse();
     }
 
     @Test
     void generatedPropertiesPassConnectorValidation() {
         Properties props = DebeziumEngineConfig.capture(new EngineSpec(
-                7L, mysql(), List.of(new Table(new TableRef("test", "orders"))), 85744L, null,
+                7L, mysql(), List.of(TableId.of("test", "orders")), 85744L, null,
                 TableSelection.ofTables(List.of(table("test", "orders")))));
 
         List<String> problems = new ArrayList<>();
@@ -95,11 +93,9 @@ class DebeziumSelectionFilterTest {
      * selection, so the fixture has to expand them the way the engine does.
      */
     private static TableFilter filterFor(TableSelection selection) {
-        List<Table> expanded = selection.isSchemaLevel()
-                ? List.of(new Table(new TableRef("test", "orders")))
-                : selection.tables().stream()
-                        .map(id -> new Table(new TableRef(id.getSchema(), id.getTable())))
-                        .toList();
+        List<TableId> expanded = selection.isSchemaLevel()
+                ? List.of(TableId.of("test", "orders"))
+                : selection.tables();
         Properties props = DebeziumEngineConfig.capture(
                 new EngineSpec(7L, mysql(), expanded, 85744L, null, selection));
         return new MySqlConnectorConfig(Configuration.from(props))
@@ -107,8 +103,13 @@ class DebeziumSelectionFilterTest {
                 .dataCollectionFilter();
     }
 
-    private static io.opendrs.common.metadata.TableId table(String schema, String name) {
-        return io.opendrs.common.metadata.TableId.of(schema, name);
+    private static TableId table(String schema, String name) {
+        return TableId.of(schema, name);
+    }
+
+    /** Debezium's own identifier, the input type of the connector filter under test. */
+    private static io.debezium.relational.TableId dbz(String identifier) {
+        return io.debezium.relational.TableId.parse(identifier);
     }
 
     private static JdbcConnectionConfig mysql() {

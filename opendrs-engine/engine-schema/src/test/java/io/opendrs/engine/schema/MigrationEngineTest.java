@@ -10,8 +10,8 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import io.opendrs.common.metadata.DatabaseType;
-import io.opendrs.common.selection.TableSelection;
+import io.opendrs.engine.common.metadata.DatabaseType;
+import io.opendrs.engine.common.selection.TableSelection;
 import io.opendrs.engine.schema.convert.ConversionResult;
 import io.opendrs.engine.schema.convert.ConversionResults;
 import io.opendrs.engine.schema.convert.ConversionStatus;
@@ -21,9 +21,9 @@ import io.opendrs.engine.schema.imports.ImportConfiguration;
 import io.opendrs.engine.schema.imports.ImportResults;
 import io.opendrs.engine.schema.meta.DatabaseObject;
 import io.opendrs.engine.schema.meta.ObjectId;
-import io.opendrs.jdbc.JdbcConnection;
-import io.opendrs.jdbc.JdbcConnectionConfig;
-import io.opendrs.jdbc.JdbcConnectionFactory;
+import io.opendrs.engine.jdbc.JdbcConnection;
+import io.opendrs.engine.jdbc.JdbcConnectionConfig;
+import io.opendrs.engine.jdbc.JdbcConnectionFactory;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -45,7 +45,7 @@ class MigrationEngineTest {
         jdbcConnection = mock(JdbcConnection.class);
         connection = mock(Connection.class);
         when(factory.open(any())).thenReturn(jdbcConnection);
-        when(jdbcConnection.unwrap()).thenReturn(connection);
+        when(jdbcConnection.connection()).thenReturn(connection);
     }
 
     @Test

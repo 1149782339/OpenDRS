@@ -1,11 +1,15 @@
 package io.opendrs.engine.core;
 
-import io.opendrs.common.log.MigrationLogLevel;
-import io.opendrs.common.log.MigrationLogListener;
-import io.opendrs.common.metadata.DatabaseType;
+import io.opendrs.engine.common.log.MigrationLogLevel;
+import io.opendrs.engine.common.log.MigrationLogListener;
+import io.opendrs.engine.common.metadata.DatabaseType;
 import io.opendrs.engine.capture.CdcEngine;
 import io.opendrs.engine.capture.DebeziumCdcEngineFactory;
 import io.opendrs.engine.capture.DebeziumEngineConfig;
+import io.opendrs.engine.datacheck.DataCheckRunner;
+import io.opendrs.engine.datacheck.InconsistentRowDBStore;
+import io.opendrs.engine.datacheck.InconsistentRowStore;
+import io.opendrs.engine.jdbc.JdbcConnection;
 import io.opendrs.engine.precheck.PlanBuilder;
 import io.opendrs.engine.precheck.PrecheckContext;
 import io.opendrs.engine.precheck.PrecheckException;
@@ -19,30 +23,30 @@ import io.opendrs.engine.precheck.profile.MysqlBidirectionalProfile;
 import io.opendrs.engine.precheck.profile.MysqlToPgProfile;
 import io.opendrs.engine.replay.exception.ApplierException;
 import io.opendrs.engine.replay.mapping.MappingValidator;
-import io.opendrs.common.selection.TableSelection;
+import io.opendrs.engine.common.selection.TableSelection;
 import io.opendrs.engine.replay.metrics.ReplayMetrics;
 import io.opendrs.engine.schema.SchemaMigrationException;
-import io.opendrs.jdbc.JdbcConnection;
-import io.opendrs.jdbc.JdbcConnectionConfig;
-import io.opendrs.jdbc.JdbcConnectionFactory;
-import io.opendrs.jdbc.JdbcException;
-import io.opendrs.jdbc.dialect.MysqlDialect;
-import io.opendrs.jdbc.dialect.PostgresDialect;
-import io.opendrs.jdbc.metadata.Table;
+import io.opendrs.engine.jdbc.JdbcConnection;
+import io.opendrs.engine.jdbc.JdbcConnectionConfig;
+import io.opendrs.engine.jdbc.JdbcConnectionFactory;
+import io.opendrs.engine.jdbc.JdbcException;
+import io.opendrs.engine.common.metadata.TableId;
 import java.sql.Connection;
+import java.sql.SQLException;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BooleanSupplier;
 import javax.sql.DataSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
  * Assembles the engine object graph with plain constructors. The service provides the mechanism
- * collaborators ({@link JdbcConnectionFactory}, dialects, metadata {@link DataSource} — backed by
- * its own beans); everything else is engine-owned.
+ * collaborators ({@link JdbcConnectionFactory}, connection types, metadata {@link DataSource} —
+ * backed by its own beans); everything else is engine-owned.
  *
  * <p>Each operation hands its work to an internal cached pool and returns the handle immediately.
  * That pool is deliberately separate from the service's job executor: a job thread parks on
@@ -66,25 +70,23 @@ public class DefaultMigrationEngine implements MigrationEngine {
     private final PlanBuilder mysqlBidirectionalPlanBuilder;
     private final DebeziumCdcEngineFactory cdcEngineFactory;
     private final SchemaMigration structureMigration;
+    private final DataCheckRunner dataCheckRunner;
+    private final javax.sql.DataSource metadataDataSource;
     private final ReplayMetrics replayMetrics;
     private final io.opendrs.common.progress.FullLoadCheckpointListener fullLoadCheckpointListener;
     private final ExecutorService executor = Executors.newCachedThreadPool(new EngineThreadFactory());
 
     public DefaultMigrationEngine(
             JdbcConnectionFactory factory,
-            MysqlDialect mysqlDialect,
-            PostgresDialect postgresDialect,
             DataSource metadataDataSource) {
-        this(factory, mysqlDialect, postgresDialect, metadataDataSource, ReplayMetrics.NONE);
+        this(factory, metadataDataSource, ReplayMetrics.NONE);
     }
 
     public DefaultMigrationEngine(
             JdbcConnectionFactory factory,
-            MysqlDialect mysqlDialect,
-            PostgresDialect postgresDialect,
             DataSource metadataDataSource,
             ReplayMetrics replayMetrics) {
-        this(factory, mysqlDialect, postgresDialect, metadataDataSource, replayMetrics,
+        this(factory, metadataDataSource, replayMetrics,
                 io.opendrs.common.progress.FullLoadCheckpointListener.NONE);
     }
 
@@ -95,8 +97,6 @@ public class DefaultMigrationEngine implements MigrationEngine {
      */
     public DefaultMigrationEngine(
             JdbcConnectionFactory factory,
-            MysqlDialect mysqlDialect,
-            PostgresDialect postgresDialect,
             DataSource metadataDataSource,
             ReplayMetrics replayMetrics,
             io.opendrs.common.progress.FullLoadCheckpointListener fullLoadCheckpointListener) {
@@ -105,6 +105,8 @@ public class DefaultMigrationEngine implements MigrationEngine {
         this.mappingValidator = new MappingValidator();
         this.structureMigration = new SchemaMigration(
                 factory, new io.opendrs.engine.schema.MigrationEngine(factory), mappingValidator);
+        this.dataCheckRunner = new DataCheckRunner(factory);
+        this.metadataDataSource = metadataDataSource;
         this.precheckProfiles = new PrecheckProfiles(List.of(new MysqlToPgProfile(), new MysqlBidirectionalProfile()));
         this.mysqlToPgPlanBuilder = new PlanBuilder(MysqlToPgProfile.registry());
         this.mysqlBidirectionalPlanBuilder = new PlanBuilder(MysqlBidirectionalProfile.registry());
@@ -125,7 +127,7 @@ public class DefaultMigrationEngine implements MigrationEngine {
         TableSelection selection = selection(param.selection());
         MigrationLogListener listener = param.logListener();
         DefaultSchemaMigrationTask task = new DefaultSchemaMigrationTask(() -> {
-            List<Table> tables = expand(param.source(), selection);
+            List<TableId> tables = expand(param.source(), selection);
             if (tables.isEmpty()) {
                 throw new IllegalStateException("No tables matched the selection for schema migration: "
                         + describeSelection(selection));
@@ -159,6 +161,29 @@ public class DefaultMigrationEngine implements MigrationEngine {
         return task;
     }
 
+    @Override
+    public DataCheckTask datacheck(DataCheckParam param) {
+        DefaultDataCheckTask task = new DefaultDataCheckTask(stop -> runDataCheck(param, stop));
+        task.start(executor);
+        return task;
+    }
+
+    private void runDataCheck(DataCheckParam param, BooleanSupplier stopRequested) {
+        // The engine-level param and the datacheck-level param share their simple name but live in
+        // different modules; this local one carries the single table pair.
+        io.opendrs.engine.datacheck.DataCheckParam request =
+                new io.opendrs.engine.datacheck.DataCheckParam(
+                        param.source(), param.target(),
+                        param.sourceTable(), param.targetTable(),
+                        param.includeFloat(), param.logListener(),
+                        (table, rows) -> param.progressListener().onRowsChecked(table, rows));
+        InconsistentRowStore store = new InconsistentRowDBStore(
+                () -> new JdbcConnection(
+                        DatabaseType.MYSQL, null, cfg -> metadataDataSource.getConnection()),
+                param.taskId());
+        dataCheckRunner.run(request, store, stopRequested);
+    }
+
     /** Releases the worker pool. Called by the service on shutdown. */
     public void close() {
         executor.shutdownNow();
@@ -166,7 +191,7 @@ public class DefaultMigrationEngine implements MigrationEngine {
 
     private CdcEngine startCapture(DataMigrationParam param, TableSelection selection, Runnable onSnapshot) {
         MigrationLogListener listener = param.logListener();
-        List<Table> tables = expand(param.source(), selection);
+        List<TableId> tables = expand(param.source(), selection);
         if (tables.isEmpty()) {
             throw new IllegalStateException("No tables matched the selection for task " + param.taskId()
                     + ": " + describeSelection(selection));
@@ -199,7 +224,7 @@ public class DefaultMigrationEngine implements MigrationEngine {
      * Builds the checklist for this direction, then runs it.
      *
      * <p>The table lists are expanded here because the engine owns the selection and the mapping;
-     * the precheck module only sees concrete {@link Table} rows. A failed source expansion is not
+     * the precheck module only sees concrete {@link TableId} rows. A failed source expansion is not
      * fatal: the selection is taken literally, {@code tablesKnown} goes false, and the table-level
      * checks report themselves blocked instead of inspecting an empty list.
      *
@@ -211,16 +236,16 @@ public class DefaultMigrationEngine implements MigrationEngine {
                 .orElseThrow(() -> new PrecheckException("No precheck profile for "
                         + param.source().getType() + " → " + param.target().getType()));
 
-        List<Table> sourceTables;
+        List<TableId> sourceTables;
         boolean tablesKnown = true;
         try {
-            sourceTables = expander.expand(param.source(), selection);
+            sourceTables = expand(param.source(), selection);
         } catch (JdbcException ex) {
             // The connection check reports this failure; the other rows depend on it.
             sourceTables = expander.expandExplicit(selection);
             tablesKnown = false;
         }
-        List<Table> targetTables = tablesKnown
+        List<TableId> targetTables = tablesKnown
                 ? mappingValidator.mapTargets(selection, sourceTables)
                 : List.of();
 
@@ -241,8 +266,12 @@ public class DefaultMigrationEngine implements MigrationEngine {
         }
     }
 
-    private List<Table> expand(io.opendrs.jdbc.JdbcConnectionConfig source, TableSelection selection) {
-        return expander.expand(source, selection);
+    private List<TableId> expand(io.opendrs.engine.jdbc.JdbcConnectionConfig source, TableSelection selection) {
+        try {
+            return expander.expand(source, selection);
+        } catch (SQLException ex) {
+            throw new JdbcException(ex.getMessage(), ex);
+        }
     }
 
     /**

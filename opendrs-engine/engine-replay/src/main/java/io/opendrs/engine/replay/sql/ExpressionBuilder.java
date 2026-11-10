@@ -1,7 +1,8 @@
 package io.opendrs.engine.replay.sql;
 
-import io.opendrs.common.metadata.TableId;
-import io.opendrs.common.util.StringUtil;
+import io.opendrs.engine.common.metadata.ColumnDefinition;
+import io.opendrs.engine.common.metadata.TableId;
+import io.opendrs.engine.common.util.StringUtil;
 import io.opendrs.engine.replay.annotation.NotThreadSafe;
 
 import java.util.Iterator;
@@ -34,12 +35,21 @@ public class ExpressionBuilder {
      * @return expression builder {@link ExpressionBuilder}
      */
     public ExpressionBuilder append(Object object) {
-        if (object instanceof ExpressibleObject) {
-            ((ExpressibleObject) object).append(this);
-            return this;
+        if (object instanceof ColumnDefinition column) {
+            return append(column);
         }
         sb.append(object);
         return this;
+    }
+
+    /**
+     * Append a column identifier, quoting it with the identifier rule.
+     *
+     * @param column column definition {@link ColumnDefinition}
+     * @return expression builder {@link ExpressionBuilder}
+     */
+    public ExpressionBuilder append(ColumnDefinition column) {
+        return append(StringUtil.quote(column.getName(), identifierRule.getQuoteString()));
     }
 
     /**

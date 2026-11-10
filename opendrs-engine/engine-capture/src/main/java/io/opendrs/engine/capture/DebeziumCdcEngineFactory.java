@@ -5,10 +5,10 @@ import io.debezium.engine.RecordChangeEvent;
 import io.debezium.engine.format.ChangeEventFormat;
 import io.debezium.engine.spi.OffsetCommitPolicy;
 import io.debezium.embedded.Connect;
-import io.opendrs.common.log.MigrationLogListener;
+import io.opendrs.engine.common.log.MigrationLogListener;
 import io.opendrs.common.progress.FullLoadCheckpointListener;
 import io.opendrs.common.progress.MigrationLagListener;
-import io.opendrs.jdbc.JdbcConnectionFactory;
+import io.opendrs.engine.jdbc.JdbcConnectionFactory;
 import io.opendrs.engine.replay.ReplayConfig;
 import io.opendrs.engine.capture.transport.AppliedOffsetStore;
 import io.opendrs.engine.capture.transport.JdbcAppliedOffsetStore;
@@ -146,18 +146,21 @@ public class DebeziumCdcEngineFactory implements CdcEngineFactory {
                 lagListener,
                 checkpointListener);
         KafkaProduceChangeConsumer produceConsumer =
-                new KafkaProduceChangeConsumer(spec.taskId(), config, kafka, snapshotApplyHandler);
-        // INCREMENTAL replay from Kafka; full-load checkpoints already handled above.
+                new KafkaProduceChangeConsumer(spec.taskId(), config, kafka, snapshotApplyHandler, lagListener);
+        // INCREMENTAL replay from Kafka: do not emit capture positions or increment
+        // opendrs_capture_events_total (the produce path already did both).
         BatchApplyHandler replayApplyHandler = new BatchApplyHandler(
                 spec.taskId(),
                 spec.pipelineId(),
                 replayConfig(spec),
                 logListener,
                 lagListener,
-                FullLoadCheckpointListener.NONE);
+                FullLoadCheckpointListener.NONE,
+                false,
+                false);
         AppliedOffsetStore appliedStore = new JdbcAppliedOffsetStore(metadataDataSource);
         KafkaReplayRunner replayRunner =
-                new KafkaReplayRunner(spec.pipelineId(), kafka, replayApplyHandler, appliedStore);
+                new KafkaReplayRunner(spec.pipelineId(), kafka, replayApplyHandler, appliedStore, lagListener);
         replayRunner.start();
         AutoCloseable resources = () -> {
             try {
@@ -208,7 +211,7 @@ public class DebeziumCdcEngineFactory implements CdcEngineFactory {
         ReplayConfig.Builder configBuilder = ReplayConfig.builder()
                 // Stateless provider: every call opens a fresh physical connection, so each
                 // parallel applier worker (via its own JdbcConnection) gets its own connection.
-                .connectionProvider(() -> connectionFactory.open(spec.target()).unwrap())
+                .connectionProvider(() -> connectionFactory.open(spec.target()).connection())
                 .tableNamingStrategy(specTableNaming(spec))
                 .columnNamingStrategy(new DefaultColumnNamingStrategy())
                 .applyDdlEnabled(true)

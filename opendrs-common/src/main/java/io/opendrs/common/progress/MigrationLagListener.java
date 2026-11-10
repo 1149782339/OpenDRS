@@ -15,7 +15,7 @@ package io.opendrs.common.progress;
  * the number grow, which is exactly what an operator needs to see.
  *
  * <p>Called on the Debezium change-consumer thread, so implementations must be thread-safe and
- * must not block. Like {@link io.opendrs.common.log.MigrationLogListener}, a broken sink must never
+ * must not block. Like {@link io.opendrs.engine.common.log.MigrationLogListener}, a broken sink must never
  * fail a healthy migration: {@link #emitApplied} and {@link #emitHeartbeat} swallow exceptions.
  */
 @FunctionalInterface
@@ -88,6 +88,68 @@ public interface MigrationLagListener {
     default void emitAppliedPosition(String position, long atMs) {
         try {
             onAppliedPosition(position, atMs);
+        } catch (RuntimeException ignored) {
+            // Same trade as emitCaptured.
+        }
+    }
+
+    /**
+     * Capture/produce made a streaming event available. {@code sourceEventTimeMs} is the
+     * source.ts_ms of the last successfully captured event (KAFKA: produced; DIRECT: handed
+     * to apply). Also updates the display position.
+     */
+    default void onCapturedEvent(String position, long sourceEventTimeMs, long atMs) {
+        onCaptured(position, atMs);
+    }
+
+    /**
+     * A record was successfully produced to the pipeline topic. {@code offset} is inclusive;
+     * {@code createTimeMs} is the Kafka record timestamp (CreateTime / produce wall clock).
+     */
+    default void onProduced(int partition, long offset, long createTimeMs) {
+    }
+
+    /**
+     * A record was applied by the KAFKA replay path. {@code offset} is inclusive;
+     * {@code createTimeMs} is the Kafka record timestamp of the applied record.
+     */
+    default void onReplayed(int partition, long offset, long createTimeMs) {
+    }
+
+    /**
+     * Exclusive log-end offset observed for a partition (consumer {@code endOffsets}, or
+     * last produced offset + 1). Used when capture and replay may not share in-process state.
+     */
+    default void onLogEnd(int partition, long endOffsetExclusive, long atMs) {
+    }
+
+    default void emitCapturedEvent(String position, long sourceEventTimeMs, long atMs) {
+        try {
+            onCapturedEvent(position, sourceEventTimeMs, atMs);
+        } catch (RuntimeException ignored) {
+            // A missing lag sample is a missing gauge, not a failed migration.
+        }
+    }
+
+    default void emitProduced(int partition, long offset, long createTimeMs) {
+        try {
+            onProduced(partition, offset, createTimeMs);
+        } catch (RuntimeException ignored) {
+            // Same trade as emitCaptured.
+        }
+    }
+
+    default void emitReplayed(int partition, long offset, long createTimeMs) {
+        try {
+            onReplayed(partition, offset, createTimeMs);
+        } catch (RuntimeException ignored) {
+            // Same trade as emitCaptured.
+        }
+    }
+
+    default void emitLogEnd(int partition, long endOffsetExclusive, long atMs) {
+        try {
+            onLogEnd(partition, endOffsetExclusive, atMs);
         } catch (RuntimeException ignored) {
             // Same trade as emitCaptured.
         }

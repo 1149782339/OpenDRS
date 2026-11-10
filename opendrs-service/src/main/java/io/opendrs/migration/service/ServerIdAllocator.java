@@ -3,9 +3,10 @@ package io.opendrs.migration.service;
 import io.opendrs.common.error.ErrorCode;
 import io.opendrs.common.error.ExceptionFactory;
 import io.opendrs.common.i18n.ErrorMessage;
-import io.opendrs.jdbc.JdbcConnection;
-import io.opendrs.jdbc.JdbcConnectionFactory;
+import io.opendrs.engine.jdbc.JdbcConnection;
+import io.opendrs.engine.jdbc.JdbcConnectionFactory;
 import io.opendrs.migration.domain.ConnectionInfo;
+import java.sql.SQLException;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
@@ -61,7 +62,7 @@ public class ServerIdAllocator {
     private Set<Long> replicaServerIds(ConnectionInfo source) {
         try (JdbcConnection connection = connectionFactory.open(source.toJdbcConfig())) {
             return new HashSet<>(queryReplicas(connection));
-        } catch (RuntimeException ex) {
+        } catch (RuntimeException | SQLException ex) {
             throw ExceptionFactory.create(
                     ErrorCode.CONNECTION_TEST_FAILED,
                     ErrorMessage.CONNECTION_LIST_REPLICAS_FAILED, ex.getMessage());
@@ -79,7 +80,7 @@ public class ServerIdAllocator {
                     .stream()
                     .findFirst()
                     .orElseThrow(() -> new IllegalStateException("server_uuid query returned nothing"));
-        } catch (RuntimeException ex) {
+        } catch (RuntimeException | SQLException ex) {
             throw ExceptionFactory.create(
                     ErrorCode.CONNECTION_TEST_FAILED,
                     ErrorMessage.CONNECTION_SERVER_UUID_FAILED, connectionInfo.getId(), ex.getMessage());
@@ -87,11 +88,11 @@ public class ServerIdAllocator {
     }
 
     /** SHOW REPLICAS (8.0.22+); older releases only know SHOW SLAVE HOSTS. Both expose a Server_id column. */
-    private Set<Long> queryReplicas(JdbcConnection connection) {
+    private Set<Long> queryReplicas(JdbcConnection connection) throws SQLException {
         try {
             return Set.copyOf(connection.queryList(
                     "SHOW REPLICAS", rs -> rs.getLong("Server_id")));
-        } catch (RuntimeException syntaxOrOldVersion) {
+        } catch (RuntimeException | SQLException syntaxOrOldVersion) {
             log.debug("SHOW REPLICAS failed ({}), falling back to SHOW SLAVE HOSTS",
                     syntaxOrOldVersion.getMessage());
             return Set.copyOf(connection.queryList(

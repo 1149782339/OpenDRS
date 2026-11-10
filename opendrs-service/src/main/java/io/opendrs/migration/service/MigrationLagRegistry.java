@@ -1,105 +1,127 @@
 package io.opendrs.migration.service;
 
 import io.opendrs.common.progress.MigrationLagListener;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import org.springframework.stereotype.Component;
 
 /**
- * Live lag gauge for running tasks: the capture path pushes the source timestamp of the newest
- * committed change, readers subtract {@code now} when they need a number.
+ * Live lag gauges for running pipelines. Capture and replay (when they share this process)
+ * push watermarks here; HTTP and Prometheus readers compute lag at read time.
  *
- * <p>Nothing here is persisted, on purpose. Lag is a gauge, not a record: a stored value keeps
- * looking healthy after the pipeline stopped, and after a restart the dispatcher re-runs the task
- * and the entry is rebuilt within seconds anyway.
+ * <p>Nothing is persisted: lag is a gauge. After a restart the dispatcher re-runs the task
+ * and the entry is rebuilt within seconds.
  *
- * <p>The two timestamps come from different clocks — {@code eventTimeMs} from the source server,
- * {@code appliedAtMs} and {@code heartbeatAtMs} from this host — so a skewed source clock shows up
- * directly in the result. It is clamped at zero rather than hidden, because a large persistent
- * negative value is itself the diagnostic.
+ * <p><strong>Split-process capture / replay.</strong> This registry is in-memory and not
+ * shared across JVMs. If capture and replay run in separate processes:
+ * <ul>
+ *   <li>Replay should cache {@code AdminClient.listOffsets} / {@code consumer.endOffsets}
+ *       for 1–2s and call {@link MigrationLagListener#onLogEnd} so replay lag and backlog
+ *       can be computed without a per-poll timestamp seek.</li>
+ *   <li>Last-applied CreateTime comes from the consumed record's {@code timestamp()}
+ *       ({@link MigrationLagListener#onReplayed}).</li>
+ *   <li>Last-produced CreateTime lives on the producer side; without a shared store or
+ *       metric, the replay process can still report record backlog and
+ *       caught-up-when-committed ≥ log-end, but not
+ *       {@code ts(last produced) − ts(last applied)}.</li>
+ *   <li>End-to-end lag on the replay side still uses source.ts_ms of the last applied
+ *       event, zeroed immediately when committed ≥ log-end.</li>
+ * </ul>
  */
 @Component
 public class MigrationLagRegistry {
 
-    /**
-     * How long without a committed batch before the source counts as quiet.
-     *
-     * <p>This is the idle detector, not the heartbeat: while the pipeline is behind, commits keep
-     * arriving, so {@code now - appliedAt} stays small and the raw difference is the answer. Ten
-     * seconds without a commit means the target has everything the connector has read — a shorter
-     * window would call a big transaction "caught up", a longer one would let the number climb for
-     * no reason (measured: heartbeats here arrive ~48s apart, so keying the reset on them alone made
-     * the gauge ramp to 48s and then snap to zero).
-     */
-    static final long IDLE_WINDOW_MS = 10_000L;
+    /** @deprecated use {@link LagComputations#IDLE_WINDOW_MS} */
+    static final long IDLE_WINDOW_MS = LagComputations.IDLE_WINDOW_MS;
 
-    /**
-     * How long a heartbeat stays believable.
-     *
-     * <p>Not {@code 3 × heartbeat.interval.ms}: Debezium emits a heartbeat only after the binlog
-     * reader has been idle for that interval, so any other traffic on the same MySQL instance — the
-     * metadata tables of this very service live there too — pushes heartbeats out well past the
-     * configured 10s. Measured spacing under a busy binlog was ~48s, so two minutes leaves room
-     * without letting a dead connector look healthy for long. A connector that really dies surfaces
-     * as a failed task, not as a lag number.
-     */
-    static final long ALIVE_WINDOW_MS = 120_000L;
+    /** @deprecated use {@link LagComputations#ALIVE_WINDOW_MS} */
+    static final long ALIVE_WINDOW_MS = LagComputations.ALIVE_WINDOW_MS;
 
     private final Map<Long, Sample> samples = new ConcurrentHashMap<>();
+    private volatile MeterBinder meterBinder = MeterBinder.NONE;
+    private volatile java.util.function.LongFunction<String> sourcePositionLookup = id -> null;
+
+    /** Optional hook so {@code MigrationLagMetrics} can register per-pipeline gauges. */
+    public interface MeterBinder {
+        MeterBinder NONE = (pipelineId, taskId) -> { };
+
+        void bind(long pipelineId, long taskId);
+    }
+
+    public void setMeterBinder(MeterBinder meterBinder) {
+        this.meterBinder = meterBinder == null ? MeterBinder.NONE : meterBinder;
+    }
+
+    /**
+     * Optional live source-binlog lookup so Prometheus gauges use the same e2e formula as the API
+     * (capture lag requires {@code sourcePosition}).
+     */
+    public void setSourcePositionLookup(java.util.function.LongFunction<String> sourcePositionLookup) {
+        this.sourcePositionLookup = sourcePositionLookup == null ? id -> null : sourcePositionLookup;
+    }
+
+    private String lookupSourcePosition(Long pipelineId) {
+        if (pipelineId == null) {
+            return null;
+        }
+        try {
+            return sourcePositionLookup.apply(pipelineId);
+        } catch (RuntimeException ex) {
+            return null;
+        }
+    }
 
     /** The observer handed to {@code DataMigrationParam}; binds the pipeline id so the engine never sees one. */
     public MigrationLagListener listenerFor(long pipelineId) {
-        return new MigrationLagListener() {
-            @Override
-            public void onApplied(long sourceEventTimeMs, long appliedAtMs) {
-                samples.compute(pipelineId, (id, previous) -> new Sample(
-                        // Max, not last: a source clock that steps backwards must not make the
-                        // gauge retreat, and batches are applied in order anyway.
-                        Math.max(sourceEventTimeMs, previous == null ? 0L : previous.eventTimeMs()),
-                        appliedAtMs,
-                        previous == null ? 0L : previous.heartbeatAtMs(),
-                        previous == null ? null : previous.capturedPosition(),
-                        previous == null ? 0L : previous.capturedAtMs(),
-                        previous == null ? null : previous.appliedPosition(),
-                        previous == null ? 0L : previous.appliedPositionAtMs()));
-            }
-
-            @Override
-            public void onHeartbeat(long seenAtMs) {
-                samples.compute(pipelineId, (id, previous) -> previous == null
-                        ? new Sample(0L, 0L, seenAtMs)
-                        : new Sample(previous.eventTimeMs(), previous.appliedAtMs(), seenAtMs,
-                                previous.capturedPosition(), previous.capturedAtMs(),
-                                previous.appliedPosition(), previous.appliedPositionAtMs()));
-            }
-
-            @Override
-            public void onCaptured(String position, long atMs) {
-                samples.compute(pipelineId, (id, previous) -> previous == null
-                        ? new Sample(0L, 0L, 0L, position, atMs, null, 0L)
-                        : new Sample(previous.eventTimeMs(), previous.appliedAtMs(), previous.heartbeatAtMs(),
-                                position, atMs,
-                                previous.appliedPosition(), previous.appliedPositionAtMs()));
-            }
-
-            @Override
-            public void onAppliedPosition(String position, long atMs) {
-                samples.compute(pipelineId, (id, previous) -> previous == null
-                        ? new Sample(0L, 0L, 0L, null, 0L, position, atMs)
-                        : new Sample(previous.eventTimeMs(), previous.appliedAtMs(), previous.heartbeatAtMs(),
-                                previous.capturedPosition(), previous.capturedAtMs(),
-                                position, atMs));
-            }
-        };
+        return listenerFor(pipelineId, 0L);
     }
 
-    /** Milliseconds the target is behind, or empty when this pipeline has nothing to measure yet. */
+    public MigrationLagListener listenerFor(long pipelineId, long taskId) {
+        Sample sample = samples.computeIfAbsent(pipelineId, id -> new Sample());
+        if (taskId > 0L) {
+            sample.taskId = taskId;
+        }
+        meterBinder.bind(pipelineId, sample.taskId);
+        return new Listener(sample);
+    }
+
+    /** Milliseconds the target is behind (end-to-end), or empty when this pipeline has nothing to measure yet. */
     public Optional<Long> lagMs(Long pipelineId) {
+        return lagMs(pipelineId, System.currentTimeMillis(), lookupSourcePosition(pipelineId));
+    }
+
+    public Optional<Long> lagMs(Long pipelineId, long nowMs, String sourcePosition) {
         if (pipelineId == null) {
             return Optional.empty();
         }
-        return Optional.ofNullable(lagMs(samples.get(pipelineId), System.currentTimeMillis()));
+        Sample sample = samples.get(pipelineId);
+        if (sample == null) {
+            return Optional.empty();
+        }
+        return Optional.ofNullable(LagComputations.endToEndOrUnknown(sample.inputs(sourcePosition), nowMs));
+    }
+
+    /** All four lag numbers, or empty when this pipeline has no sample yet. */
+    public Optional<Lags> lags(Long pipelineId) {
+        return lags(pipelineId, System.currentTimeMillis(), lookupSourcePosition(pipelineId));
+    }
+
+    public Optional<Lags> lags(Long pipelineId, long nowMs, String sourcePosition) {
+        if (pipelineId == null) {
+            return Optional.empty();
+        }
+        Sample sample = samples.get(pipelineId);
+        if (sample == null) {
+            return Optional.empty();
+        }
+        LagComputations.Result result = LagComputations.compute(sample.inputs(sourcePosition), nowMs);
+        if (result == null) {
+            return Optional.empty();
+        }
+        return Optional.of(new Lags(
+                result.captureLagMs(), result.replayLagMs(), result.endToEndLagMs(), result.replayBacklog()));
     }
 
     /**
@@ -115,14 +137,66 @@ public class MigrationLagRegistry {
             return Optional.empty();
         }
         return Optional.of(new Positions(
-                sample.capturedPosition(),
-                sample.capturedAtMs(),
-                sample.appliedPosition(),
-                sample.appliedPositionAtMs()));
+                sample.capturedPosition,
+                sample.capturedAtMs,
+                sample.appliedPosition,
+                sample.appliedPositionAtMs));
+    }
+
+    /** Last applied Kafka record CreateTime across partitions, or empty. */
+    public Optional<Long> lastAppliedCreateTimeMs(Long pipelineId) {
+        if (pipelineId == null) {
+            return Optional.empty();
+        }
+        Sample sample = samples.get(pipelineId);
+        if (sample == null || sample.appliedCreateTime.isEmpty()) {
+            return Optional.empty();
+        }
+        long max = 0L;
+        for (Long value : sample.appliedCreateTime.values()) {
+            if (value != null && value > max) {
+                max = value;
+            }
+        }
+        return max > 0L ? Optional.of(max) : Optional.empty();
+    }
+
+    /**
+     * Replay committed next-to-read offsets (last applied offset + 1) keyed by partition,
+     * for same-process datacheck lag against this registry.
+     */
+    public Map<Integer, Long> replayCommittedNext(Long pipelineId) {
+        if (pipelineId == null) {
+            return Map.of();
+        }
+        Sample sample = samples.get(pipelineId);
+        if (sample == null) {
+            return Map.of();
+        }
+        Map<Integer, Long> next = new HashMap<>();
+        for (Map.Entry<Integer, Long> entry : sample.appliedOffset.entrySet()) {
+            if (entry.getValue() != null) {
+                next.put(entry.getKey(), entry.getValue() + 1L);
+            }
+        }
+        return next;
+    }
+
+    public long taskId(long pipelineId) {
+        Sample sample = samples.get(pipelineId);
+        return sample == null ? 0L : sample.taskId;
+    }
+
+    /** Pipeline ids that currently have a sample (for metric binding / scrape). */
+    public Iterable<Long> pipelineIds() {
+        return samples.keySet();
     }
 
     /** Immutable view of the two pipeline positions and when each last moved. */
     public record Positions(String captured, long capturedAtMs, String applied, long appliedAtMs) {
+    }
+
+    public record Lags(long captureLagMs, long replayLagMs, long endToEndLagMs, long replayBacklog) {
     }
 
     public void clear(Long pipelineId) {
@@ -132,49 +206,128 @@ public class MigrationLagRegistry {
     }
 
     /**
-     * The rule, isolated from the clock so it can be tested.
-     *
-     * <p>{@code now - eventTime} is the definition, but on its own it grows forever when the source
-     * is simply quiet — the classic way this gauge lies. Two facts fix that, and they answer
-     * different questions:
-     *
-     * <ul>
-     *   <li>no commit for {@link #IDLE_WINDOW_MS} ⇒ nothing is pending, so the target is caught up;
-     *   <li>a heartbeat within {@link #ALIVE_WINDOW_MS} ⇒ the connector is still reading, so that
-     *       silence means an idle source rather than a dead pipeline.
-     * </ul>
-     *
-     * <p>Both are required before reporting zero: without the heartbeat, silence would also describe
-     * a connector that stopped reading, and then the raw difference is exactly what an operator
-     * needs to watch.
+     * @deprecated tests should use {@link LagComputations}; kept for a few call sites during the
+     *     transition.
      */
     static Long lagMs(Sample sample, long nowMs) {
         if (sample == null) {
             return null;
         }
-        // "No heartbeat yet" is not "heartbeats stopped": the engine always configures them, so the
-        // only way to have none is a run that just started, and the first one is up to ~50s away.
-        // Treating that as dead made the gauge ramp for a minute after every restart.
-        boolean alive = sample.heartbeatAtMs() <= 0
-                || nowMs - sample.heartbeatAtMs() <= ALIVE_WINDOW_MS;
-        if (alive && (sample.eventTimeMs() <= 0 || nowMs - sample.appliedAtMs() > IDLE_WINDOW_MS)) {
-            return 0L;
-        }
-        if (sample.eventTimeMs() <= 0) {
-            // Incremental just started: no change seen yet, so there is nothing to be behind on.
-            return alive ? 0L : null;
-        }
-        return Math.max(0L, nowMs - sample.eventTimeMs());
+        return LagComputations.endToEndOrUnknown(sample.inputs(null), nowMs);
     }
 
-    /** Immutable so the HTTP thread never sees a half-updated pair. */
-    record Sample(long eventTimeMs, long appliedAtMs, long heartbeatAtMs,
-                  String capturedPosition, long capturedAtMs,
-                  String appliedPosition, long appliedPositionAtMs) {
+    private static final class Listener implements MigrationLagListener {
+        private final Sample sample;
 
-        /** Lag-only samples (tests, heartbeats before any position arrived). */
+        private Listener(Sample sample) {
+            this.sample = sample;
+        }
+
+        @Override
+        public void onApplied(long sourceEventTimeMs, long appliedAtMs) {
+            sample.eventTimeMs = Math.max(sourceEventTimeMs, sample.eventTimeMs);
+            sample.appliedAtMs = appliedAtMs;
+        }
+
+        @Override
+        public void onHeartbeat(long seenAtMs) {
+            sample.heartbeatAtMs = seenAtMs;
+        }
+
+        @Override
+        public void onCaptured(String position, long atMs) {
+            sample.capturedPosition = position;
+            sample.capturedAtMs = atMs;
+        }
+
+        @Override
+        public void onCapturedEvent(String position, long sourceEventTimeMs, long atMs) {
+            sample.capturedPosition = position;
+            sample.capturedAtMs = atMs;
+            if (sourceEventTimeMs > 0L) {
+                sample.capturedEventTimeMs = Math.max(sourceEventTimeMs, sample.capturedEventTimeMs);
+                sample.capturedEventAtMs = atMs;
+            }
+        }
+
+        @Override
+        public void onAppliedPosition(String position, long atMs) {
+            sample.appliedPosition = position;
+            sample.appliedPositionAtMs = atMs;
+        }
+
+        @Override
+        public void onProduced(int partition, long offset, long createTimeMs) {
+            sample.kafkaMode = true;
+            sample.producedOffset.merge(partition, offset, Math::max);
+            if (createTimeMs > 0L) {
+                sample.producedCreateTime.merge(partition, createTimeMs, Math::max);
+            }
+        }
+
+        @Override
+        public void onReplayed(int partition, long offset, long createTimeMs) {
+            sample.kafkaMode = true;
+            sample.appliedOffset.merge(partition, offset, Math::max);
+            if (createTimeMs > 0L) {
+                sample.appliedCreateTime.merge(partition, createTimeMs, Math::max);
+            }
+        }
+
+        @Override
+        public void onLogEnd(int partition, long endOffsetExclusive, long atMs) {
+            sample.kafkaMode = true;
+            sample.logEndExclusive.merge(partition, endOffsetExclusive, Math::max);
+        }
+    }
+
+    /** Mutable, thread-safe-enough sample: writers are capture/replay threads; readers copy on read. */
+    static final class Sample {
+        volatile long taskId;
+        volatile long eventTimeMs;
+        volatile long appliedAtMs;
+        volatile long heartbeatAtMs;
+        volatile String capturedPosition;
+        volatile long capturedAtMs;
+        volatile String appliedPosition;
+        volatile long appliedPositionAtMs;
+        volatile long capturedEventTimeMs;
+        volatile long capturedEventAtMs;
+        volatile boolean kafkaMode;
+        final ConcurrentHashMap<Integer, Long> producedOffset = new ConcurrentHashMap<>();
+        final ConcurrentHashMap<Integer, Long> producedCreateTime = new ConcurrentHashMap<>();
+        final ConcurrentHashMap<Integer, Long> appliedOffset = new ConcurrentHashMap<>();
+        final ConcurrentHashMap<Integer, Long> appliedCreateTime = new ConcurrentHashMap<>();
+        final ConcurrentHashMap<Integer, Long> logEndExclusive = new ConcurrentHashMap<>();
+
+        Sample() {
+        }
+
+        /** Lag-only constructor used by older unit tests. */
         Sample(long eventTimeMs, long appliedAtMs, long heartbeatAtMs) {
-            this(eventTimeMs, appliedAtMs, heartbeatAtMs, null, 0L, null, 0L);
+            this.eventTimeMs = eventTimeMs;
+            this.appliedAtMs = appliedAtMs;
+            this.heartbeatAtMs = heartbeatAtMs;
+        }
+
+        LagComputations.Inputs inputs(String sourcePosition) {
+            return new LagComputations.Inputs(
+                    eventTimeMs,
+                    appliedAtMs,
+                    heartbeatAtMs,
+                    capturedPosition,
+                    capturedAtMs,
+                    appliedPosition,
+                    appliedPositionAtMs,
+                    capturedEventTimeMs,
+                    capturedEventAtMs,
+                    kafkaMode,
+                    Map.copyOf(producedOffset),
+                    Map.copyOf(producedCreateTime),
+                    Map.copyOf(appliedOffset),
+                    Map.copyOf(appliedCreateTime),
+                    Map.copyOf(logEndExclusive),
+                    sourcePosition);
         }
     }
 }

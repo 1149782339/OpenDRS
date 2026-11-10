@@ -1,6 +1,6 @@
 package io.opendrs.migration.service;
 
-import io.opendrs.common.metadata.TableId;
+import io.opendrs.engine.common.metadata.TableId;
 import io.opendrs.migration.api.request.SchemaMapping;
 import io.opendrs.migration.api.request.SelectedTable;
 import io.opendrs.migration.api.request.TableMapping;
@@ -24,11 +24,11 @@ public final class MappingRequests {
      * source. The REST contract requires the object itself ({@code @NotNull} on the create
      * request), so a client that wants everything sends four empty lists rather than omitting it.
      */
-    public static io.opendrs.common.selection.TableSelection toNeutral(TableSelection selection) {
+    public static io.opendrs.engine.common.selection.TableSelection toNeutral(TableSelection selection) {
         if (selection == null) {
             return null;
         }
-        return new io.opendrs.common.selection.TableSelection(
+        return new io.opendrs.engine.common.selection.TableSelection(
                 selection.schemas(),
                 tables(selection.tables()),
                 selection.excludeSchemas(),
@@ -46,25 +46,25 @@ public final class MappingRequests {
                 .toList();
     }
 
-    private static io.opendrs.common.selection.TableMappings toNeutral(TableMappings mappings) {
+    private static io.opendrs.engine.common.selection.TableMappings toNeutral(TableMappings mappings) {
         if (mappings == null) {
             return null;
         }
-        List<io.opendrs.common.selection.SchemaMapping> schema = mappings.schema() == null
+        List<io.opendrs.engine.common.selection.SchemaMapping> schema = mappings.schema() == null
                 ? null
                 : mappings.schema().stream().map(MappingRequests::toNeutral).toList();
-        List<io.opendrs.common.selection.TableMapping> tables = mappings.tables() == null
+        List<io.opendrs.engine.common.selection.TableMapping> tables = mappings.tables() == null
                 ? null
                 : mappings.tables().stream().map(MappingRequests::toNeutral).toList();
-        return new io.opendrs.common.selection.TableMappings(schema, tables);
+        return new io.opendrs.engine.common.selection.TableMappings(schema, tables);
     }
 
-    private static io.opendrs.common.selection.SchemaMapping toNeutral(SchemaMapping mapping) {
-        return new io.opendrs.common.selection.SchemaMapping(mapping.source(), mapping.target());
+    private static io.opendrs.engine.common.selection.SchemaMapping toNeutral(SchemaMapping mapping) {
+        return new io.opendrs.engine.common.selection.SchemaMapping(mapping.source(), mapping.target());
     }
 
-    private static io.opendrs.common.selection.TableMapping toNeutral(TableMapping mapping) {
-        return new io.opendrs.common.selection.TableMapping(
+    private static io.opendrs.engine.common.selection.TableMapping toNeutral(TableMapping mapping) {
+        return new io.opendrs.engine.common.selection.TableMapping(
                 mapping.sourceSchema(), mapping.sourceTable(), mapping.targetSchema(), mapping.targetTable());
     }
 }

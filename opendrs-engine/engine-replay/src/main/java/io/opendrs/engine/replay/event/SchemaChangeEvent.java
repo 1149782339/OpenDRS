@@ -1,7 +1,7 @@
 package io.opendrs.engine.replay.event;
 
-import io.opendrs.common.metadata.DatabaseType;
-import io.opendrs.common.metadata.TableId;
+import io.opendrs.engine.common.metadata.DatabaseType;
+import io.opendrs.engine.common.metadata.TableId;
 
 /**
  * Schema Change Event equivalent to SchemaChangeEvent.

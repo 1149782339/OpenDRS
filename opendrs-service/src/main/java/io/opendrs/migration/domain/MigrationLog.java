@@ -1,6 +1,6 @@
 package io.opendrs.migration.domain;
 
-import io.opendrs.common.log.MigrationLogLevel;
+import io.opendrs.engine.common.log.MigrationLogLevel;
 import java.time.LocalDateTime;
 
 /**

@@ -1,6 +1,6 @@
 package io.opendrs.migration.mapper;
 
-import io.opendrs.common.log.MigrationLogLevel;
+import io.opendrs.engine.common.log.MigrationLogLevel;
 import io.opendrs.migration.domain.MigrationLog;
 import java.util.List;
 import org.apache.ibatis.annotations.Mapper;

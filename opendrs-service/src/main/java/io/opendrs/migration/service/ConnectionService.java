@@ -3,16 +3,16 @@ package io.opendrs.migration.service;
 import io.opendrs.common.error.ErrorCode;
 import io.opendrs.common.error.ExceptionFactory;
 import io.opendrs.common.i18n.ErrorMessage;
-import io.opendrs.jdbc.JdbcConnection;
-import io.opendrs.jdbc.JdbcConnectionFactory;
-import io.opendrs.jdbc.JdbcException;
-import io.opendrs.jdbc.dialect.DbDialects;
+import io.opendrs.engine.jdbc.JdbcConnection;
+import io.opendrs.engine.jdbc.JdbcConnectionFactory;
+import io.opendrs.engine.jdbc.JdbcException;
 import io.opendrs.migration.api.request.CreateConnectionRequest;
 import io.opendrs.migration.api.response.ConnectionResponse;
 import io.opendrs.migration.api.response.ConnectionTestResponse;
 import io.opendrs.migration.domain.ConnectionInfo;
 import io.opendrs.migration.mapper.ConnectionInfoMapper;
 import io.opendrs.migration.mapper.MigrationTaskMapper;
+import java.sql.SQLException;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import org.springframework.stereotype.Service;
@@ -76,8 +76,8 @@ public class ConnectionService {
     public List<String> listSchemas(Long id) {
         ConnectionInfo info = requireConnection(id);
         try (JdbcConnection connection = jdbcConnectionFactory.open(info.toJdbcConfig())) {
-            return DbDialects.of(info.toDatabaseType()).listSchemas(connection);
-        } catch (JdbcException ex) {
+            return connection.listSchemas();
+        } catch (JdbcException | SQLException ex) {
             throw ExceptionFactory.create(
                     ErrorCode.METADATA_READ_FAILED, ErrorMessage.CONNECTION_LIST_SCHEMAS_FAILED, ex.getMessage());
         }
@@ -90,12 +90,11 @@ public class ConnectionService {
             throw ExceptionFactory.create(ErrorCode.PARAM_INVALID, ErrorMessage.CONNECTION_SCHEMA_REQUIRED);
         }
         try (JdbcConnection connection = jdbcConnectionFactory.open(info.toJdbcConfig())) {
-            return DbDialects.of(info.toDatabaseType())
-                    .listTables(connection, schema, List.of())
+            return connection.listTables(schema, List.of())
                     .stream()
-                    .map(table -> table.ref().table())
+                    .map(table -> table.getTable())
                     .toList();
-        } catch (JdbcException ex) {
+        } catch (JdbcException | SQLException ex) {
             throw ExceptionFactory.create(
                     ErrorCode.METADATA_READ_FAILED,
                     ErrorMessage.CONNECTION_LIST_TABLES_FAILED, schema, ex.getMessage());
@@ -106,7 +105,7 @@ public class ConnectionService {
         long started = System.nanoTime();
         try (JdbcConnection connection = jdbcConnectionFactory.open(info.toJdbcConfig())) {
             connection.ping();
-        } catch (JdbcException ex) {
+        } catch (JdbcException | SQLException ex) {
             throw ExceptionFactory.create(
                     ErrorCode.CONNECTION_TEST_FAILED, ErrorMessage.CONNECTION_TEST_FAILED, ex.getMessage());
         }

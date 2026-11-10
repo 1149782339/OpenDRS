@@ -1,7 +1,7 @@
 package io.opendrs.engine.core;
 
-import io.opendrs.common.selection.TableSelection;
-import io.opendrs.jdbc.JdbcConnectionConfig;
+import io.opendrs.engine.common.selection.TableSelection;
+import io.opendrs.engine.jdbc.JdbcConnectionConfig;
 
 /**
  * Common shape of every engine request.

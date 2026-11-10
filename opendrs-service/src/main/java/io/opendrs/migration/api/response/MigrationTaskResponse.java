@@ -14,6 +14,9 @@ public record MigrationTaskResponse(
         MigrationMode mode,
         ConnectionInfo source,
         ConnectionInfo target,
+        /** Endpoint ids; the UI needs them to enumerate schemas/tables for a data check. */
+        Long sourceConnectionId,
+        Long targetConnectionId,
         MigrationOptions options,
         MigrationPhase phase,
         TaskState state,

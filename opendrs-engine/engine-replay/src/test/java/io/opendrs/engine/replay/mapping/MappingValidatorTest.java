@@ -3,14 +3,12 @@ package io.opendrs.engine.replay.mapping;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
-import io.opendrs.common.metadata.TableId;
-import io.opendrs.common.selection.SchemaMapping;
-import io.opendrs.common.selection.TableMapping;
-import io.opendrs.common.selection.TableMappings;
-import io.opendrs.common.selection.TableSelection;
+import io.opendrs.engine.common.metadata.TableId;
+import io.opendrs.engine.common.selection.SchemaMapping;
+import io.opendrs.engine.common.selection.TableMapping;
+import io.opendrs.engine.common.selection.TableMappings;
+import io.opendrs.engine.common.selection.TableSelection;
 import io.opendrs.engine.replay.exception.MappingException;
-import io.opendrs.jdbc.metadata.Table;
-import io.opendrs.jdbc.metadata.TableRef;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
@@ -200,7 +198,7 @@ class MappingValidatorTest {
 
         validator.validate(tables);
         assertEquals("HR.EMPLOYEES", validator.resolve(tables, "HR", "EMPLOYEES"));
-        assertEquals(new TableRef("HR", "EMPLOYEES"), validator.resolveRef(tables, "HR", "EMPLOYEES"));
+        assertEquals(TableId.of("HR", "EMPLOYEES"), validator.resolveTableId(tables, "HR", "EMPLOYEES"));
     }
 
     @Test
@@ -211,11 +209,11 @@ class MappingValidatorTest {
                         List.of(new SchemaMapping("HR", "hr")),
                         List.of(new TableMapping("HR", "EMPLOYEES", "hr", "emp"))));
 
-        List<Table> targets = validator.mapTargets(
+        List<TableId> targets = validator.mapTargets(
                 tables,
-                List.of(new Table(new TableRef("HR", "EMPLOYEES")), new Table(new TableRef("HR", "DEPARTMENTS"))));
-        assertEquals(new TableRef("hr", "emp"), targets.get(0).ref());
-        assertEquals(new TableRef("hr", "DEPARTMENTS"), targets.get(1).ref());
+                List.of(TableId.of("HR", "EMPLOYEES"), TableId.of("HR", "DEPARTMENTS")));
+        assertEquals(TableId.of("hr", "emp"), targets.get(0));
+        assertEquals(TableId.of("hr", "DEPARTMENTS"), targets.get(1));
 
         TableSelection colliding = tableLevel(
                 List.of(table("HR", "A"), table("HR", "B")),
@@ -228,7 +226,7 @@ class MappingValidatorTest {
                 MappingException.class,
                 () -> validator.mapTargets(
                         colliding,
-                        List.of(new Table(new TableRef("HR", "A")), new Table(new TableRef("HR", "B")))));
+                        List.of(TableId.of("HR", "A"), TableId.of("HR", "B"))));
         assertEquals("Two tables map to the same target: hr.x", ex.getMessage());
     }
 

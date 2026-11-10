@@ -1,17 +1,17 @@
 package io.opendrs.migration.service;
 
-import io.opendrs.common.log.MigrationLogLevel;
-import io.opendrs.common.metadata.TableId;
+import io.opendrs.engine.common.log.MigrationLogLevel;
+import io.opendrs.engine.common.metadata.TableId;
 import io.opendrs.engine.core.TableSelectionExpander;
 import io.opendrs.engine.replay.mapping.MappingValidator;
-import io.opendrs.common.selection.TableSelection;
+import io.opendrs.engine.common.selection.TableSelection;
 import io.opendrs.engine.replay.sql.ExpressionBuilder;
 import io.opendrs.engine.replay.sql.IdentifierRule;
-import io.opendrs.jdbc.JdbcConnection;
-import io.opendrs.jdbc.JdbcConnectionFactory;
-import io.opendrs.jdbc.metadata.TableRef;
+import io.opendrs.engine.jdbc.JdbcConnection;
+import io.opendrs.engine.jdbc.JdbcConnectionFactory;
 import io.opendrs.migration.domain.ConnectionInfo;
 import io.opendrs.migration.mapper.FullLoadCheckpointMapper;
+import java.sql.SQLException;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -111,9 +111,9 @@ public class FullLoadResumePlanner {
     private List<String> expandSelection(long taskId, ConnectionInfo source, TableSelection selection) {
         try {
             return expander.expand(source.toJdbcConfig(), selection).stream()
-                    .map(table -> table.ref().schema() + "." + table.ref().table())
+                    .map(table -> table.getSchema() + "." + table.getTable())
                     .toList();
-        } catch (RuntimeException ex) {
+        } catch (RuntimeException | SQLException ex) {
             log.warn("Task {} could not expand the task selection for a resume table list: {}",
                     taskId, ex.getMessage());
             return List.of();
@@ -122,7 +122,7 @@ public class FullLoadResumePlanner {
 
     /**
      * 对每张未完成表在目标库 TRUNCATE。checkpoint 存的是源端 {@code db.table}，这里走
-     * MappingValidator.resolveRef 的同一链路换算目标端表名（MappedTableNamingStrategy 在
+     * MappingValidator.resolveTableId 的同一链路换算目标端表名（MappedTableNamingStrategy 在
      * sink 边界用的就是它），方言差异（MySQL 反引号 / PG 双引号）交给 JDBC 元数据的
      * identifier quote + engine-replay 的 ExpressionBuilder，不手写两套 SQL。
      */
@@ -146,11 +146,11 @@ public class FullLoadResumePlanner {
                                     + "\" is not a db.table pair, truncate skipped, upsert fallback applies");
                     continue;
                 }
-                TableRef mapped = mappingValidator.resolveRef(
+                TableId mapped = mappingValidator.resolveTableId(
                         selection, sourceTable.substring(0, dot), sourceTable.substring(dot + 1));
                 String sql = new ExpressionBuilder(rule)
                         .append("truncate table ")
-                        .append(TableId.of(mapped.schema(), mapped.table()))
+                        .append(mapped)
                         .toString();
                 try {
                     connection.execute(sql);
@@ -158,7 +158,7 @@ public class FullLoadResumePlanner {
                     logService.listenerFor(taskId).emit(MigrationLogLevel.INFO,
                             "truncate target table " + sql.substring("truncate table ".length())
                                     + " for resume");
-                } catch (RuntimeException ex) {
+                } catch (RuntimeException | SQLException ex) {
                     log.warn("truncate failed (\"{}\"), resume relies on the upsert fallback: {}",
                             sql, ex.getMessage());
                     logService.listenerFor(taskId).emit(MigrationLogLevel.WARNING,
@@ -185,7 +185,7 @@ public class FullLoadResumePlanner {
     private static IdentifierRule identifierRuleOf(JdbcConnection connection) {
         String quote = "\"";
         try {
-            String fromMetadata = connection.unwrap().getMetaData().getIdentifierQuoteString();
+            String fromMetadata = connection.connection().getMetaData().getIdentifierQuoteString();
             if (fromMetadata != null && !fromMetadata.isBlank()) {
                 quote = fromMetadata;
             }

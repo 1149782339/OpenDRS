@@ -1,6 +1,6 @@
 # OpenDRS 管理台
 
-Vite + Vue 3 管理界面，用于维护连接与迁移任务。开发服务器把 `/api` 代理到本机 `opendrs-service`（默认 `http://localhost:8080`，对应 `OPENDRS_PORT`）。
+Vite + Vue 3 管理界面，用于维护连接、迁移任务与数据校验。开发服务器把 `/api` 代理到本机 `opendrs-service`（默认 `http://localhost:8080`，对应 `OPENDRS_PORT`）。
 
 ## 启动
 

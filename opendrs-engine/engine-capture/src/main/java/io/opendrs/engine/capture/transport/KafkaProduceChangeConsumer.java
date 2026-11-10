@@ -2,7 +2,9 @@ package io.opendrs.engine.capture.transport;
 
 import io.debezium.engine.DebeziumEngine;
 import io.debezium.engine.RecordChangeEvent;
+import io.opendrs.common.progress.MigrationLagListener;
 import io.opendrs.engine.capture.BatchApplyHandler;
+import io.opendrs.engine.capture.SourceEventTimes;
 import io.opendrs.engine.capture.SnapshotNotifications;
 import io.opendrs.engine.replay.GtidLoopConfig;
 import io.opendrs.engine.replay.ReplayConfig;
@@ -48,13 +50,24 @@ public final class KafkaProduceChangeConsumer
     private final Producer<String, byte[]> producer;
     /** DIRECT apply path for snapshot / full-load records; never null in production. */
     private final BatchApplyHandler snapshotApplyHandler;
+    private final MigrationLagListener lagListener;
 
     public KafkaProduceChangeConsumer(
             long taskId,
             ReplayConfig config,
             KafkaTransportConfig transport,
             BatchApplyHandler snapshotApplyHandler) {
-        this(taskId, config, transport, snapshotApplyHandler, new SourceRecordEnvelopeCodec(), createProducer(transport));
+        this(taskId, config, transport, snapshotApplyHandler, MigrationLagListener.NONE);
+    }
+
+    public KafkaProduceChangeConsumer(
+            long taskId,
+            ReplayConfig config,
+            KafkaTransportConfig transport,
+            BatchApplyHandler snapshotApplyHandler,
+            MigrationLagListener lagListener) {
+        this(taskId, config, transport, snapshotApplyHandler, new SourceRecordEnvelopeCodec(),
+                createProducer(transport), lagListener);
     }
 
     KafkaProduceChangeConsumer(
@@ -64,6 +77,17 @@ public final class KafkaProduceChangeConsumer
             BatchApplyHandler snapshotApplyHandler,
             SourceRecordEnvelopeCodec codec,
             Producer<String, byte[]> producer) {
+        this(taskId, config, transport, snapshotApplyHandler, codec, producer, MigrationLagListener.NONE);
+    }
+
+    KafkaProduceChangeConsumer(
+            long taskId,
+            ReplayConfig config,
+            KafkaTransportConfig transport,
+            BatchApplyHandler snapshotApplyHandler,
+            SourceRecordEnvelopeCodec codec,
+            Producer<String, byte[]> producer,
+            MigrationLagListener lagListener) {
         if (snapshotApplyHandler == null) {
             throw new IllegalArgumentException("snapshotApplyHandler is required (FULL bypasses Kafka)");
         }
@@ -73,6 +97,7 @@ public final class KafkaProduceChangeConsumer
         this.snapshotApplyHandler = snapshotApplyHandler;
         this.codec = codec;
         this.producer = producer;
+        this.lagListener = lagListener == null ? MigrationLagListener.NONE : lagListener;
         log.info(
                 "KAFKA produce consumer ready for task {} topic={} (snapshot→DIRECT, stream→Kafka)",
                 taskId,
@@ -93,8 +118,10 @@ public final class KafkaProduceChangeConsumer
             snapshotApplyHandler.applyBatch(snapshot);
         }
         if (!streaming.isEmpty()) {
-            config.getMetrics().captured(config.getDirection(), taskId, streaming.size());
             produceAll(streaming);
+            // Count once on the produce side after a successful send. DIRECT / snapshot
+            // counts stay in BatchApplyHandler; KAFKA replay must not increment again.
+            config.getMetrics().captured(config.getDirection(), taskId, streaming.size());
         }
         for (RecordChangeEvent<SourceRecord> event : records) {
             committer.markProcessed(event);
@@ -112,14 +139,39 @@ public final class KafkaProduceChangeConsumer
             futures.add(producer.send(new ProducerRecord<>(topic, key, payload)));
         }
         producer.flush();
-        for (Future<RecordMetadata> future : futures) {
+        SourceRecord lastData = null;
+        RecordMetadata lastDataMeta = null;
+        boolean heartbeatOnly = false;
+        for (int i = 0; i < futures.size(); i++) {
             try {
-                future.get();
+                RecordMetadata metadata = futures.get(i).get();
+                SourceRecord record = batch.get(i);
+                lagListener.emitProduced(metadata.partition(), metadata.offset(), metadata.timestamp());
+                if (SourceEventTimes.isHeartbeat(record)) {
+                    heartbeatOnly = heartbeatOnly || lastData == null;
+                }
+                else {
+                    lastData = record;
+                    lastDataMeta = metadata;
+                    heartbeatOnly = false;
+                }
             }
             catch (Exception ex) {
                 throw new IllegalStateException(
                         "Failed to produce CDC batch to Kafka topic " + topic + " for task " + taskId, ex);
             }
+        }
+        long now = System.currentTimeMillis();
+        if (lastData != null) {
+            String position = BatchApplyHandler.positionOf(List.of(lastData));
+            Long eventTime = SourceEventTimes.streamingEventTimeMs(lastData);
+            if (eventTime == null) {
+                eventTime = lastDataMeta == null ? now : lastDataMeta.timestamp();
+            }
+            lagListener.emitCapturedEvent(position, eventTime, now);
+        }
+        else if (heartbeatOnly) {
+            lagListener.emitHeartbeat(now);
         }
     }
 

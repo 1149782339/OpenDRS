@@ -13,7 +13,22 @@ public record MigrationStatusResponse(
         Offset reverse,
         String error
 ) {
-    public record Progress(Long lagMs) {
+    /**
+     * {@code lagMs} is the main (end-to-end) number, kept for compatibility.
+     * Capture and replay lags are reported separately; {@code replayBacklog} is the
+     * Kafka record count backlog (0 in DIRECT / when caught up).
+     */
+    public record Progress(
+            Long lagMs,
+            Long endToEndLagMs,
+            Long captureLagMs,
+            Long replayLagMs,
+            Long replayBacklog) {
+
+        /** Compatibility: treat a single value as the end-to-end / main number. */
+        public Progress(Long lagMs) {
+            this(lagMs, lagMs, null, null, null);
+        }
     }
 
     /**

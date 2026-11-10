@@ -1,6 +1,6 @@
 package io.opendrs.engine.replay.event;
 
-import io.opendrs.common.metadata.DatabaseType;
+import io.opendrs.engine.common.metadata.DatabaseType;
 
 /**
  * Change Event equivalent to ChangeEvent.

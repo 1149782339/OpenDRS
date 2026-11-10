@@ -12,9 +12,44 @@
 
     <artifactId>opendrs-common</artifactId>
     <name>opendrs-common</name>
-    <description>Shared vocabulary across modules: table coordinates, naming strategies, identifier utilities, database types</description>
+    <description>Shared vocabulary: API envelope, error/i18n contracts and the engine-to-service progress callbacks</description>
 
     <dependencies>
+        <!--
+            Compile-only: the API/error/i18n classes are service-facing, but this module is also on
+            every engine classpath. "provided" keeps Spring out of the engine's transitive
+            dependencies; the service already brings all of these through its Boot starters.
+        -->
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-context</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-web</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-webmvc</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-tx</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>jakarta.validation</groupId>
+            <artifactId>jakarta.validation-api</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+            <scope>provided</scope>
+        </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>

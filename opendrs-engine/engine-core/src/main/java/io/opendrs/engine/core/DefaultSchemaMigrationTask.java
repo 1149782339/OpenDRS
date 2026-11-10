@@ -1,6 +1,6 @@
 package io.opendrs.engine.core;
 
-import io.opendrs.jdbc.metadata.Table;
+import io.opendrs.engine.common.metadata.TableId;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.function.Supplier;
@@ -9,8 +9,8 @@ import java.util.function.Supplier;
 final class DefaultSchemaMigrationTask extends AbstractMigrationTask implements SchemaMigrationTask {
 
     private final Supplier<SchemaMigrationOutcome> work;
-    private volatile List<Table> created = List.of();
-    private volatile List<Table> skipped = List.of();
+    private volatile List<TableId> created = List.of();
+    private volatile List<TableId> skipped = List.of();
 
     DefaultSchemaMigrationTask(Supplier<SchemaMigrationOutcome> work) {
         this.work = work;
@@ -25,12 +25,12 @@ final class DefaultSchemaMigrationTask extends AbstractMigrationTask implements 
     }
 
     @Override
-    public List<Table> created() {
+    public List<TableId> created() {
         return created;
     }
 
     @Override
-    public List<Table> skipped() {
+    public List<TableId> skipped() {
         return skipped;
     }
 }

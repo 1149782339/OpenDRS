@@ -12,7 +12,8 @@ import io.opendrs.engine.precheck.Side;
 import io.opendrs.engine.precheck.Verdict;
 import io.opendrs.engine.precheck.fact.EndpointFacts;
 import io.opendrs.engine.precheck.fact.FactStore;
-import io.opendrs.jdbc.JdbcConnectionConfig;
+import io.opendrs.engine.jdbc.JdbcConnectionConfig;
+import java.sql.SQLException;
 import java.util.List;
 
 /**
@@ -43,7 +44,7 @@ public final class ConnectionCheck implements CheckRule {
         EndpointFacts endpoint = facts.of(side);
         try {
             endpoint.connection().ping();
-        } catch (DependencyUnavailableException ex) {
+        } catch (DependencyUnavailableException | SQLException ex) {
             return Evaluation.fail(
                     endpointLabel() + "连接失败",
                     ex.getMessage(),

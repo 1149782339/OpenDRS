@@ -1,6 +1,6 @@
 package io.opendrs.engine.schema.export;
 
-import io.opendrs.common.metadata.DatabaseType;
+import io.opendrs.engine.common.metadata.DatabaseType;
 import io.opendrs.engine.schema.meta.DatabaseObject;
 
 import java.util.List;

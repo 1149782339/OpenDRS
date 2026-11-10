@@ -16,12 +16,12 @@ import java.util.Locale;
 
 import io.opendrs.common.error.AppException;
 import io.opendrs.common.error.ErrorCode;
-import io.opendrs.jdbc.JdbcConnection;
-import io.opendrs.jdbc.JdbcConnectionFactory;
+import io.opendrs.engine.jdbc.JdbcConnection;
+import io.opendrs.engine.jdbc.JdbcConnectionFactory;
 import io.opendrs.migration.domain.ConnectionInfo;
 import io.opendrs.migration.mapper.ConnectionInfoMapper;
-import io.opendrs.jdbc.JdbcException;
-import io.opendrs.jdbc.JdbcConnectionConfig;
+import io.opendrs.engine.jdbc.JdbcException;
+import io.opendrs.engine.jdbc.JdbcConnectionConfig;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;

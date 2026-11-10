@@ -1,6 +1,6 @@
 package io.opendrs.engine.core;
 
-import io.opendrs.common.metadata.DatabaseType;
+import io.opendrs.engine.common.metadata.DatabaseType;
 
 /**
  * The single entry point of the migration engine — the black box. The engine owns no Spring, no
@@ -34,4 +34,7 @@ public interface MigrationEngine {
 
     /** Expands the selection and runs the direction's precheck checklist. */
     PrecheckTask precheck(PrecheckParam param);
+
+    /** Compares the serialized rows of the selected tables between source and target. */
+    DataCheckTask datacheck(DataCheckParam param);
 }

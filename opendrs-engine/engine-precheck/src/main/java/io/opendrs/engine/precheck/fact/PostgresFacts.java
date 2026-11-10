@@ -1,11 +1,11 @@
 package io.opendrs.engine.precheck.fact;
 
 import io.opendrs.engine.precheck.Side;
-import io.opendrs.jdbc.JdbcConnection;
-import io.opendrs.jdbc.JdbcConnectionConfig;
-import io.opendrs.jdbc.JdbcConnectionFactory;
-import io.opendrs.jdbc.metadata.Table;
-import io.opendrs.jdbc.metadata.TableRef;
+import io.opendrs.engine.jdbc.JdbcConnection;
+import io.opendrs.engine.jdbc.JdbcConnectionConfig;
+import io.opendrs.engine.jdbc.JdbcConnectionFactory;
+import io.opendrs.engine.common.metadata.TableId;
+import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashSet;
@@ -28,7 +28,7 @@ public final class PostgresFacts extends EndpointFacts {
     }
 
     @Override
-    protected Map<String, String> loadParameters(JdbcConnection conn) {
+    protected Map<String, String> loadParameters(JdbcConnection conn) throws SQLException {
         Map<String, String> out = new LinkedHashMap<>();
         for (String[] row : conn.queryList(
                 "SHOW ALL", rs -> new String[] {rs.getString(1), rs.getString(2)})) {
@@ -40,12 +40,12 @@ public final class PostgresFacts extends EndpointFacts {
     }
 
     @Override
-    protected CharsetInfo loadCharset(JdbcConnection conn) {
+    protected CharsetInfo loadCharset(JdbcConnection conn) throws SQLException {
         return new CharsetInfo(parameters().get("server_encoding"), parameters().get("lc_collate"));
     }
 
     @Override
-    protected TimezoneInfo loadTimezone(JdbcConnection conn) {
+    protected TimezoneInfo loadTimezone(JdbcConnection conn) throws SQLException {
         String zone = parameters().get("timezone");
         Integer offset = conn.queryOne(
                 "SELECT CAST(EXTRACT(TIMEZONE FROM now()) AS int)", rs -> rs.getInt(1));
@@ -53,7 +53,7 @@ public final class PostgresFacts extends EndpointFacts {
     }
 
     @Override
-    protected InstanceState loadInstanceState(JdbcConnection conn) {
+    protected InstanceState loadInstanceState(JdbcConnection conn) throws SQLException {
         Boolean inRecovery = conn.queryOne("SELECT pg_is_in_recovery()", rs -> rs.getBoolean(1));
         boolean recovery = Boolean.TRUE.equals(inRecovery);
         return new InstanceState(!recovery, recovery ? "pg_is_in_recovery=true（只读备库）" : "pg_is_in_recovery=false");
@@ -65,7 +65,8 @@ public final class PostgresFacts extends EndpointFacts {
      */
     @Override
     protected List<String> loadMissingPermissions(
-            JdbcConnection conn, Collection<String> schemas, List<String> required) {
+            JdbcConnection conn, Collection<String> schemas, List<String> required)
+            throws SQLException {
         List<String> missing = new ArrayList<>();
         String database = conn.queryOne("SELECT current_database()", rs -> rs.getString(1));
         for (String schema : schemas) {
@@ -100,7 +101,8 @@ public final class PostgresFacts extends EndpointFacts {
 
     @Override
     protected void loadTableFacts(
-            JdbcConnection conn, Collection<Table> tables, Map<TableRef, TableFacts> out) {
+            JdbcConnection conn, Collection<TableId> tables, Map<TableId, TableFacts> out)
+            throws SQLException {
         if (tables.isEmpty()) {
             return;
         }
@@ -127,9 +129,8 @@ public final class PostgresFacts extends EndpointFacts {
                         params)
                 .forEach(withPrimaryKey::add);
 
-        for (Table table : tables) {
-            TableRef ref = table.ref();
-            String tableKey = pgKey(ref.schema(), ref.table());
+        for (TableId ref : tables) {
+            String tableKey = pgKey(ref.getSchema(), ref.getTable());
             if (!existing.contains(tableKey)) {
                 continue;
             }
@@ -143,11 +144,11 @@ public final class PostgresFacts extends EndpointFacts {
                 + "." + (table == null ? "" : table.toLowerCase(Locale.ROOT));
     }
 
-    private static List<String> distinctSchemas(Collection<Table> tables) {
+    private static List<String> distinctSchemas(Collection<TableId> tables) {
         Set<String> schemas = new LinkedHashSet<>();
-        for (Table table : tables) {
-            if (table.ref().schema() != null && !table.ref().schema().isBlank()) {
-                schemas.add(table.ref().schema());
+        for (TableId id : tables) {
+            if (id.getSchema() != null && !id.getSchema().isBlank()) {
+                schemas.add(id.getSchema());
             }
         }
         return List.copyOf(schemas);

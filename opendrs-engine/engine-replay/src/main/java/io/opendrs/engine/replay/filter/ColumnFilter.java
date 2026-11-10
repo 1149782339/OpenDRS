@@ -1,6 +1,6 @@
 package io.opendrs.engine.replay.filter;
 
-import io.opendrs.engine.replay.relation.ColumnDefinition;
+import io.opendrs.engine.common.metadata.ColumnDefinition;
 
 import java.util.Optional;
 

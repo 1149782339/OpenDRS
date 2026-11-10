@@ -1,6 +1,6 @@
 package io.opendrs.engine.schema.meta;
 
-import io.opendrs.common.metadata.TableId;
+import io.opendrs.engine.common.metadata.TableId;
 import java.util.Objects;
 
 /**

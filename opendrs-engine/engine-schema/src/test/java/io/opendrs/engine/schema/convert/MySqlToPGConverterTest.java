@@ -3,7 +3,7 @@ package io.opendrs.engine.schema.convert;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import io.opendrs.engine.schema.convert.converters.MySqlToPGConverter;
-import io.opendrs.common.metadata.TableId;
+import io.opendrs.engine.common.metadata.TableId;
 import org.junit.jupiter.api.Test;
 
 class MySqlToPGConverterTest {

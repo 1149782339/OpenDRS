@@ -1,7 +1,7 @@
 package io.opendrs.migration.api;
 
 import io.opendrs.common.api.Response;
-import io.opendrs.common.log.MigrationLogLevel;
+import io.opendrs.engine.common.log.MigrationLogLevel;
 import io.opendrs.migration.api.request.CreateMigrationTaskRequest;
 import io.opendrs.migration.api.response.MigrationLogPage;
 import io.opendrs.migration.api.response.MigrationPrecheckResponse;

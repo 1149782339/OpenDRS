@@ -1,6 +1,6 @@
 package io.opendrs.engine.core;
 
-import io.opendrs.jdbc.metadata.Table;
+import io.opendrs.engine.common.metadata.TableId;
 import java.util.List;
 
 /**
@@ -10,8 +10,8 @@ import java.util.List;
 public interface SchemaMigrationTask extends MigrationTask {
 
     /** Target tables created by this run. */
-    List<Table> created();
+    List<TableId> created();
 
     /** Tables that already existed on the target and were left untouched. */
-    List<Table> skipped();
+    List<TableId> skipped();
 }

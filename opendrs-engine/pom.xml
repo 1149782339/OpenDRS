@@ -16,10 +16,13 @@
     <description>OpenDRS migration engine — black box behind the MigrationEngine facade (ddl, replay, schema, capture, core, precheck)</description>
 
     <modules>
+        <module>engine-common</module>
+        <module>engine-jdbc</module>
         <module>engine-schema</module>
         <module>engine-replay</module>
         <module>engine-precheck</module>
         <module>engine-capture</module>
         <module>engine-core</module>
+        <module>engine-datacheck</module>
     </modules>
 </project>
