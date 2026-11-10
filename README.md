@@ -1,217 +1,263 @@
-# OpenDRS
+<p align="center">
+  <img src="docs/images/logo.png" alt="OpenDRS — Open Data Replication Service" width="420">
+</p>
 
-Open data replication service（开源数据复制服务）。通过 Web 界面完成 **MySQL → PostgreSQL** 的全量 + 增量迁移，以及 **MySQL ↔ MySQL 双向同步**。增量基于嵌入式 Debezium 读取 binlog，目标端按事务回放。
+English | [简体中文](README_CN.md)
 
-## 功能
+**Open Data Replication Service** — an open-source data replication platform for heterogeneous databases, driven from a bilingual (English / 中文) web UI.
 
-| 能力 | 说明 |
-|---|---|
-| 全量迁移 | 初始快照逐行复制，无需单独的导出/导入回合 |
-| 增量迁移 | binlog CDC，快照完成后自动接续，任务持续运行 |
-| 结构迁移 | 单向任务自动在目标库建表（MySQL DDL → PostgreSQL）；双向任务要求两端表已存在 |
-| 预检查 | 异步执行：连接、版本、权限、binlog/GTID 参数、主键、目标实例状态、表存在性等，逐项通过/告警/阻断 |
-| 双向同步 | 两个方向各自全量+增量；GTID 打标 + 对端过滤防止回环 |
-| 任务监控 | 目标库回放 TPS、同步时延、事务执行/提交耗时（Prometheus 指标 + ECharts 展示） |
-| 任务状态机 | 启动 / 暂停（仅增量）/ 恢复 / 重启 / 结束 / 删除，非法操作置灰 |
+OpenDRS is a service for full-load migration and change-data sync across databases. You configure sources and tasks in the browser; the engine captures changes, applies them on the target as transactions, and gives you precheck and operations in one place — no need to assemble a CDC connector, a sink, and a UI yourself. Incremental capture today uses embedded [Debezium](https://debezium.io).
 
-## 快速开始
+Shipped and planned source / target combinations are listed in [Supported replication paths](#supported-replication-paths).
 
-要求：Docker（或 Podman）+ Docker Compose、JDK 21、Maven 3.8+、Node.js 18+。
+[![CI](https://github.com/1149782339/OpenDRS/actions/workflows/ci.yml/badge.svg)](https://github.com/1149782339/OpenDRS/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![Java](https://img.shields.io/badge/Java-21-orange.svg)](https://openjdk.org/projects/jdk/21/)
+[![CDC](https://img.shields.io/badge/CDC-Debezium%203.7-brightgreen.svg)](https://debezium.io)
+
+![Task list](docs/images/task-list.png)
+
+![Task monitoring](docs/images/task-monitor.png)
+
+<!-- TODO (optional): replace the two stills above with a 10–20s GIF of "create task → precheck passes → run → metrics appear" -->
+
+## Contents
+
+- [Why OpenDRS](#why-opendrs)
+- [Features](#features)
+- [Use cases](#use-cases)
+- [Architecture](#architecture)
+- [Supported replication paths](#supported-replication-paths)
+- [Quick start](#quick-start)
+- [Walkthrough](#walkthrough)
+- [How it compares](#how-it-compares)
+- [Current limitations](#current-limitations)
+- [API and local development](#api-and-local-development)
+- [Roadmap](#roadmap)
+- [Contributing](#contributing)
+- [License](#license)
+
+## Why OpenDRS
+
+Replicating data across databases — between different engines, or between two instances of the same one — usually means stitching a pipeline together yourself: a CDC tool to capture changes, a custom sink, then prechecks, checkpoints, metrics, and a UI on top. The pipeline can work, but wiring it and debugging it is expensive.
+
+OpenDRS turns that pipeline into a service you can deploy. You configure data sources and tasks in the browser; the engine runs the snapshot, CDC, replay, and day-to-day operations.
+
+## Features
+
+- **Full load and incremental CDC in one task** — The initial snapshot copies rows, then streaming CDC starts automatically. No separate export/import pass.
+- **Schema migration on supported paths** — Unidirectional tasks can create tables on the target when a schema converter exists (currently MySQL DDL → PostgreSQL). Other paths require the tables to already exist.
+- **Precheck** — Connectivity, versions, privileges, path-specific CDC settings, primary keys, target instance health, table presence, and more are scored as pass, warn, or block. Blocking findings must be fixed before you start.
+- **Bidirectional sync on supported paths** — Each direction runs its own full load and incremental stream, with loop prevention. Currently available for MySQL ↔ MySQL (GTID tagging and peer-side filtering).
+- **Operable tasks** — Start, pause (incremental phase only), resume, restart, terminate, and delete. Actions that aren't valid for the current state are disabled in the UI.
+- **Bilingual web UI** — Every page is available in English and Simplified Chinese; switch languages with one click in the top bar.
+- **Observability** — Target-side apply TPS, sync lag, and transaction execute / commit time, collected with Prometheus and shown with ECharts.
+
+## Use cases
+
+- Heterogeneous migration between engines — for example MySQL → PostgreSQL: move the existing data, then keep following changes.
+- Two-region active-active setups on a supported bidirectional path (currently MySQL ↔ MySQL; this release does not detect cross-region conflicts; see [Current limitations](#current-limitations)).
+- A one-time full copy with no ongoing sync (choose "full load only").
+
+## Architecture
+
+<p align="center">
+  <img src="docs/images/architecture.png" alt="OpenDRS architecture" width="860">
+</p>
+
+Capture and replay are selected by database type. Today, capture uses embedded Debezium against MySQL, and replay has JDBC dialects for PostgreSQL and MySQL. See [Supported replication paths](#supported-replication-paths) for what is shipped versus planned.
+
+Modules (Maven multi-module project, group `io.opendrs`):
+
+- **`opendrs-engine`**: the framework-free engine. Its public API is `MigrationEngine` (`supportsPrecheck` / `migrateSchema` / `migrateData` / `precheck`). Offsets and schema history are stored in the task metadata database. Submodules:
+  - `engine-capture`: CDC and snapshot (embedded Debezium today)
+  - `engine-schema`: DDL conversion (currently MySQL → PostgreSQL)
+  - `engine-replay`: transactional JDBC apply with target dialects
+  - `engine-precheck`: rule packs matched by source → target profile
+  - `engine-core`: orchestration and table mapping
+- **`opendrs-service`**: Spring Boot app with the task state machine (phase × state), async precheck, scheduling, Prometheus metrics, MyBatis + Flyway.
+- **`opendrs-web`**: Vue 3 + Element Plus + ECharts. Not a Maven module; the `npm run build` output is served by nginx.
+- **`opendrs-jdbc` / `opendrs-common`**: connections, dialects, and shared metadata types.
+
+The design for resuming a full load from a checkpoint is in [`docs/design/full-migration-resume.md`](docs/design/full-migration-resume.md).
+
+## Supported replication paths
+
+OpenDRS is built as a multi-source, multi-target platform. **Supported** means the path can be created and run on `main`. **Planned** rows are example future directions — they are not available yet and can be removed or rewritten if the roadmap changes.
+
+| Source | Target | Status | Notes |
+|---|---|---|---|
+| MySQL | PostgreSQL | Supported | Unidirectional. Schema migration (MySQL DDL → PostgreSQL), full snapshot, and incremental CDC. Modes: full + incremental, or full load only. |
+| MySQL | MySQL | Supported | Full snapshot and incremental CDC. Unidirectional, or bidirectional (full + incremental only). No schema migration — tables must already exist. Bidirectional uses GTID tagging to prevent loops. |
+| Oracle | PostgreSQL | Planned | |
+| PostgreSQL | MySQL | Planned | |
+| MySQL | Oracle | Planned | |
+
+### Requirements on currently supported paths
+
+These constraints apply to the **Supported** rows above (both use MySQL as the source). Precheck enforces most of them:
+
+- Source binlog must be `ROW` + `FULL`, with enough retention (precheck defaults to ≥ 3 days). Tables should be InnoDB. Incremental apply locates rows by primary key.
+- Source user privileges: `SELECT`, `RELOAD`, `REPLICATION SLAVE`, `REPLICATION CLIENT`, `SHOW DATABASES`.
+- MySQL → MySQL also requires GTID (`gtid_mode=ON`) on the source. Bidirectional additionally requires GTID and CDC privileges on both sides, and distinct `server_id` / `server_uuid`.
+- Bidirectional loop prevention: when the sink applies a transaction it uses `SET SESSION gtid_next` to write either the source GTID (incremental) or a task-scoped synthetic GTID namespace (full-load batches) into the target binlog. The peer capture drops transactions whose GTID UUID belongs to that peer.
+
+## Quick start
+
+Requirements: Docker (or Podman) and Docker Compose, JDK 21, Maven 3.8+, and Node.js 18+.
 
 ```bash
-# 一键构建并启动全部服务（后端 jar + 前端 bundle + compose 重建）
+git clone https://github.com/1149782339/OpenDRS.git
+cd OpenDRS
 sh deploy/dev.sh
 ```
 
-启动完成后访问 **http://localhost**（nginx 反代 `/api` 到后端）。`dev.sh` 末尾会自动探测 `http://127.0.0.1/api/v1/migration/connections` 直到就绪。
+The script builds the backend jar and the frontend bundle on the host, recreates the application Compose stack, and probes `http://127.0.0.1/api/v1/migration/connections` until it is ready. Then open **http://localhost** (nginx reverse-proxies `/api` to the backend).
 
-compose 栈包含：
+Application stack started by `deploy/dev.sh`:
 
-| 服务 | 端口 | 说明 |
+| Service | Port | Description |
 |---|---|---|
-| frontend (nginx) | 80 | Web UI + API 反代 |
-| backend | 8080 | Spring Boot 应用（host 网络） |
-| mysql | 3406 | 演示源库 + 服务元数据库（root/123456，库 `opendrs`） |
-| mysql2 | 3307 | 双向同步演示对端（root/123456，库 `bidir_test`） |
-| postgres | 5432 | 演示目标库（opendrs/opendrs，库 `opendrs`） |
-| prometheus | 9090 | 回放指标采集 |
+| frontend (nginx) | 80 | Web UI and API reverse proxy |
+| backend | 8080 | Spring Boot app (host networking) |
+| mysql | 3406 | Service metadata store (`root` / `123456` or `opendrs` / `123456`, database `opendrs`) |
+| prometheus | 9090 | Replay metrics |
 
-## 使用流程
-
-### 1. 准备数据源
-
-**数据源管理 → 新增数据源**，填写主机、端口、数据库、用户名、密码。
-
-- MySQL 8 非 SSL 连接需在「高级配置」中加 `"allowPublicKeyRetrieval": true`（caching_sha2_password 公钥检索）。
-- 建议先点「测试连接」。
-
-![数据源管理](docs/images/connections.png)
-
-### 2. 新建任务
-
-**任务管理 → 新建任务**，五步向导：
-
-1. **基本信息** — 任务名称、迁移模式（全量+增量 / 仅全量）
-2. **设置同步** — 源/目标数据源、同步拓扑（单向 / 双向）、同步对象（整库 / 按表）
-3. **高级设置** — 导出/导入并发数、回放并发数、冲突策略等
-4. **预检查** — 异步执行，结果逐项刷新；阻断项必须解决
-5. **任务确认** — 确认后任务进入「未启动」
-
-![向导：基本信息](docs/images/task-create-basic.png)
-
-![向导：设置同步](docs/images/task-create-sync.png)
-
-表级迁移可展开库、勾选具体表（左侧未选、右侧已选）：
-
-![向导：表级迁移](docs/images/task-create-tables.png)
-
-库级迁移按整库勾选：
-
-![向导：库级迁移](docs/images/task-create-schema.png)
-
-两端均为 MySQL 时可选「双向同步」：
-
-![向导：双向同步](docs/images/task-create-bidir.png)
-
-![向导：预检查](docs/images/task-create-precheck.png)
-
-预检查通过后确认任务信息并启动：
-
-![向导：任务确认](docs/images/task-create-confirm.png)
-
-### 3. 启动与运维
-
-任务列表按状态提供操作（不可用的置灰）：
-
-![任务列表](docs/images/task-list.png)
-
-| 状态 | 可用操作 |
-|---|---|
-| 未启动 | 启动、结束 |
-| 运行中 | 暂停（仅增量阶段）、结束 |
-| 已暂停 | 恢复、结束 |
-| 失败 | 重启、结束 |
-| 已结束 | 删除 |
-
-- **暂停**：停止 CDC 但保留断点，恢复后从原位置继续。
-- **结束**：释放任务资源；结束后只能删除。
-
-### 4. 观察任务
-
-任务详情页三个页签：
-
-- **基本信息** — 任务/实例信息 + 迁移进度（源位点、抓取位点、回放位点、回放时延；双向任务分正向/反向两块）
-
-![任务详情（双向任务的正/反向同步进度）](docs/images/task-detail.png)
-
-- **迁移日志** — 引擎与任务日志，可按级别筛选
-- **任务监控** — 目标库回放 TPS（count/s）、数据同步时延（s）、事务平均执行/提交耗时
-
-![任务监控](docs/images/task-monitor.png)
-
-## 支持的同步方式
-
-### 单向同步：MySQL → PostgreSQL
-
-最常用的迁移场景：存量数据全量搬迁，之后持续跟随 binlog 增量回放。
-
-前提（预检查会逐项校验）：
-
-- 源库 binlog 开启，格式 `binlog_format=ROW`、`binlog_row_image=FULL`，保留时长充足（默认要求 ≥ 3 天）
-- 所选表均为 InnoDB 引擎，且**均有主键**（增量回放按主键定位行）
-- 源用户具备 SELECT、RELOAD、REPLICATION SLAVE、REPLICATION CLIENT、SHOW DATABASES 权限
-- 目标 PostgreSQL 实例可连接、状态正常
-- 迁移模式支持「全量+增量」与「仅全量」；全量阶段自动在目标库建表（MySQL DDL 自动转换为 PostgreSQL）
-
-### 双向同步：MySQL ↔ MySQL
-
-两个方向各自独立同步（均为全量+增量），适合双 region 各写本地、数据互备的场景。
-
-前提（预检查会逐项校验）：
-
-- 两端均为 MySQL，GTID 开启（`gtid_mode=ON`、`enforce_gtid-consistency=ON`）
-- 两端 `server_id` / `server_uuid` 必须不同
-- 两端用户均具备 CDC 权限（SELECT、REPLICATION SLAVE、REPLICATION CLIENT、SHOW DATABASES 等）
-- **两端表结构已存在**（双向不做结构迁移）
-- 同步模式必须为「全量+增量」
-
-防回环原理：sink 回放事务时通过 `SET SESSION gtid_next` 把源端 GTID（增量）或任务级合成 GTID 命名空间（全量批次）写入目标 binlog；对端捕获按 GTID UUID 丢弃来自 peer 的事务。当前版本假设各自 region 只写本 region 的数据，不做跨 region 冲突检测。
-
-## API 概览
-
-统一前缀 `/api/v1/migration`，响应包 `{code, message, data}`（1000 成功）。示例：
+`dev.sh` does not start migration data sources. The bundled demo is one supported path (MySQL → PostgreSQL). To try it locally, also run:
 
 ```bash
-# 列出数据源
+./scripts/test/data-sources.sh
+```
+
+| Service | Port | Description |
+|---|---|---|
+| e2e-mysql1 | 3306 | Demo / e2e source (`root` / `123456` or `e2e_mysql` / `123456`, database `e2e_db`) |
+| e2e-postgres1 | 5432 | Demo / e2e target (`e2e_postgres` / `123456`, database `e2e_db`) |
+
+These are the endpoints you add under **Data sources** in the UI. On the MySQL source, `root` already has the CDC privileges precheck expects; `e2e_mysql` needs those grants before a full + incremental task will pass. A bidirectional MySQL ↔ MySQL task needs a second MySQL instance — this stack does not bundle one.
+
+## Walkthrough
+
+### 1. Add a data source
+
+Go to **Data sources → Add data source** and fill in host, port, database, username, and password. Use **Test connection** before you save.
+
+For MySQL 8 without SSL, add `"allowPublicKeyRetrieval": true` under Advanced settings (needed for `caching_sha2_password` public-key retrieval).
+
+![Data sources](docs/images/connections.png)
+
+### 2. Create a task
+
+Go to **Tasks → New task**. The five-step wizard is: basic info → sync setup → advanced settings → precheck → confirm. After you confirm, the task is in **Not started**. Pick a source and target from a [supported path](#supported-replication-paths).
+
+![Wizard: sync setup](docs/images/task-create-sync.png)
+
+![Wizard: precheck](docs/images/task-create-precheck.png)
+
+You can select a whole schema or individual tables. When both ends are MySQL, bidirectional sync is available. Additional screenshots (basic info, table / schema selection, bidirectional setup, confirm) live in `docs/images/`.
+
+### 3. Start, pause, and watch
+
+| State | Available actions |
+|---|---|
+| Not started | Start, terminate |
+| Running | Pause (incremental phase only), terminate |
+| Paused | Resume, terminate |
+| Failed | Restart, terminate |
+| Terminated | Delete |
+
+- **Pause** stops CDC but keeps the checkpoint; resume continues from that position.
+- **Terminate** releases task resources; a terminated task can only be deleted.
+
+The task detail page shows source, capture, and apply positions and apply lag (forward and reverse for bidirectional tasks). **Task monitoring** plots apply TPS, sync lag, and transaction time. **Migration logs** can be filtered by level.
+
+![Task detail](docs/images/task-detail.png)
+
+## How it compares
+
+The table below is about **product positioning**. It is not a benchmark and includes no performance numbers.
+
+| | OpenDRS | [Debezium](https://debezium.io) | [Canal](https://github.com/alibaba/canal) | [DataX](https://github.com/alibaba/DataX) | [Flink CDC](https://github.com/apache/flink-cdc) |
+|---|---|---|---|---|---|
+| Positioning | End-to-end replication service with a web UI | CDC event platform (you bring the sink) | MySQL binlog subscription and dispatch | Offline batch sync framework | Flink-based real-time / batch integration |
+| Full + incremental | One task, automatically chained | Snapshot + streaming events; you build replay | Primarily incremental subscription | Batch is the main job | Supported; you build the pipeline |
+| Target writes | Built-in JDBC transactional apply | Hook up Kafka / a sink | Write a consumer or publish to a message queue | Built-in writer plugins | Configure a pipeline / sink |
+| Web operations UI | Yes, English / 中文 (wizard, precheck, monitoring) | No (connector / platform oriented) | canal-admin | No (job configuration) | No (YAML / SQL) |
+| Sources / targets | Multi-source / multi-target platform; see the [path matrix](#supported-replication-paths) for what is shipped today | Many CDC sources | MySQL | Large plugin ecosystem | Many sources and targets |
+| Transport | In-process capture and apply | Commonly Kafka Connect; also embedded | Server / message queue | In-process channels | Flink job |
+
+## Current limitations
+
+Evaluate the project against these constraints; precheck will also catch some of them:
+
+- Only the **Supported** rows in [Supported replication paths](#supported-replication-paths) can be run today. Other engines appear as connection types or planned rows, but are not wired through capture, replay, or the task wizard yet.
+- On current MySQL-source paths, incremental apply locates rows by primary key, and selected tables should be InnoDB.
+- Bidirectional sync assumes each region writes only its own data. **Cross-region conflict detection is not implemented.**
+- Schema migration runs only on paths that have a converter (currently MySQL → PostgreSQL). MySQL → MySQL, including bidirectional, does not migrate schema.
+- The project version is still `0.1.0-SNAPSHOT`. Try it in a test environment before trusting it with important data.
+
+## API and local development
+
+The HTTP API is under `/api/v1/migration`. Responses are `{code, message, data}` (`1000` means success).
+
+```bash
+# List data sources
 curl http://localhost/api/v1/migration/connections
 
-# 新建数据源
+# Create a data source (demo MySQL from data-sources.sh)
 curl -X POST http://localhost/api/v1/migration/connections \
   -H 'Content-Type: application/json' \
-  -d '{"name":"my-mysql","connection":{"type":"MYSQL","host":"127.0.0.1","port":3406,
-       "database":"demo","username":"root","password":"123456",
+  -d '{"name":"demo-mysql","connection":{"type":"MYSQL","host":"127.0.0.1","port":3306,
+       "database":"e2e_db","username":"root","password":"123456",
        "extra":{"allowPublicKeyRetrieval":true}}}'
 
-# 任务生命周期
+# Task lifecycle
 curl -X POST http://localhost/api/v1/migration/tasks/{id}/precheck
 curl -X POST http://localhost/api/v1/migration/tasks/{id}/start
-curl -X POST http://localhost/api/v1/migration/tasks/{id}/stop      # 暂停
-curl -X POST http://localhost/api/v1/migration/tasks/{id}/start     # 恢复（已暂停时）
-curl -X POST http://localhost/api/v1/migration/tasks/{id}/terminate # 结束
-curl -X DELETE http://localhost/api/v1/migration/tasks/{id}         # 删除（须已结束）
+curl -X POST http://localhost/api/v1/migration/tasks/{id}/stop      # pause
+curl -X POST http://localhost/api/v1/migration/tasks/{id}/start     # resume when paused
+curl -X POST http://localhost/api/v1/migration/tasks/{id}/terminate
+curl -X DELETE http://localhost/api/v1/migration/tasks/{id}         # must already be terminated
 
-# 状态与观测
+# Status and observability
 curl http://localhost/api/v1/migration/tasks/{id}/status
-curl http://localhost/api/v1/migration/tasks/{id}/precheck
 curl 'http://localhost/api/v1/migration/tasks/{id}/logs?page=1&size=50'
 ```
 
-## 本地开发
+Local development:
 
 ```bash
-# 后端：编译 / 测试 / 打包
+# Backend
 mvn compile
-mvn test                      # 单测；端到端用例走 scripts/test framework（需容器）
+mvn test                      # unit tests; end-to-end cases live in scripts/test (containers required)
 mvn -DskipTests package
 
-# 前端：热更新开发（代理 /api 到 :8080）
+# Frontend hot reload (proxies /api to :8080)
 cd opendrs-web && npm run dev     # http://localhost:5173
 
-# 修改后重新部署（等价于 dev.sh 的构建部分）
+# Rebuild and redeploy (same build steps as dev.sh)
 mvn -q -DskipTests package && (cd opendrs-web && npm run build) \
-  && docker compose up -d --build
+  && docker compose -p opendrs -f deploy/docker-compose.yml up -d --build
 ```
 
-## 架构速览
+## Roadmap
 
-Maven 多模块，`io.opendrs`：
+- [ ] **Data check** (full and incremental reconciliation) — in progress, not yet merged to `main`.
+- [ ] **Kafka transport** for incremental CDC — in progress, not yet merged to `main`.
+- [ ] Additional source and target engines — see the Planned rows in [Supported replication paths](#supported-replication-paths).
+- [ ] Conflict handling for bidirectional sync.
+- [ ] A more complete user guide.
 
-- `opendrs-engine` — 无框架引擎层，对外只有 `MigrationEngine` 四个方法（`supportsPrecheck` / `migrateSchema` / `migrateData` / `precheck`），句柄立即返回、阻塞跑在引擎自己的守护线程池：
-  - `engine-capture` — 嵌入式 Debezium（MySQL binlog），offset / schema history 持久化在任务元数据库
-  - `engine-replay` — JDBC 事务回放，PostgreSQL / MySQL 目标方言
-  - `engine-precheck` — 规则化预检查（按 源→目标 类型匹配 profile）
-  - `engine-core` — 编排与表选择/映射
-- `opendrs-service` — Spring Boot：任务状态机（`job_phase` 阶段 × `job_state` 状态）、异步预检、任务调度、监控指标、MyBatis + Flyway
-- `opendrs-web` — Vue 3 + Element Plus + ECharts（非 Maven 模块，`npm run build` 产出由 nginx 挂载）
-- `opendrs-jdbc` / `opendrs-common` — 连接与方言基础设施、共享元数据类型
+Ideas and requests are welcome in [Issues](https://github.com/1149782339/OpenDRS/issues).
+
+## Contributing
+
+Bug reports, docs, and pull requests are welcome. There is no separate contributing guide yet — please open an issue first to describe what you want to do, or send a PR with the motivation and how you verified it.
+
+CI runs backend unit tests, a frontend type-check and build, and end-to-end cases for a supported path (MySQL → PostgreSQL, full load and full load plus incremental).
 
 ## License
 
-[Apache License 2.0](LICENSE)。
+[Apache License 2.0](LICENSE).
 
-CDC 嵌入 [Debezium](https://debezium.io)（Apache 2.0）。第三方归属见 [NOTICE](NOTICE)。
-
-## Kafka 传输通道（可选）
-
-默认仍是 **DIRECT**（apply 后才 mark `debezium_offsets`）。若要走 Kafka 缓冲（**仅增量 CDC**；全量/snapshot 始终进程内 DIRECT）：
-
-1. `deploy/docker-compose.yml` 已包含 `opendrs-kafka`（9092）与 `opendrs-apicurio`（8081，官方镜像）。
-2. 通道选择（`CdcTransportSpec`：`DIRECT` | `KAFKA`）：
-   - **任务级**：`options.cdcTransportSpec`（可空；创建时写入 `options_json`）
-   - 否则 **全局**：`OPENDRS_TRANSPORT_CHANNEL` / `opendrs.transport.channel`（默认 `DIRECT`）
-3. topic / group 由 `task_pipelines.public_id` 派生：`opendrs.pipeline.{id}` / `opendrs.replay.{id}`；bootstrap / schema registry 仍用全局配置。
-4. 序列化为 Connect JSON envelope（保真 Debezium `SourceRecord`），**不是** demo 的 flat Avro。
-5. KAFKA 位点刷盘为纯定时 3s；replay 的 `commitAsync` 仅在成功回调后清 pending，失败留待下次或停任务 `commitSync`。
-
-详见 [`docs/kafka-transport-plan.md`](docs/kafka-transport-plan.md)。
-
+CDC uses embedded [Debezium](https://debezium.io) (Apache 2.0). Third-party attributions are in [NOTICE](NOTICE).
