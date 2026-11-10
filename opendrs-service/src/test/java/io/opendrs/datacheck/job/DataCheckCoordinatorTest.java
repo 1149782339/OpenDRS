@@ -107,6 +107,6 @@ class DataCheckCoordinatorTest {
 
     private static DataCheckTableRow row(DataCheckPhase phase, DataCheckTableStatus status) {
         return new DataCheckTableRow(
-                "s.t", "s.t", phase, status, 0L, null, null, null);
+                "s.t", "s.t", phase, status, 0L, null, null, null, null, null, false);
     }
 }

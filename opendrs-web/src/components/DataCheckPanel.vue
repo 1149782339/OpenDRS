@@ -3,6 +3,8 @@ import {
   listDataCheckResults,
   listDataCheckTables,
   listDataCheckTasks,
+  startDataCheckTask,
+  stopDataCheckTask,
 } from '@/api/datacheck'
 import { apiErrorMessage } from '@/api/http'
 import type { TaskState } from '@/types/api'
@@ -68,6 +70,9 @@ function syncPolling() {
   if (hasLiveTask.value && pollTimer == null) {
     pollTimer = setInterval(() => {
       void loadTasks(true)
+      if (reportVisible.value) {
+        void loadTableResults()
+      }
     }, 3000)
   } else if (!hasLiveTask.value && pollTimer != null) {
     clearInterval(pollTimer)
@@ -99,12 +104,62 @@ function isTerminal(state: TaskState | null): boolean {
   return state === 'COMPLETED' || state === 'FAILED' || state === 'STOPPED' || state === 'TERMINATED'
 }
 
-function phaseLabel(phase: string): string {
-  return t(`datacheck.phase.${phase}`)
-}
-
 function tableStatusLabel(status: string): string {
   return t(`datacheck.tableStatus.${status}`)
+}
+
+function tablePhaseLabel(row: DataCheckTableResult): string {
+  if (row.status === 'FAILED') return t('datacheck.phase.FAILED')
+  if (row.status === 'COMPLETED' && row.phase !== 'INCREMENTAL') {
+    return t('datacheck.phase.COMPLETED')
+  }
+  if (row.waitingForReplay) return t('datacheck.phase.WAITING_REPLAY')
+  return t(`datacheck.phase.${row.phase}`)
+}
+
+function formatLag(row: DataCheckTableResult): string {
+  if (row.waitingForReplay) return t('datacheck.phase.WAITING_REPLAY')
+  if (row.phase !== 'INCREMENTAL' || row.lagMs == null) return DASH
+  return t('datacheck.lagMs', { n: row.lagMs })
+}
+
+function canStart(task: DataCheckTaskResponse): boolean {
+  return task.state == null || task.state === 'STOPPED' || task.state === 'FAILED'
+}
+
+function canStop(task: DataCheckTaskResponse): boolean {
+  return task.state === 'RUNNING' || task.state === 'STARTING'
+}
+
+const startingId = ref<number | null>(null)
+const stoppingId = ref<number | null>(null)
+
+async function startTask(task: DataCheckTaskResponse) {
+  startingId.value = task.id
+  try {
+    await startDataCheckTask(task.id)
+    await loadTasks()
+  } catch (error) {
+    ElMessage.error(apiErrorMessage(error))
+  } finally {
+    startingId.value = null
+  }
+}
+
+async function stopTask(task: DataCheckTaskResponse) {
+  if (!task.stoppable) {
+    ElMessage.warning(t('datacheck.stopFullDisabled'))
+    return
+  }
+  stoppingId.value = task.id
+  try {
+    await stopDataCheckTask(task.id)
+    await loadTasks()
+  } catch (error) {
+    ElMessage.error(apiErrorMessage(error))
+  } finally {
+    stoppingId.value = null
+  }
 }
 
 function flagLabel(flag: number): string {
@@ -272,6 +327,35 @@ onUnmounted(() => {
           <el-button link type="primary" size="small" @click="openReport(row)">
             {{ t('datacheck.viewReport') }}
           </el-button>
+          <el-button
+            v-if="canStart(row)"
+            link
+            type="primary"
+            size="small"
+            :loading="startingId === row.id"
+            @click="startTask(row)"
+          >
+            {{ t('datacheck.start') }}
+          </el-button>
+          <el-tooltip
+            v-if="canStop(row)"
+            :disabled="row.stoppable !== false"
+            :content="t('datacheck.stopFullDisabled')"
+            placement="top"
+          >
+            <span>
+              <el-button
+                link
+                type="primary"
+                size="small"
+                :disabled="row.stoppable === false"
+                :loading="stoppingId === row.id"
+                @click="stopTask(row)"
+              >
+                {{ t('datacheck.stop') }}
+              </el-button>
+            </span>
+          </el-tooltip>
           <el-tooltip :content="t('datacheck.notSupported')" placement="top">
             <span class="action-disabled">{{ t('datacheck.exportReport') }}</span>
           </el-tooltip>
@@ -280,7 +364,7 @@ onUnmounted(() => {
     </el-table>
 
     <!-- 对比报表 -->
-    <el-drawer v-model="reportVisible" size="72%" :title="t('datacheck.reportDialog.title')">
+    <el-drawer v-model="reportVisible" size="88%" :title="t('datacheck.reportDialog.title')">
       <div v-if="reportTask" class="report">
         <div class="report-title">
           <span>{{ reportTask.name }}</span>
@@ -296,17 +380,32 @@ onUnmounted(() => {
         >
           <el-table-column prop="sourceTableId" :label="t('datacheck.reportDialog.sourceTable')" min-width="160" />
           <el-table-column prop="targetTableId" :label="t('datacheck.reportDialog.targetTable')" min-width="160" />
-          <el-table-column :label="t('datacheck.reportDialog.phase')" width="110">
-            <template #default="{ row }">{{ phaseLabel(row.phase) }}</template>
+          <el-table-column :label="t('datacheck.reportDialog.phase')" width="130">
+            <template #default="{ row }">{{ tablePhaseLabel(row) }}</template>
           </el-table-column>
-          <el-table-column :label="t('datacheck.reportDialog.status')" width="110">
+          <el-table-column :label="t('datacheck.reportDialog.status')" width="100">
             <template #default="{ row }">{{ tableStatusLabel(row.status) }}</template>
           </el-table-column>
-          <el-table-column prop="differentCount" :label="t('datacheck.reportDialog.different')" width="90" align="right" />
-          <el-table-column prop="sourceOnlyCount" :label="t('datacheck.reportDialog.sourceOnly')" width="90" align="right" />
-          <el-table-column prop="targetOnlyCount" :label="t('datacheck.reportDialog.targetOnly')" width="90" align="right" />
-          <el-table-column prop="totalCount" :label="t('datacheck.reportDialog.total')" width="90" align="right" />
-          <el-table-column prop="errorMessage" :label="t('datacheck.reportDialog.error')" min-width="180" show-overflow-tooltip />
+          <el-table-column :label="t('datacheck.reportDialog.rowsChecked')" width="110" align="right">
+            <template #default="{ row }">{{ row.rowsChecked != null ? row.rowsChecked : DASH }}</template>
+          </el-table-column>
+          <el-table-column :label="t('datacheck.reportDialog.inconsistent')" width="110" align="right">
+            <template #default="{ row }">{{ row.totalCount }}</template>
+          </el-table-column>
+          <el-table-column :label="t('datacheck.reportDialog.lag')" width="130">
+            <template #default="{ row }">
+              <span>{{ formatLag(row) }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column :label="t('datacheck.reportDialog.lastCheckAt')" width="190">
+            <template #default="{ row }">{{ row.lastCheckAt ? formatDateTime(row.lastCheckAt) : DASH }}</template>
+          </el-table-column>
+          <el-table-column :label="t('datacheck.reportDialog.error')" min-width="180" show-overflow-tooltip>
+            <template #default="{ row }">
+              <span v-if="row.waitingForReplay">{{ t('datacheck.reportDialog.waitingHint') }}</span>
+              <span v-else>{{ row.errorMessage || DASH }}</span>
+            </template>
+          </el-table-column>
         </el-table>
 
         <div class="results-head">

@@ -14,6 +14,7 @@ public final class EventBatch {
 
     private final Map<TableId, Map<String, PkRow>> rows = new LinkedHashMap<>();
     private final Map<TopicPartition, Long> maxEventOffsets = new LinkedHashMap<>();
+    private final Map<TableId, Long> tableCreateTimeMs = new LinkedHashMap<>();
     private long maxCreateTimeMs;
 
     public void noteOffset(TopicPartition partition, long offset) {
@@ -33,7 +34,22 @@ public final class EventBatch {
     }
 
     public void put(TableId table, PkRow row) {
+        put(table, row, 0L);
+    }
+
+    public void put(TableId table, PkRow row, long createTimeMs) {
         rows.computeIfAbsent(table, key -> new LinkedHashMap<>()).put(row.encoded(), row);
+        if (createTimeMs > tableCreateTimeMs.getOrDefault(table, 0L)) {
+            tableCreateTimeMs.put(table, createTimeMs);
+        }
+        if (createTimeMs > maxCreateTimeMs) {
+            maxCreateTimeMs = createTimeMs;
+        }
+    }
+
+    /** Max CreateTime seen for this table in this poll, or 0 if none. */
+    public long maxCreateTimeMs(TableId table) {
+        return tableCreateTimeMs.getOrDefault(table, 0L);
     }
 
     public boolean isEmpty() {

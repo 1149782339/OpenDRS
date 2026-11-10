@@ -19,7 +19,8 @@ public record DataCheckParam(
         TableId sourceTable,
         TableId targetTable,
         boolean includeFloat,
-        MigrationLogListener logListener) {
+        MigrationLogListener logListener,
+        DataCheckProgressListener progressListener) {
 
     public DataCheckParam {
         Objects.requireNonNull(source, "source");
@@ -27,5 +28,18 @@ public record DataCheckParam(
         Objects.requireNonNull(sourceTable, "sourceTable");
         Objects.requireNonNull(targetTable, "targetTable");
         logListener = logListener == null ? MigrationLogListener.NONE : logListener;
+        progressListener = progressListener == null ? DataCheckProgressListener.NONE : progressListener;
+    }
+
+    public DataCheckParam(
+            long taskId,
+            JdbcConnectionConfig source,
+            JdbcConnectionConfig target,
+            TableId sourceTable,
+            TableId targetTable,
+            boolean includeFloat,
+            MigrationLogListener logListener) {
+        this(taskId, source, target, sourceTable, targetTable, includeFloat, logListener,
+                DataCheckProgressListener.NONE);
     }
 }

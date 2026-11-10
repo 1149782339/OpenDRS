@@ -1,8 +1,10 @@
 package io.opendrs.engine.datacheck.incremental;
 
+import io.opendrs.engine.common.metadata.ColumnDefinition;
 import io.opendrs.engine.common.metadata.TableDefinition;
 import io.opendrs.engine.common.metadata.TableId;
 import io.opendrs.engine.datacheck.DataCheckRows;
+import io.opendrs.engine.datacheck.PrimaryKeySupport;
 import io.opendrs.engine.datacheck.InconsistentRowStore;
 import io.opendrs.engine.datacheck.type.LogicalValue;
 import io.opendrs.engine.datacheck.type.handler.TypeHandler;
@@ -94,17 +96,22 @@ public final class JdbcPkBatchChecker implements PkBatchChecker {
         String quote = DataCheckRows.quoteString(connection);
         String sql = PkInQuery.selectSql(table, definition, quote, chunk.size());
         int[] pkIndexes = DataCheckRows.primaryKeyIndexes(definition);
+        List<ColumnDefinition> pkColumns = PrimaryKeySupport.primaryKeyColumns(definition);
+        int[] sqlTypes = new int[pkColumns.size()];
+        for (int i = 0; i < pkColumns.size(); i++) {
+            sqlTypes[i] = pkColumns.get(i).getJdbcType();
+        }
         List<List<Object>> bind = new ArrayList<>(chunk.size());
         for (PkRow row : chunk) {
             bind.add(row.bindValues());
         }
         try (PreparedStatement statement = connection.connection().prepareStatement(sql)) {
-            PkInQuery.bind(statement, bind);
+            PkInQuery.bind(statement, bind, sqlTypes);
             try (ResultSet result = statement.executeQuery()) {
                 ResultSetMetaData meta = result.getMetaData();
                 while (result.next()) {
                     List<LogicalValue> values = handler.getValues(result, meta);
-                    String pk = DataCheckRows.primaryKey(result, pkIndexes);
+                    String pk = DataCheckRows.primaryKey(result, pkIndexes, table, pkColumns);
                     buckets.add(pk, HashUtil.getHash(pk), DataCheckRows.rowHash(values, buf));
                 }
             }

@@ -41,6 +41,7 @@ public class MigrationLagRegistry {
 
     private final Map<Long, Sample> samples = new ConcurrentHashMap<>();
     private volatile MeterBinder meterBinder = MeterBinder.NONE;
+    private volatile java.util.function.LongFunction<String> sourcePositionLookup = id -> null;
 
     /** Optional hook so {@code MigrationLagMetrics} can register per-pipeline gauges. */
     public interface MeterBinder {
@@ -51,6 +52,25 @@ public class MigrationLagRegistry {
 
     public void setMeterBinder(MeterBinder meterBinder) {
         this.meterBinder = meterBinder == null ? MeterBinder.NONE : meterBinder;
+    }
+
+    /**
+     * Optional live source-binlog lookup so Prometheus gauges use the same e2e formula as the API
+     * (capture lag requires {@code sourcePosition}).
+     */
+    public void setSourcePositionLookup(java.util.function.LongFunction<String> sourcePositionLookup) {
+        this.sourcePositionLookup = sourcePositionLookup == null ? id -> null : sourcePositionLookup;
+    }
+
+    private String lookupSourcePosition(Long pipelineId) {
+        if (pipelineId == null) {
+            return null;
+        }
+        try {
+            return sourcePositionLookup.apply(pipelineId);
+        } catch (RuntimeException ex) {
+            return null;
+        }
     }
 
     /** The observer handed to {@code DataMigrationParam}; binds the pipeline id so the engine never sees one. */
@@ -69,7 +89,7 @@ public class MigrationLagRegistry {
 
     /** Milliseconds the target is behind (end-to-end), or empty when this pipeline has nothing to measure yet. */
     public Optional<Long> lagMs(Long pipelineId) {
-        return lagMs(pipelineId, System.currentTimeMillis(), null);
+        return lagMs(pipelineId, System.currentTimeMillis(), lookupSourcePosition(pipelineId));
     }
 
     public Optional<Long> lagMs(Long pipelineId, long nowMs, String sourcePosition) {
@@ -85,7 +105,7 @@ public class MigrationLagRegistry {
 
     /** All four lag numbers, or empty when this pipeline has no sample yet. */
     public Optional<Lags> lags(Long pipelineId) {
-        return lags(pipelineId, System.currentTimeMillis(), null);
+        return lags(pipelineId, System.currentTimeMillis(), lookupSourcePosition(pipelineId));
     }
 
     public Optional<Lags> lags(Long pipelineId, long nowMs, String sourcePosition) {

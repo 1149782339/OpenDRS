@@ -183,8 +183,11 @@ public class DataCheckCoordinator implements Runnable {
             }
 
             if (task.mode() != DataCheckMode.INCREMENTAL_ONLY) {
-                if (task.mode() == DataCheckMode.FULL_ONLY || !alreadyInIncremental(tables)) {
-                    runFullChecks(tables, source, target, includeFloat);
+                List<DataCheckTableRow> fullTables = tables.stream()
+                        .filter(DataCheckRecovery::needsFullCheck)
+                        .toList();
+                if (task.mode() == DataCheckMode.FULL_ONLY || !fullTables.isEmpty()) {
+                    runFullChecks(fullTables, source, target, includeFloat);
                     if (stopRequested.get()) {
                         finish(task.mode());
                         return;
@@ -198,7 +201,7 @@ public class DataCheckCoordinator implements Runnable {
 
             List<DataCheckTableRow> incrementalTables = incrementalTables(task.mode());
             if (incrementalTables.isEmpty()) {
-                repository.markFailed(taskId, "no tables available for incremental data check");
+                finish(task.mode());
                 return;
             }
             runIncremental(task, incremental, incrementalTables, source, target);
@@ -372,7 +375,7 @@ public class DataCheckCoordinator implements Runnable {
      * {@code INCREMENTAL} and must still be resumed.
      */
     static boolean eligibleForIncremental(DataCheckMode mode, DataCheckTableRow table) {
-        if (table == null) {
+        if (table == null || table.status() == DataCheckTableStatus.FAILED) {
             return false;
         }
         if (mode == DataCheckMode.INCREMENTAL_ONLY) {
@@ -399,16 +402,18 @@ public class DataCheckCoordinator implements Runnable {
                 incremental.topic, incremental.replayGroup, waitTimeout, waitPollInterval);
         try (KafkaConsumerGroupOffsets offsets = new KafkaConsumerGroupOffsets(incremental.bootstrap);
                 KafkaIncrementalEventSource events =
-                        new KafkaIncrementalEventSource(incremental.bootstrap, task.publicId());
-                JdbcConnection metadata = new JdbcConnection(
-                        DatabaseType.MYSQL, null, cfg -> metadataDataSource.getConnection())) {
+                        new KafkaIncrementalEventSource(incremental.bootstrap, task.publicId())) {
             incrementalSource = events;
-            InconsistentRowStore store = new InconsistentRowDBStore(metadata, taskId);
+            InconsistentRowStore store = new InconsistentRowDBStore(
+                    () -> new JdbcConnection(
+                            DatabaseType.MYSQL, null, cfg -> metadataDataSource.getConnection()),
+                    taskId);
             ReplayWatermark watermark = lagRegistry == null
                     ? ReplayWatermark.NONE
                     : new RegistryReplayWatermark(lagRegistry, incremental.pipelineId(), incremental.topic());
             IncrementalDataCheckRunner runner = new IncrementalDataCheckRunner(
                     events, offsets, config, connectionFactory, watermark);
+            TaskLagSink lagSink = new TaskLagSink();
             runner.run(
                     source,
                     target,
@@ -416,11 +421,8 @@ public class DataCheckCoordinator implements Runnable {
                     incremental.startOffsets,
                     store,
                     next -> persistConsumed(next),
-                    (table, lagMs) -> {
-                        repository.updateTableLag(taskId, table.identifier(), lagMs);
-                        repository.updateTaskLag(taskId, lagMs);
-                    },
-                    MigrationLogListener.NONE,
+                    lagSink,
+                    tableLogListener(),
                     stopRequested::get);
             for (DataCheckTableRow table : tables) {
                 DataCheckTableStatus status = stopRequested.get()
@@ -466,7 +468,9 @@ public class DataCheckCoordinator implements Runnable {
             DataCheckParam param = new DataCheckParam(
                     taskId, source, target,
                     tableId(table.sourceTableId()), tableId(table.targetTableId()),
-                    includeFloat, MigrationLogListener.NONE);
+                    includeFloat, tableLogListener(),
+                    (checked, rows) -> repository.updateTableRowsChecked(
+                            taskId, table.sourceTableId(), rows));
             DataCheckTask handle = engine.datacheck(param);
             running.put(table.sourceTableId(), handle);
             if (stopRequested.get()) {
@@ -526,14 +530,32 @@ public class DataCheckCoordinator implements Runnable {
             return;
         }
         if (mode == DataCheckMode.FULL_AND_INCREMENTAL || mode == DataCheckMode.INCREMENTAL_ONLY) {
-            // Incremental runs until manual stop; reaching here without a stop request is a failure
-            // or an empty incremental set already reported.
+            // Incremental runs until manual stop. A sibling table failing does not fail the task
+            // while any incremental table is still eligible; if nothing remains, land based on
+            // whether every remaining table failed.
             if (task.state() == TaskState.RUNNING) {
-                long failed = repository.findTableRows(taskId).stream()
+                List<DataCheckTableRow> current = repository.findTableRows(taskId);
+                boolean resumable = current.stream()
+                        .anyMatch(table -> eligibleForIncremental(mode, table)
+                                && table.status() != DataCheckTableStatus.COMPLETED);
+                if (resumable) {
+                    return;
+                }
+                long failed = current.stream()
                         .filter(table -> table.status() == DataCheckTableStatus.FAILED)
                         .count();
-                if (failed > 0) {
+                long completed = current.stream()
+                        .filter(table -> table.status() == DataCheckTableStatus.COMPLETED)
+                        .count();
+                if (failed > 0 && completed == 0) {
                     repository.markFailed(taskId, failed + " table(s) failed");
+                } else if (completed > 0 && failed == 0) {
+                    repository.landCompleted(taskId);
+                } else if (failed > 0) {
+                    // Mixed: some tables finished, some failed — keep the task failed only when
+                    // there is no successful incremental work; otherwise complete with errors
+                    // recorded per table.
+                    repository.landCompleted(taskId);
                 }
             }
             return;
@@ -602,6 +624,51 @@ public class DataCheckCoordinator implements Runnable {
         return text.length() <= ERROR_MESSAGE_MAX
                 ? text.toString()
                 : text.substring(0, ERROR_MESSAGE_MAX);
+    }
+
+
+    private MigrationLogListener tableLogListener() {
+        return (level, message) -> {
+            if (message == null || message.isBlank()) {
+                return;
+            }
+            switch (level) {
+                case ERROR -> log.error("{}", message);
+                case WARNING -> log.warn("{}", message);
+                default -> log.info("{}", message);
+            }
+        };
+    }
+
+    private final class TaskLagSink implements io.opendrs.engine.datacheck.incremental.LagSink {
+        private long maxLag;
+        private boolean any;
+
+        @Override
+        public void update(io.opendrs.engine.common.metadata.TableId sourceTable, long lagMs) {
+            update(sourceTable, lagMs, false);
+        }
+
+        @Override
+        public void update(
+                io.opendrs.engine.common.metadata.TableId sourceTable,
+                long lagMs,
+                boolean waitingForReplay) {
+            repository.updateTableLag(taskId, sourceTable.identifier(), lagMs, waitingForReplay);
+            if (!any || lagMs > maxLag) {
+                maxLag = lagMs;
+            }
+            any = true;
+        }
+
+        @Override
+        public void flush() {
+            if (any) {
+                repository.updateTaskLag(taskId, maxLag);
+            }
+            maxLag = 0L;
+            any = false;
+        }
     }
 
     private record IncrementalContext(

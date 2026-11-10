@@ -175,12 +175,13 @@ public class DefaultMigrationEngine implements MigrationEngine {
                 new io.opendrs.engine.datacheck.DataCheckParam(
                         param.source(), param.target(),
                         param.sourceTable(), param.targetTable(),
-                        param.includeFloat(), param.logListener());
-        try (JdbcConnection metadata = new JdbcConnection(
-                DatabaseType.MYSQL, null, cfg -> metadataDataSource.getConnection())) {
-            InconsistentRowStore store = new InconsistentRowDBStore(metadata, param.taskId());
-            dataCheckRunner.run(request, store, stopRequested);
-        }
+                        param.includeFloat(), param.logListener(),
+                        (table, rows) -> param.progressListener().onRowsChecked(table, rows));
+        InconsistentRowStore store = new InconsistentRowDBStore(
+                () -> new JdbcConnection(
+                        DatabaseType.MYSQL, null, cfg -> metadataDataSource.getConnection()),
+                param.taskId());
+        dataCheckRunner.run(request, store, stopRequested);
     }
 
     /** Releases the worker pool. Called by the service on shutdown. */

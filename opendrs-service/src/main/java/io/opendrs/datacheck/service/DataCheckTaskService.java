@@ -30,6 +30,14 @@ import io.opendrs.engine.common.selection.TableSelection;
 import io.opendrs.engine.core.TableSelectionExpander;
 import io.opendrs.engine.core.TaskState;
 import io.opendrs.engine.jdbc.JdbcConnectionFactory;
+import io.opendrs.datacheck.domain.DataCheckPhase;
+import io.opendrs.datacheck.domain.DataCheckTableStatus;
+import io.opendrs.engine.common.metadata.TableDefinition;
+import io.opendrs.engine.datacheck.PrimaryKeySupport;
+import io.opendrs.engine.jdbc.JdbcConnection;
+import io.opendrs.engine.jdbc.JdbcConnectionConfig;
+import io.opendrs.migration.domain.MigrationMode;
+import io.opendrs.migration.domain.MigrationPhase;
 import io.opendrs.engine.replay.mapping.MappingValidator;
 import java.sql.SQLException;
 import java.util.ArrayList;
@@ -56,6 +64,7 @@ public class DataCheckTaskService {
     private final DataCheckCoordinatorRegistry registry;
     private final ExecutorService coordinatorExecutor;
     private final TableSelectionExpander expander;
+    private final JdbcConnectionFactory connectionFactory;
 
     public DataCheckTaskService(
             DataCheckTaskRepository repository,
@@ -72,6 +81,7 @@ public class DataCheckTaskService {
         this.registry = registry;
         this.coordinatorExecutor = dataCheckCoordinatorExecutor;
         this.expander = new TableSelectionExpander(connectionFactory);
+        this.connectionFactory = connectionFactory;
     }
 
     @Transactional
@@ -83,7 +93,9 @@ public class DataCheckTaskService {
         }
 
         MigrationOptionsView view = optionsView(migrationTask.optionsJson());
+        validateMigrationReady(migrationTask);
         validateInScope(view, request.tables());
+        validatePrimaryKeys(migrationTask, request.tables());
         TableSelection selection = selectionOf(view);
         List<CheckedTable> pairs = new ArrayList<>(request.tables().size());
         for (SelectedTable source : request.tables()) {
@@ -196,6 +208,10 @@ public class DataCheckTaskService {
             throw ExceptionFactory.create(
                     ErrorCode.TASK_CONFLICT, ErrorMessage.TASK_CANNOT_PAUSE_FROM, task.state());
         }
+        if (isFullCheckRunning(id)) {
+            throw ExceptionFactory.create(
+                    ErrorCode.TASK_CONFLICT, ErrorMessage.DATACHECK_CANNOT_STOP_FULL);
+        }
         registry.requestStop(id);
         if (repository.casState(id, TaskState.RUNNING, TaskState.STOPPING) == 0) {
             repository.casState(id, TaskState.STARTING, TaskState.STOPPING);
@@ -227,7 +243,10 @@ public class DataCheckTaskService {
                     row.lagMs() == null ? 0 : row.lagMs(),
                     row.errorMessage(),
                     perFlag[0], perFlag[1], perFlag[2],
-                    perFlag[0] + perFlag[1] + perFlag[2]);
+                    perFlag[0] + perFlag[1] + perFlag[2],
+                    row.rowsChecked(),
+                    row.lastCheckAt(),
+                    row.waitingForReplay());
         }).toList();
     }
 
@@ -259,7 +278,8 @@ public class DataCheckTaskService {
                 row.lagMs(),
                 row.errorMessage(),
                 row.createdAt(),
-                row.updatedAt());
+                row.updatedAt(),
+                isStoppable(row));
     }
 
     private DataCheckTaskRow require(long id) {
@@ -268,6 +288,92 @@ public class DataCheckTaskService {
             throw ExceptionFactory.create(ErrorCode.TASK_NOT_FOUND, ErrorMessage.TASK_NOT_FOUND);
         }
         return row;
+    }
+
+
+    static void validateMigrationReady(DataCheckTaskRepository.MigrationTaskRow migrationTask) {
+        MigrationMode mode;
+        try {
+            mode = migrationTask.mode() == null ? null : MigrationMode.valueOf(migrationTask.mode());
+        } catch (IllegalArgumentException ex) {
+            mode = null;
+        }
+        String phase = migrationTask.phase() == null ? "UNKNOWN" : migrationTask.phase();
+        String state = migrationTask.state() == null ? "UNKNOWN" : migrationTask.state();
+        boolean ready;
+        if (mode == MigrationMode.FULL_ONLY) {
+            ready = "COMPLETED".equals(state);
+        } else {
+            ready = "INCREMENTAL".equals(phase) || "COMPLETED".equals(state);
+        }
+        if (!ready) {
+            throw ExceptionFactory.create(
+                    ErrorCode.PARAM_INVALID,
+                    ErrorMessage.DATACHECK_MIGRATION_NOT_READY,
+                    phase, state);
+        }
+    }
+
+    private void validatePrimaryKeys(
+            DataCheckTaskRepository.MigrationTaskRow migrationTask, List<SelectedTable> tables) {
+        EndpointRow source = repository.findEndpoints(List.of(migrationTask.sourceEndpointId()))
+                .stream()
+                .filter(endpoint -> endpoint.id() == migrationTask.sourceEndpointId())
+                .findFirst()
+                .orElse(null);
+        if (source == null) {
+            throw ExceptionFactory.create(
+                    ErrorCode.INTERNAL_ERROR, ErrorMessage.TASK_SOURCE_NOT_FOUND,
+                    String.valueOf(migrationTask.sourceEndpointId()));
+        }
+        JdbcConnectionConfig config = EndpointConfigs.toConfig(source, objectMapper);
+        try (JdbcConnection connection = connectionFactory.open(config)) {
+            for (SelectedTable table : tables) {
+                TableId tableId = TableId.of(table.schema(), table.table());
+                TableDefinition definition = connection.readTable(tableId);
+                try {
+                    PrimaryKeySupport.validate(tableId, definition);
+                } catch (PrimaryKeySupport.UnsupportedPrimaryKeyException ex) {
+                    throw ExceptionFactory.create(
+                            ErrorCode.PARAM_INVALID,
+                            ErrorMessage.DATACHECK_UNSUPPORTED_PK,
+                            String.valueOf(ex.table()),
+                            ex.column() == null ? "" : ex.column(),
+                            ex.typeName() == null ? "" : ex.typeName());
+                }
+            }
+        } catch (SQLException ex) {
+            throw ExceptionFactory.create(
+                    ErrorCode.INTERNAL_ERROR, ErrorMessage.DATACHECK_CANDIDATES_FAILED, ex.getMessage());
+        }
+    }
+
+    static boolean isFullCheckRunning(List<DataCheckTableRow> tables) {
+        if (tables == null) {
+            return false;
+        }
+        for (DataCheckTableRow table : tables) {
+            if (table.phase() == DataCheckPhase.FULL
+                    && table.status() == DataCheckTableStatus.RUNNING) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean isFullCheckRunning(long taskId) {
+        return isFullCheckRunning(repository.findTableRows(taskId));
+    }
+
+    static boolean isStoppable(TaskState state, List<DataCheckTableRow> tables) {
+        if (state != TaskState.RUNNING && state != TaskState.STARTING) {
+            return false;
+        }
+        return !isFullCheckRunning(tables);
+    }
+
+    private boolean isStoppable(DataCheckTaskRow row) {
+        return isStoppable(row.state(), repository.findTableRows(row.id()));
     }
 
     /** Resolves the migration task's persisted selection/mappings into the engine form. */

@@ -41,13 +41,16 @@ public class DataCheckTaskRepository {
 
     public MigrationTaskRow findMigrationTask(long id) {
         List<MigrationTaskRow> rows = jdbc.query(
-                "SELECT id, source_endpoint_id, target_endpoint_id, options"
+                "SELECT id, source_endpoint_id, target_endpoint_id, options, mode, phase, state"
                         + " FROM migration_tasks WHERE id = ?",
                 (rs, rowNum) -> new MigrationTaskRow(
                         rs.getLong("id"),
                         rs.getLong("source_endpoint_id"),
                         rs.getLong("target_endpoint_id"),
-                        rs.getString("options")),
+                        rs.getString("options"),
+                        rs.getString("mode"),
+                        rs.getString("phase"),
+                        rs.getString("state")),
                 id);
         return rows.isEmpty() ? null : rows.getFirst();
     }
@@ -147,7 +150,7 @@ public class DataCheckTaskRepository {
     public List<DataCheckTableRow> findTableRows(long taskId) {
         return jdbc.query(
                 "SELECT source_table_id, target_table_id, phase, status, lag_ms, error_message,"
-                        + " started_at, finished_at"
+                        + " started_at, finished_at, rows_checked, last_check_at, waiting_for_replay"
                         + " FROM datacheck_table_tasks WHERE datacheck_task_id = ?"
                         + " ORDER BY source_table_id",
                 (rs, rowNum) -> new DataCheckTableRow(
@@ -158,7 +161,10 @@ public class DataCheckTaskRepository {
                         longOrNull(rs, "lag_ms"),
                         rs.getString("error_message"),
                         instant(rs, "started_at"),
-                        instant(rs, "finished_at")),
+                        instant(rs, "finished_at"),
+                        longOrNull(rs, "rows_checked"),
+                        instant(rs, "last_check_at"),
+                        rs.getBoolean("waiting_for_replay")),
                 taskId);
     }
 
@@ -198,6 +204,28 @@ public class DataCheckTaskRepository {
                 "UPDATE datacheck_tasks SET state = 'COMPLETED', updated_at = CURRENT_TIMESTAMP"
                         + " WHERE id = ? AND state = 'RUNNING'",
                 id);
+    }
+
+
+    public List<DataCheckTaskRow> findTasksInStates(java.util.Collection<TaskState> states) {
+        if (states == null || states.isEmpty()) {
+            return List.of();
+        }
+        String placeholders = String.join(",", java.util.Collections.nCopies(states.size(), "?"));
+        Object[] args = states.stream().map(Enum::name).toArray();
+        return jdbc.query(
+                "SELECT id, public_id, migration_task_id, pipeline_id, name, mode, state, options,"
+                        + " lag_ms, error_message, created_at, updated_at"
+                        + " FROM datacheck_tasks WHERE state IN (" + placeholders + ") ORDER BY id",
+                (rs, rowNum) -> taskRow(rs),
+                args);
+    }
+
+    public int forceState(long id, TaskState next) {
+        return jdbc.update(
+                "UPDATE datacheck_tasks SET state = ?, error_message = NULL,"
+                        + " updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                next.name(), id);
     }
 
     public void markFailed(long id, String message) {
@@ -240,10 +268,24 @@ public class DataCheckTaskRepository {
     }
 
     public void updateTableLag(long taskId, String sourceTableId, long lagMs) {
+        updateTableLag(taskId, sourceTableId, lagMs, false);
+    }
+
+    public void updateTableLag(
+            long taskId, String sourceTableId, long lagMs, boolean waitingForReplay) {
         jdbc.update(
-                "UPDATE datacheck_table_tasks SET lag_ms = ?, updated_at = CURRENT_TIMESTAMP"
+                "UPDATE datacheck_table_tasks SET lag_ms = ?, waiting_for_replay = ?,"
+                        + " last_check_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP"
                         + " WHERE datacheck_task_id = ? AND source_table_id = ?",
-                lagMs, taskId, sourceTableId);
+                lagMs, waitingForReplay, taskId, sourceTableId);
+    }
+
+    public void updateTableRowsChecked(long taskId, String sourceTableId, long rowsChecked) {
+        jdbc.update(
+                "UPDATE datacheck_table_tasks SET rows_checked = ?, last_check_at = CURRENT_TIMESTAMP,"
+                        + " updated_at = CURRENT_TIMESTAMP"
+                        + " WHERE datacheck_task_id = ? AND source_table_id = ?",
+                rowsChecked, taskId, sourceTableId);
     }
 
     public void updateTaskLag(long taskId, long lagMs) {
@@ -415,7 +457,13 @@ public class DataCheckTaskRepository {
     }
 
     public record MigrationTaskRow(
-            long id, long sourceEndpointId, long targetEndpointId, String optionsJson) {
+            long id,
+            long sourceEndpointId,
+            long targetEndpointId,
+            String optionsJson,
+            String mode,
+            String phase,
+            String state) {
     }
 
     public record EndpointRow(
@@ -452,7 +500,10 @@ public class DataCheckTaskRepository {
             Long lagMs,
             String errorMessage,
             Instant startedAt,
-            Instant finishedAt) {
+            Instant finishedAt,
+            Long rowsChecked,
+            Instant lastCheckAt,
+            boolean waitingForReplay) {
     }
 
     public record OffsetRow(

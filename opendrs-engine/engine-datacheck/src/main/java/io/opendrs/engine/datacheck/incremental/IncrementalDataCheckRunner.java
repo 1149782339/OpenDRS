@@ -3,17 +3,22 @@ package io.opendrs.engine.datacheck.incremental;
 import io.opendrs.engine.capture.transport.SourceRecordEnvelopeCodec;
 import io.opendrs.engine.common.log.MigrationLogLevel;
 import io.opendrs.engine.common.log.MigrationLogListener;
+import io.opendrs.engine.common.metadata.ColumnDefinition;
 import io.opendrs.engine.common.metadata.TableDefinition;
 import io.opendrs.engine.common.metadata.TableId;
 import io.opendrs.engine.common.naming.ColumnNamingStrategy;
 import io.opendrs.engine.common.naming.TableNamingStrategy;
 import io.opendrs.engine.datacheck.InconsistentRowStore;
+import io.opendrs.engine.datacheck.PrimaryKeySupport;
 import io.opendrs.engine.jdbc.JdbcConnection;
 import io.opendrs.engine.jdbc.JdbcConnectionConfig;
 import io.opendrs.engine.jdbc.JdbcConnectionFactory;
 import io.opendrs.engine.replay.applier.SourceRecordConverter;
 import io.opendrs.engine.replay.event.ChangeEvent;
 import io.opendrs.engine.replay.event.DataChangeEvent;
+import java.sql.SQLException;
+import java.sql.SQLRecoverableException;
+import java.sql.SQLTransientException;
 import java.time.Duration;
 import java.util.HashMap;
 import java.util.List;
@@ -57,6 +62,7 @@ public final class IncrementalDataCheckRunner {
     private final ReplayWatermark replayWatermark;
     private long lastConsumedCreateTimeMs;
     private final Map<TopicPartition, Long> lastConsumedNext = new HashMap<>();
+    private final Map<TableId, Long> lastTableCreateTimeMs = new HashMap<>();
 
     public IncrementalDataCheckRunner(
             IncrementalEventSource events,
@@ -128,12 +134,18 @@ public final class IncrementalDataCheckRunner {
 
         events.assignAndSeek(startOffsets);
         EventBatch pending = null;
-        try (JdbcConnection source = factory == null ? null : factory.open(sourceConfig);
-                JdbcConnection target = factory == null ? null : factory.open(targetConfig)) {
-            PkBatchChecker checker = checkerOverride != null
-                    ? checkerOverride
-                    : new JdbcPkBatchChecker(
-                            source, target, id -> read(source, id), id -> read(target, id));
+        JdbcConnection source = null;
+        JdbcConnection target = null;
+        Map<TableId, TableDefinition> sourceDefs = new HashMap<>();
+        Map<TableId, TableDefinition> targetDefs = new HashMap<>();
+        PkBatchChecker checker = checkerOverride;
+        try {
+            if (checker == null && factory != null) {
+                source = factory.open(sourceConfig);
+                target = factory.open(targetConfig);
+                loadDefinitions(tables, source, target, sourceDefs, targetDefs);
+                checker = new JdbcPkBatchChecker(source, target, sourceDefs::get, targetDefs::get);
+            }
             while (!stopRequested.getAsBoolean()) {
                 if (pending == null) {
                     List<ConsumerRecord<String, byte[]>> records;
@@ -147,7 +159,7 @@ public final class IncrementalDataCheckRunner {
                         reportIdleLag(lagSink, bySource.keySet());
                         continue;
                     }
-                    pending = decode(records, bySource.keySet(), logs);
+                    pending = decode(records, bySource.keySet(), sourceDefs, logs);
                     if (pending.isEmpty()) {
                         pending = null;
                         continue;
@@ -187,7 +199,12 @@ public final class IncrementalDataCheckRunner {
                     if (pair == null) {
                         continue;
                     }
-                    checker.check(pair, entry.getValue(), store);
+                    CheckerHold hold = checkWithRetry(
+                            checker, pair, entry.getValue(), store, logs,
+                            source, target, sourceConfig, targetConfig, tables, sourceDefs, targetDefs);
+                    source = hold.source;
+                    target = hold.target;
+                    checker = hold.checker;
                 }
                 if (stopRequested.getAsBoolean()) {
                     break;
@@ -202,12 +219,16 @@ public final class IncrementalDataCheckRunner {
                 commit(pending, offsetStore);
                 pending = null;
             }
+        } finally {
+            closeQuietly(source);
+            closeQuietly(target);
         }
     }
 
     private EventBatch decode(
             List<ConsumerRecord<String, byte[]>> records,
             Set<TableId> checked,
+            Map<TableId, TableDefinition> sourceDefs,
             MigrationLogListener logs) {
         EventBatch batch = new EventBatch();
         for (ConsumerRecord<String, byte[]> record : records) {
@@ -240,9 +261,23 @@ public final class IncrementalDataCheckRunner {
                         "skip change without primary key for " + table);
                 continue;
             }
-            List<Object> bind = PrimaryKeyEncoder.bindValues(change);
-            String encoded = PrimaryKeyEncoder.encode(bind);
-            batch.put(lookup(checked, table), new PkRow(encoded, bind));
+            TableId canonical = lookup(checked, table);
+            TableDefinition definition = sourceDefs == null ? null : sourceDefs.get(canonical);
+            List<Object> raw = PrimaryKeyEncoder.bindValues(change);
+            List<Object> bind;
+            String encoded;
+            if (definition != null) {
+                List<ColumnDefinition> pkColumns = PrimaryKeySupport.primaryKeyColumns(definition);
+                bind = PrimaryKeySupport.bindValues(canonical, pkColumns, raw);
+                encoded = PrimaryKeySupport.encode(canonical, pkColumns, raw);
+            } else {
+                bind = raw;
+                encoded = PrimaryKeyEncoder.encode(bind);
+            }
+            if (record.timestamp() > lastTableCreateTimeMs.getOrDefault(canonical, 0L)) {
+                lastTableCreateTimeMs.put(canonical, record.timestamp());
+            }
+            batch.put(canonical, new PkRow(encoded, bind), record.timestamp());
         }
         return batch;
     }
@@ -256,19 +291,11 @@ public final class IncrementalDataCheckRunner {
     }
 
     private static boolean contains(Set<TableId> tables, TableId table) {
-        return tables.contains(table) || lookup(tables, table) != null;
+        return tables.contains(table);
     }
 
     private static TableId lookup(Set<TableId> tables, TableId table) {
-        if (tables.contains(table)) {
-            return table;
-        }
-        for (TableId candidate : tables) {
-            if (candidate.equals(table)) {
-                return candidate;
-            }
-        }
-        return null;
+        return tables.contains(table) ? table : null;
     }
 
     private void commit(EventBatch batch, OffsetStore offsetStore) {
@@ -320,15 +347,22 @@ public final class IncrementalDataCheckRunner {
         Long consumedTs = consumedCreateTimeMs > 0L ? consumedCreateTimeMs : null;
         OptionalLong replayTs = replayWatermark.lastAppliedCreateTimeMs();
         Long replayCreateTime = replayTs.isPresent() ? replayTs.getAsLong() : null;
-        long lag = DataCheckLag.lagMs(
-                System.currentTimeMillis(),
-                waitingForTarget,
-                consumedTs,
-                replayCreateTime,
-                backlog);
+        long now = System.currentTimeMillis();
         for (TableId table : tables) {
-            lagSink.update(table, lag);
+            long tableTs = lastTableCreateTimeMs.getOrDefault(table, 0L);
+            if (tableTs <= 0L && consumedCreateTimeMs > 0L) {
+                tableTs = consumedCreateTimeMs;
+            }
+            Long tableConsumed = tableTs > 0L ? Long.valueOf(tableTs) : consumedTs;
+            long lag = DataCheckLag.lagMs(
+                    now,
+                    waitingForTarget,
+                    tableConsumed,
+                    replayCreateTime,
+                    backlog);
+            lagSink.update(table, lag, waitingForTarget);
         }
+        lagSink.flush();
     }
 
     /**
@@ -352,4 +386,108 @@ public final class IncrementalDataCheckRunner {
         }
     }
 
+    private CheckerHold checkWithRetry(
+            PkBatchChecker checker,
+            CheckedTablePair pair,
+            List<PkRow> keys,
+            InconsistentRowStore store,
+            MigrationLogListener logs,
+            JdbcConnection source,
+            JdbcConnection target,
+            JdbcConnectionConfig sourceConfig,
+            JdbcConnectionConfig targetConfig,
+            List<CheckedTablePair> tables,
+            Map<TableId, TableDefinition> sourceDefs,
+            Map<TableId, TableDefinition> targetDefs) {
+        int attempts = 0;
+        while (true) {
+            try {
+                checker.check(pair, keys, store);
+                return new CheckerHold(checker, source, target);
+            } catch (RuntimeException ex) {
+                if (checkerOverride != null || factory == null || !isRetryable(ex) || attempts >= 2) {
+                    throw ex;
+                }
+                attempts++;
+                logs.emit(MigrationLogLevel.WARNING,
+                        "retryable JDBC error during incremental check of " + pair.source()
+                                + "; reconnecting and retrying the current batch: " + ex.getMessage());
+                closeQuietly(source);
+                closeQuietly(target);
+                source = factory.open(sourceConfig);
+                target = factory.open(targetConfig);
+                sourceDefs.clear();
+                targetDefs.clear();
+                loadDefinitions(tables, source, target, sourceDefs, targetDefs);
+                checker = new JdbcPkBatchChecker(source, target, sourceDefs::get, targetDefs::get);
+            }
+        }
+    }
+
+    private static void loadDefinitions(
+            List<CheckedTablePair> tables,
+            JdbcConnection source,
+            JdbcConnection target,
+            Map<TableId, TableDefinition> sourceDefs,
+            Map<TableId, TableDefinition> targetDefs) {
+        for (CheckedTablePair pair : tables) {
+            TableDefinition sourceDef = read(source, pair.source());
+            if (sourceDef == null) {
+                throw new IllegalStateException("source table not found: " + pair.source());
+            }
+            PrimaryKeySupport.validate(pair.source(), sourceDef);
+            sourceDefs.put(pair.source(), sourceDef);
+            TableDefinition targetDef = read(target, pair.target());
+            if (targetDef == null) {
+                throw new IllegalStateException("target table not found: " + pair.target());
+            }
+            PrimaryKeySupport.validate(pair.target(), targetDef);
+            targetDefs.put(pair.target(), targetDef);
+        }
+    }
+
+    static boolean isRetryable(Throwable failure) {
+        for (Throwable current = failure; current != null; current = current.getCause()) {
+            if (current instanceof SQLTransientException || current instanceof SQLRecoverableException) {
+                return true;
+            }
+            String message = current.getMessage();
+            if (message != null) {
+                String lower = message.toLowerCase();
+                if (lower.contains("communications link failure")
+                        || lower.contains("connection reset")
+                        || lower.contains("broken pipe")
+                        || lower.contains("connection is closed")
+                        || lower.contains("no operations allowed after connection closed")
+                        || lower.contains("i/o error")
+                        || lower.contains("io error")
+                        || lower.contains("connection refused")
+                        || lower.contains("cannot get a connection")) {
+                    return true;
+                }
+            }
+            if (current instanceof SQLException sql) {
+                String state = sql.getSQLState();
+                if (state != null && (state.startsWith("08") || state.equals("40001")
+                        || state.equals("40P01") || state.equals("HY000"))) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static void closeQuietly(JdbcConnection connection) {
+        if (connection == null) {
+            return;
+        }
+        try {
+            connection.close();
+        } catch (Exception ignored) {
+            // already closed or pool-managed
+        }
+    }
+
+    private record CheckerHold(PkBatchChecker checker, JdbcConnection source, JdbcConnection target) {
+    }
 }

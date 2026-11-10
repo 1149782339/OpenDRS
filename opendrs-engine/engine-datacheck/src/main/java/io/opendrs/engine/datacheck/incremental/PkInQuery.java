@@ -71,10 +71,24 @@ public final class PkInQuery {
 
     public static void bind(PreparedStatement statement, List<List<Object>> rows)
             throws SQLException {
+        bind(statement, rows, null);
+    }
+
+    /**
+     * Binds already-normalized values. When {@code sqlTypes} is provided (one JDBC type per
+     * primary-key column), each placeholder uses {@code setObject(index, value, sqlType)}.
+     */
+    public static void bind(PreparedStatement statement, List<List<Object>> rows, int[] sqlTypes)
+            throws SQLException {
         int index = 1;
         for (List<Object> row : rows) {
-            for (Object value : row) {
-                statement.setObject(index++, value);
+            for (int c = 0; c < row.size(); c++) {
+                Object value = row.get(c);
+                if (sqlTypes != null && c < sqlTypes.length) {
+                    statement.setObject(index++, value, sqlTypes[c]);
+                } else {
+                    statement.setObject(index++, value);
+                }
             }
         }
     }

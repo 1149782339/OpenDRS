@@ -149,9 +149,37 @@ public final class DataCheckRows {
     }
 
     public static String primaryKey(ResultSet result, int[] indexes) throws SQLException {
+        return primaryKey(result, indexes, null, null);
+    }
+
+    /**
+     * Encodes the current row's primary key using {@link PrimaryKeySupport} when column
+     * metadata is supplied, so full-check bucket keys match incremental event encoding.
+     */
+    public static String primaryKey(
+            ResultSet result, int[] indexes, TableId table, List<ColumnDefinition> pkColumns)
+            throws SQLException {
+        if (pkColumns != null && pkColumns.size() != indexes.length) {
+            throw new IllegalArgumentException("pk column metadata does not match indexes");
+        }
         List<String> values = new ArrayList<>(indexes.length);
-        for (int index : indexes) {
-            values.add(result.getString(index + 1));
+        for (int i = 0; i < indexes.length; i++) {
+            Object raw = result.getObject(indexes[i] + 1);
+            if (result.wasNull() || raw == null) {
+                throw new IllegalArgumentException(
+                        "null primary key value is not allowed"
+                                + (table == null ? "" : " on table " + table)
+                                + (pkColumns == null ? "" : " (column " + pkColumns.get(i).getName() + ")"));
+            }
+            if (pkColumns == null) {
+                String text = result.getString(indexes[i] + 1);
+                if (text == null) {
+                    throw new IllegalArgumentException("null primary key value is not allowed");
+                }
+                values.add(text);
+            } else {
+                values.add(PrimaryKeySupport.encodeColumn(table, pkColumns.get(i), raw));
+            }
         }
         return InconsistentRowStore.encode(values);
     }

@@ -20,6 +20,11 @@ public class DataCheckCoordinatorRegistry {
         return false;
     }
 
+    public boolean hasLive(long taskId) {
+        DataCheckCoordinator job = jobs.get(taskId);
+        return job != null && job.occupiesSlot();
+    }
+
     public void requestStop(long taskId) {
         DataCheckCoordinator job = jobs.get(taskId);
         if (job != null) {

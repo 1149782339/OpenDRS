@@ -56,6 +56,9 @@ public enum ErrorMessage {
 
     DATACHECK_CANDIDATES_FAILED("error.datacheck.candidatesFailed"),
     DATACHECK_TABLE_OUT_OF_SCOPE("error.datacheck.tableOutOfScope"),
+    DATACHECK_UNSUPPORTED_PK("error.datacheck.unsupportedPk"),
+    DATACHECK_MIGRATION_NOT_READY("error.datacheck.migrationNotReady"),
+    DATACHECK_CANNOT_STOP_FULL("error.datacheck.cannotStopFull"),
 
     SYSTEM_DB_ERROR("error.system.db"),
     SYSTEM_INTERNAL_ERROR("error.system.internal");

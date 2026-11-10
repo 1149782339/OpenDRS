@@ -19,5 +19,6 @@ public record DataCheckTaskResponse(
         Long lagMs,
         String errorMessage,
         Instant createdAt,
-        Instant updatedAt) {
+        Instant updatedAt,
+        boolean stoppable) {
 }

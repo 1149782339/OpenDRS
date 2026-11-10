@@ -58,7 +58,8 @@ class LagComputationsTest {
         Inputs in = direct(
                 NOW - 60_000, NOW, 0L,
                 "bin:9", NOW, "bin:9", NOW,
-                NOW - 60_000, NOW);
+                NOW - 60_000, NOW,
+                "bin:9");
         Result result = LagComputations.compute(in, NOW);
         assertThat(result.endToEndLagMs()).isZero();
         assertThat(result.replayLagMs()).isZero();
@@ -133,6 +134,26 @@ class LagComputationsTest {
         assertThat(LagComputations.compute(in, NOW).endToEndLagMs()).isZero();
     }
 
+    @Test
+    void kafkaReplayCaughtUpButCaptureBehindKeepsE2eAtLeastCaptureLag() {
+        // Replay has consumed everything produced, but the source binlog is ahead of
+        // captured and there is no idle heartbeat — e2e must not zero (I3).
+        Inputs in = kafka(
+                NOW - 20_000, NOW, 0L,
+                "bin:200", NOW - 8_000, "bin:200", NOW,
+                NOW - 8_000, NOW - 8_000,
+                Map.of(0, 99L), Map.of(0, NOW - 20),
+                Map.of(0, 99L), Map.of(0, NOW - 20),
+                Map.of(0, 100L),
+                "bin:300");
+        Result result = LagComputations.compute(in, NOW);
+        assertThat(LagComputations.kafkaReplayCaughtUp(in)).isTrue();
+        assertThat(result.replayLagMs()).isZero();
+        assertThat(result.captureLagMs()).isEqualTo(8_000L);
+        assertThat(result.endToEndLagMs()).isGreaterThanOrEqualTo(result.captureLagMs());
+        assertThat(result.endToEndLagMs()).isEqualTo(8_000L);
+    }
+
     private static Inputs kafka(
             long appliedEvent,
             long appliedAt,
@@ -167,10 +188,25 @@ class LagComputationsTest {
             long appliedPosAt,
             long capturedEvent,
             long capturedEventAt) {
+        return direct(appliedEvent, appliedAt, heartbeat, capturedPos, capturedAt,
+                appliedPos, appliedPosAt, capturedEvent, capturedEventAt, null);
+    }
+
+    private static Inputs direct(
+            long appliedEvent,
+            long appliedAt,
+            long heartbeat,
+            String capturedPos,
+            long capturedAt,
+            String appliedPos,
+            long appliedPosAt,
+            long capturedEvent,
+            long capturedEventAt,
+            String sourcePosition) {
         return new Inputs(
                 appliedEvent, appliedAt, heartbeat,
                 capturedPos, capturedAt, appliedPos, appliedPosAt,
                 capturedEvent, capturedEventAt, false,
-                Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), null);
+                Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), sourcePosition);
     }
 }

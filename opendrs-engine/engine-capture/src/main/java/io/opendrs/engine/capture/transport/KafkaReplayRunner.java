@@ -226,7 +226,16 @@ public final class KafkaReplayRunner implements AutoCloseable, Runnable {
         seedAppliedFromCommitted(assignment);
         lastLogEndNanos = now;
         long atMs = System.currentTimeMillis();
-        Map<TopicPartition, Long> end = consumer.endOffsets(assignment);
+        Map<TopicPartition, Long> end;
+        try {
+            end = consumer.endOffsets(assignment);
+        } catch (RuntimeException ex) {
+            log.debug("endOffsets probe failed (non-blocking): {}", ex.toString());
+            return;
+        }
+        if (end == null) {
+            return;
+        }
         for (Map.Entry<TopicPartition, Long> entry : end.entrySet()) {
             if (entry.getValue() != null) {
                 lagListener.emitLogEnd(entry.getKey().partition(), entry.getValue(), atMs);
@@ -234,14 +243,6 @@ public final class KafkaReplayRunner implements AutoCloseable, Runnable {
         }
     }
 
-    /**
-     * Persist pending applied row then commit consumer offsets. {@code force=true} uses
-     * {@code commitSync} (shutdown); otherwise {@code commitAsync} after {@link #COMMIT_INTERVAL}.
-     *
-     * <p>Async path clears {@code pending*} only in the <em>success</em> callback so a failed
-     * commit can be retried on the next tick or by the final sync flush. If newer applies land
-     * while a commit is in flight, only the offsets that match the committed map are dropped.
-     */
     /**
      * After restart the in-memory applied offset is empty while topic log-end is not,
      * which would report a huge backlog until the first apply. Seed from the consumer
@@ -251,7 +252,13 @@ public final class KafkaReplayRunner implements AutoCloseable, Runnable {
         if (seededCommitted) {
             return;
         }
-        Map<TopicPartition, OffsetAndMetadata> committed = consumer.committed(assignment);
+        Map<TopicPartition, OffsetAndMetadata> committed;
+        try {
+            committed = consumer.committed(assignment);
+        } catch (RuntimeException ex) {
+            log.debug("committed-offset probe failed (non-blocking): {}", ex.toString());
+            return;
+        }
         if (committed == null) {
             return;
         }
@@ -264,6 +271,14 @@ public final class KafkaReplayRunner implements AutoCloseable, Runnable {
         seededCommitted = true;
     }
 
+    /**
+     * Persist pending applied row then commit consumer offsets. {@code force=true} uses
+     * {@code commitSync} (shutdown); otherwise {@code commitAsync} after {@link #COMMIT_INTERVAL}.
+     *
+     * <p>Async path clears {@code pending*} only in the <em>success</em> callback so a failed
+     * commit can be retried on the next tick or by the final sync flush. If newer applies land
+     * while a commit is in flight, only the offsets that match the committed map are dropped.
+     */
     void flushIfDue(boolean force) {
         if (pendingApplied == null || pendingOffsets.isEmpty()) {
             return;

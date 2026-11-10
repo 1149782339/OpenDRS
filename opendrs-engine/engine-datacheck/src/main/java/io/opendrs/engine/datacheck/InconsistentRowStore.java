@@ -31,6 +31,15 @@ public interface InconsistentRowStore {
 
     /** Encodes the values of one composite primary key into the single {@code pk} string. */
     static String encode(List<String> keyValues) {
+        if (keyValues == null) {
+            throw new IllegalArgumentException("primary key values must not be null");
+        }
+        for (int i = 0; i < keyValues.size(); i++) {
+            if (keyValues.get(i) == null) {
+                throw new IllegalArgumentException(
+                        "null primary key value is not allowed (index " + i + ")");
+            }
+        }
         return String.join("\u0000", keyValues);
     }
 }

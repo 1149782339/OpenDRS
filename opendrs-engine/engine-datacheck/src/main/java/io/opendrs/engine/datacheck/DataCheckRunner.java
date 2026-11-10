@@ -2,6 +2,7 @@ package io.opendrs.engine.datacheck;
 
 import io.opendrs.engine.common.log.MigrationLogLevel;
 import io.opendrs.engine.common.metadata.DatabaseType;
+import io.opendrs.engine.common.metadata.ColumnDefinition;
 import io.opendrs.engine.common.metadata.TableDefinition;
 import io.opendrs.engine.common.metadata.TableId;
 import io.opendrs.engine.datacheck.type.LogicalValue;
@@ -56,42 +57,48 @@ public final class DataCheckRunner {
             TableDefinition sourceDefinition = source.readTable(sourceTable);
             TableDefinition targetDefinition = target.readTable(targetTable);
             if (sourceDefinition == null) {
-                warn(param, sourceTable, "source table not found");
+                fail(param, sourceTable, "source table not found");
                 return;
             }
             if (targetDefinition == null) {
-                warn(param, sourceTable, "target table not found");
+                fail(param, sourceTable, "target table not found");
                 return;
             }
 
             int sourceColumns = sourceDefinition.getColumnDefinitions().size();
             int targetColumns = targetDefinition.getColumnDefinitions().size();
             if (sourceColumns != targetColumns) {
-                warn(param, sourceTable,
+                fail(param, sourceTable,
                         "column count mismatch: source=" + sourceColumns + ", target=" + targetColumns);
                 return;
             }
             if (sourceColumns == 0) {
-                warn(param, sourceTable, "source table has no columns");
+                fail(param, sourceTable, "source table has no columns");
                 return;
             }
             if (sourceDefinition.getPrimaryKeyColumNames().isEmpty()) {
-                warn(param, sourceTable, "source table has no primary key");
+                fail(param, sourceTable, "source table has no primary key");
                 return;
             }
             if (targetDefinition.getPrimaryKeyColumNames().isEmpty()) {
-                warn(param, sourceTable, "target table has no primary key");
+                fail(param, sourceTable, "target table has no primary key");
                 return;
             }
             if (sourceDefinition.getPrimaryKeyColumNames().size()
                     != targetDefinition.getPrimaryKeyColumNames().size()) {
-                warn(param, sourceTable,
+                fail(param, sourceTable,
                         "primary key count mismatch: source="
                                 + sourceDefinition.getPrimaryKeyColumNames().size()
                                 + ", target=" + targetDefinition.getPrimaryKeyColumNames().size());
                 return;
             }
 
+            PrimaryKeySupport.validate(sourceTable, sourceDefinition);
+            PrimaryKeySupport.validate(targetTable, targetDefinition);
+
+            // TODO: full check currently loads every primary key into memory (sourcePks + HashBuckets).
+            // Shard or range-query the table (e.g. PK ranges / sharded scans) so large tables do not
+            // need a full in-memory set. Known limitation; see the PR description.
             String sourceSql = DataCheckRows.selectAllOrderByPkSql(sourceTable, sourceDefinition, source);
             String targetSql = DataCheckRows.selectAllOrderByPkSql(targetTable, targetDefinition, target);
             compareRows(param, store, source, target, sourceTable, targetTable,
@@ -99,9 +106,11 @@ public final class DataCheckRunner {
         } catch (SQLException ex) {
             param.logListener().emit(MigrationLogLevel.ERROR,
                     "data check failed for " + sourceTable + ": " + ex.getMessage());
+            throw new IllegalStateException("data check failed for " + sourceTable + ": " + ex.getMessage(), ex);
         } catch (RuntimeException ex) {
             param.logListener().emit(MigrationLogLevel.ERROR,
                     "data check failed for " + sourceTable + ": " + ex.getMessage());
+            throw ex;
         }
     }
 
@@ -133,7 +142,11 @@ public final class DataCheckRunner {
 
         int[] sourcePkIndexes = DataCheckRows.primaryKeyIndexes(sourceDefinition);
         int[] targetPkIndexes = DataCheckRows.primaryKeyIndexes(targetDefinition);
+        List<ColumnDefinition> sourcePkColumns = PrimaryKeySupport.primaryKeyColumns(sourceDefinition);
+        List<ColumnDefinition> targetPkColumns = PrimaryKeySupport.primaryKeyColumns(targetDefinition);
 
+        // TODO: HashBuckets + sourcePks hold every primary key in memory for the table. Replace
+        // with sharded / range queries (PK ranges) so large tables can be checked incrementally.
         HashBuckets sourceBuckets = new HashBuckets(DataCheckRows.BUCKET_COUNT);
         HashBuckets targetBuckets = new HashBuckets(DataCheckRows.BUCKET_COUNT);
         List<String> sourcePks = new ArrayList<>();
@@ -157,8 +170,11 @@ public final class DataCheckRunner {
                     break;
                 }
                 sourceRows++;
+                if (sourceRows % 10_000 == 0) {
+                    reportProgress(param, sourceTable, sourceRows);
+                }
                 List<LogicalValue> values = sourceHandler.getValues(sourceResult, sourceMeta);
-                String pk = DataCheckRows.primaryKey(sourceResult, sourcePkIndexes);
+                String pk = DataCheckRows.primaryKey(sourceResult, sourcePkIndexes, sourceTable, sourcePkColumns);
                 long pkHash = HashUtil.getHash(pk);
                 sourceBuckets.add(pk, pkHash, DataCheckRows.rowHash(values, rowBuf));
                 sourcePks.add(pk);
@@ -169,11 +185,13 @@ public final class DataCheckRunner {
                 }
                 targetRows++;
                 List<LogicalValue> values = targetHandler.getValues(targetResult, targetMeta);
-                String pk = DataCheckRows.primaryKey(targetResult, targetPkIndexes);
+                String pk = DataCheckRows.primaryKey(targetResult, targetPkIndexes, targetTable, targetPkColumns);
                 long pkHash = HashUtil.getHash(pk);
                 targetBuckets.add(pk, pkHash, DataCheckRows.rowHash(values, rowBuf));
             }
         }
+
+        reportProgress(param, sourceTable, sourceRows);
 
         DiffResult diff = sourceBuckets.diff(targetBuckets);
         DataCheckRows.applyDiff(store, sourceTable, diff, sourcePks);
@@ -198,8 +216,15 @@ public final class DataCheckRunner {
         DataCheckRows.applyDiff(store, table, diff, sourcePks);
     }
 
-    private static void warn(DataCheckParam param, TableId table, String message) {
-        param.logListener().emit(MigrationLogLevel.WARNING,
-                "data check skipped for " + table + ": " + message);
+    private static void fail(DataCheckParam param, TableId table, String message) {
+        param.logListener().emit(MigrationLogLevel.ERROR,
+                "data check failed for " + table + ": " + message);
+        throw new IllegalStateException("data check failed for " + table + ": " + message);
+    }
+
+    private static void reportProgress(DataCheckParam param, TableId table, long rowsChecked) {
+        if (param.progressListener() != null) {
+            param.progressListener().accept(table, rowsChecked);
+        }
     }
 }

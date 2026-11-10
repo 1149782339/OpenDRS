@@ -143,6 +143,9 @@ CREATE TABLE datacheck_table_tasks (
   error_message     VARCHAR(1024) NULL,
   started_at        DATETIME      NULL,
   finished_at       DATETIME      NULL,
+  rows_checked      BIGINT        NULL,
+  last_check_at     DATETIME      NULL,
+  waiting_for_replay BOOLEAN      NOT NULL DEFAULT FALSE,
   updated_at        DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (datacheck_task_id, source_table_id),
   CONSTRAINT fk_datacheck_table_task FOREIGN KEY (datacheck_task_id)

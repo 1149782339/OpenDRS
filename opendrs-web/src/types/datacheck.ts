@@ -36,6 +36,8 @@ export interface DataCheckTaskResponse {
   errorMessage: string | null
   createdAt: string
   updatedAt: string
+  /** False while any table is in the full-check phase (stop is rejected). */
+  stoppable?: boolean
 }
 
 export interface DataCheckTableResult {
@@ -49,6 +51,9 @@ export interface DataCheckTableResult {
   sourceOnlyCount: number
   targetOnlyCount: number
   totalCount: number
+  rowsChecked?: number | null
+  lastCheckAt?: string | null
+  waitingForReplay?: boolean
 }
 
 export interface DataCheckResultItem {

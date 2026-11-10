@@ -81,11 +81,15 @@ public final class LagComputations {
         }
         boolean captureIdle = captureCaughtUpToSource(in, nowMs);
         long captureLag = captureLagMs(in, nowMs, captureIdle);
-        boolean replayCaughtUp = in.kafkaMode() && kafkaReplayCaughtUp(in);
+        boolean replayCaughtUp = replayCaughtUp(in);
         long replayLag = replayLagMs(in, replayCaughtUp);
         long backlog = replayBacklog(in);
-        boolean e2eCaughtUp = endToEndCaughtUp(in, nowMs, replayCaughtUp);
-        long e2e = endToEndLagMs(in, nowMs, e2eCaughtUp);
+        // KAFKA: caught up only if capture has reached the source AND replay has
+        // consumed everything produced. DIRECT keeps the position-equal / idle fallback.
+        boolean e2eCaughtUp = in.kafkaMode()
+                ? (captureIdle && replayCaughtUp)
+                : endToEndCaughtUp(in, nowMs, false);
+        long e2e = endToEndLagMs(in, nowMs, e2eCaughtUp, captureLag, replayLag, replayCaughtUp);
         return new Result(captureLag, replayLag, e2e, backlog);
     }
 
@@ -127,10 +131,41 @@ public final class LagComputations {
     }
 
     static long endToEndLagMs(Inputs in, long nowMs, boolean caughtUp) {
-        if (caughtUp || in.appliedEventTimeMs() <= 0) {
+        boolean replayCaughtUp = replayCaughtUp(in);
+        long captureLag = captureLagMs(in, nowMs, captureCaughtUpToSource(in, nowMs));
+        long replayLag = replayLagMs(in, replayCaughtUp);
+        return endToEndLagMs(in, nowMs, caughtUp, captureLag, replayLag, replayCaughtUp);
+    }
+
+    /**
+     * Zero only when capture is caught up to the source <em>and</em> replay is caught up.
+     * Otherwise at least {@code max(captureLag, replayLag)}; if replay is still behind,
+     * also at least the age of the last applied event.
+     */
+    static long endToEndLagMs(
+            Inputs in,
+            long nowMs,
+            boolean caughtUp,
+            long captureLag,
+            long replayLag,
+            boolean replayCaughtUp) {
+        if (caughtUp) {
             return 0L;
         }
-        return Math.max(0L, nowMs - in.appliedEventTimeMs());
+        long e2e = Math.max(captureLag, replayLag);
+        if (!replayCaughtUp && in.appliedEventTimeMs() > 0) {
+            e2e = Math.max(e2e, Math.max(0L, nowMs - in.appliedEventTimeMs()));
+        }
+        return e2e;
+    }
+
+    static boolean replayCaughtUp(Inputs in) {
+        if (in.kafkaMode()) {
+            return kafkaReplayCaughtUp(in);
+        }
+        return in.capturedPosition() != null
+                && in.appliedPosition() != null
+                && in.capturedPosition().equals(in.appliedPosition());
     }
 
     static boolean captureCaughtUpToSource(Inputs in, long nowMs) {
@@ -180,19 +215,21 @@ public final class LagComputations {
     }
 
     static boolean endToEndCaughtUp(Inputs in, long nowMs, boolean kafkaCaughtUp) {
+        boolean captureCaughtUp = captureCaughtUpToSource(in, nowMs);
         if (in.kafkaMode()) {
-            return kafkaCaughtUp;
+            return captureCaughtUp && kafkaCaughtUp;
         }
         if (in.capturedPosition() != null
                 && in.appliedPosition() != null
                 && in.capturedPosition().equals(in.appliedPosition())) {
-            return true;
+            return captureCaughtUp;
         }
         // Fallback when positions/watermarks are missing (tests, startup): idle + alive.
+        // Still requires capture to look idle when a source position is available.
         boolean alive = in.heartbeatAtMs() <= 0
                 || nowMs - in.heartbeatAtMs() <= ALIVE_WINDOW_MS;
         if (alive && (in.appliedEventTimeMs() <= 0 || nowMs - in.appliedAtMs() > IDLE_WINDOW_MS)) {
-            return true;
+            return in.sourcePosition() == null || captureCaughtUp;
         }
         return false;
     }

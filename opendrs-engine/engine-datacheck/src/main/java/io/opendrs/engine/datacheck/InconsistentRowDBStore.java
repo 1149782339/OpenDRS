@@ -8,6 +8,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.List;
 import java.util.Objects;
+import java.util.function.Supplier;
 
 /**
  * MySQL-backed {@link InconsistentRowStore}. Each data check (identified by its task id) owns one
@@ -18,16 +19,49 @@ public final class InconsistentRowDBStore implements InconsistentRowStore {
 
     private static final int BATCH_ROWS = 500;
 
-    private final JdbcConnection connection;
+    private final Supplier<JdbcConnection> connections;
+    private final boolean closeAfterUse;
     private final java.lang.String tableName;
 
     public InconsistentRowDBStore(JdbcConnection connection, long taskId) {
-        this.connection = Objects.requireNonNull(connection, "connection");
+        this(() -> connection, taskId, false);
+    }
+
+    /**
+     * Opens a short-lived metadata connection per operation so the task does not hold a
+     * metadata-DB connection for its lifetime.
+     */
+    public InconsistentRowDBStore(Supplier<JdbcConnection> connections, long taskId) {
+        this(connections, taskId, true);
+    }
+
+    private InconsistentRowDBStore(
+            Supplier<JdbcConnection> connections, long taskId, boolean closeAfterUse) {
+        this.connections = Objects.requireNonNull(connections, "connections");
+        this.closeAfterUse = closeAfterUse;
         if (taskId <= 0) {
             throw new IllegalArgumentException("taskId must be positive");
         }
         this.tableName = "datacheck_result_" + taskId;
         createTable();
+    }
+
+    private JdbcConnection open() {
+        JdbcConnection connection = connections.get();
+        if (connection == null) {
+            throw new IllegalStateException("metadata connection supplier returned null");
+        }
+        return connection;
+    }
+
+    private void release(JdbcConnection connection) {
+        if (closeAfterUse && connection != null) {
+            try {
+                connection.close();
+            } catch (Exception ignored) {
+                // pool-managed or already closed
+            }
+        }
     }
 
     @Override
@@ -36,6 +70,8 @@ public final class InconsistentRowDBStore implements InconsistentRowStore {
             return;
         }
         java.lang.String tableId = table.identifier();
+        JdbcConnection connection = open();
+        try {
         for (int start = 0; start < pks.size(); start += BATCH_ROWS) {
             List<java.lang.String> chunk =
                     pks.subList(start, Math.min(start + BATCH_ROWS, pks.size()));
@@ -52,6 +88,9 @@ public final class InconsistentRowDBStore implements InconsistentRowStore {
                 throw new JdbcException("Failed to mark inconsistent rows of " + tableId, ex);
             }
         }
+        } finally {
+            release(connection);
+        }
     }
 
     @Override
@@ -60,6 +99,8 @@ public final class InconsistentRowDBStore implements InconsistentRowStore {
             return;
         }
         java.lang.String tableId = table.identifier();
+        JdbcConnection connection = open();
+        try {
         for (int start = 0; start < pks.size(); start += BATCH_ROWS) {
             List<java.lang.String> chunk =
                     pks.subList(start, Math.min(start + BATCH_ROWS, pks.size()));
@@ -74,10 +115,14 @@ public final class InconsistentRowDBStore implements InconsistentRowStore {
                 throw new JdbcException("Failed to clear consistent rows of " + tableId, ex);
             }
         }
+        } finally {
+            release(connection);
+        }
     }
 
     @Override
     public List<java.lang.String> listInconsistent(TableId table) {
+        JdbcConnection connection = open();
         try {
             return connection.queryList(
                     "SELECT pk FROM " + tableName + " WHERE table_id = ? ORDER BY pk",
@@ -85,11 +130,14 @@ public final class InconsistentRowDBStore implements InconsistentRowStore {
                     table.identifier());
         } catch (SQLException ex) {
             throw new JdbcException("Failed to list inconsistent rows of " + table.identifier(), ex);
+        } finally {
+            release(connection);
         }
     }
 
     @Override
     public boolean isInconsistent(TableId table, java.lang.String pk) {
+        JdbcConnection connection = open();
         try {
             Integer found = connection.queryOne(
                     "SELECT 1 FROM " + tableName + " WHERE table_id = ? AND pk = ? LIMIT 1",
@@ -99,10 +147,13 @@ public final class InconsistentRowDBStore implements InconsistentRowStore {
             return found != null;
         } catch (SQLException ex) {
             throw new JdbcException("Failed to test inconsistent row of " + table.identifier(), ex);
+        } finally {
+            release(connection);
         }
     }
 
     private void createTable() {
+        JdbcConnection connection = open();
         try {
             connection.execute("""
                     CREATE TABLE IF NOT EXISTS %s (
@@ -115,6 +166,8 @@ public final class InconsistentRowDBStore implements InconsistentRowStore {
                     )""".formatted(tableName));
         } catch (SQLException ex) {
             throw new JdbcException("Failed to create " + tableName, ex);
+        } finally {
+            release(connection);
         }
     }
 
