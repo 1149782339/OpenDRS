@@ -1,17 +1,15 @@
 package io.opendrs.engine.datacheck;
 
 import io.opendrs.engine.common.log.MigrationLogLevel;
-import io.opendrs.engine.common.metadata.ColumnDefinition;
 import io.opendrs.engine.common.metadata.DatabaseType;
 import io.opendrs.engine.common.metadata.TableDefinition;
 import io.opendrs.engine.common.metadata.TableId;
 import io.opendrs.engine.datacheck.type.LogicalValue;
 import io.opendrs.engine.datacheck.type.handler.TypeHandler;
 import io.opendrs.engine.datacheck.type.handler.TypeHandlerFactory;
-import io.opendrs.engine.datacheck.type.serialize.SerializeConfiguration;
-import io.opendrs.engine.datacheck.type.serialize.SerializeContext;
-import io.opendrs.engine.datacheck.type.serialize.Serializer;
-import io.opendrs.engine.datacheck.type.serialize.SerializerFactory;
+import io.opendrs.engine.datacheck.utils.DiffResult;
+import io.opendrs.engine.datacheck.utils.HashBuckets;
+import io.opendrs.engine.datacheck.utils.HashUtil;
 import io.opendrs.engine.jdbc.JdbcConnection;
 import io.opendrs.engine.jdbc.JdbcConnectionFactory;
 import java.sql.PreparedStatement;
@@ -23,9 +21,10 @@ import java.util.List;
 import java.util.function.BooleanSupplier;
 
 /**
- * Runs the data check table by table: both sides are read in primary-key order, every row is
- * serialized into text, and the two row hashes are compared. Inconsistent primary keys are written
- * to the {@link InconsistentRowStore}; consistent ones are removed from it.
+ * Runs the data check table by table: both sides are streamed, each row is serialized into
+ * canonical text and hashed into {@link HashBuckets}, then the two bucket sets are diffed.
+ * Inconsistent primary keys are written to the {@link InconsistentRowStore}; matching ones are
+ * removed from it (so a prior inconsistent mark that is consistent again is cleared).
  *
  * <p>A table is rejected before any row is read when the metadata cannot support a comparison
  * (table missing, different column counts, no primary key); that is cheaper and gives a much
@@ -33,11 +32,7 @@ import java.util.function.BooleanSupplier;
  */
 public final class DataCheckRunner {
 
-    /** Column boundary marker: without it ["a","bc"] and ["ab","c"] would hash the same. */
-    private static final char COLUMN_SEPARATOR = '\u0000';
-
-    /** Flush the in-memory key buffers to the store every this many rows. */
-    private static final int FLUSH_ROWS = 1_000;
+    static final int BUCKET_COUNT = DataCheckRows.BUCKET_COUNT;
 
     private final JdbcConnectionFactory factory;
 
@@ -97,8 +92,8 @@ public final class DataCheckRunner {
                 return;
             }
 
-            String sourceSql = selectSql(sourceTable, sourceDefinition, source);
-            String targetSql = selectSql(targetTable, targetDefinition, target);
+            String sourceSql = DataCheckRows.selectAllOrderByPkSql(sourceTable, sourceDefinition, source);
+            String targetSql = DataCheckRows.selectAllOrderByPkSql(targetTable, targetDefinition, target);
             compareRows(param, store, source, target, sourceTable, targetTable,
                     sourceDefinition, targetDefinition, sourceSql, targetSql, stopRequested);
         } catch (SQLException ex) {
@@ -124,10 +119,6 @@ public final class DataCheckRunner {
             BooleanSupplier stopRequested) throws SQLException {
         TypeHandler sourceHandler = TypeHandlerFactory.of(param.source().getType());
         TypeHandler targetHandler = TypeHandlerFactory.of(param.target().getType());
-        Serializer serializer = SerializerFactory.of(new SerializeConfiguration(
-                sourceDefinition, targetDefinition, param.includeFloat(),
-                param.source().getType(), param.target().getType()));
-        SerializeContext context = new SerializeContext();
 
         java.sql.Connection sourceRaw = source.connection();
         java.sql.Connection targetRaw = target.connection();
@@ -140,76 +131,57 @@ public final class DataCheckRunner {
             targetRaw.setAutoCommit(false);
         }
 
-        int[] sourcePkIndexes = primaryKeyIndexes(sourceDefinition);
-        int[] targetPkIndexes = primaryKeyIndexes(targetDefinition);
-        int columnCount = sourceDefinition.getColumnDefinitions().size();
+        int[] sourcePkIndexes = DataCheckRows.primaryKeyIndexes(sourceDefinition);
+        int[] targetPkIndexes = DataCheckRows.primaryKeyIndexes(targetDefinition);
 
-        List<java.lang.String> consistent = new ArrayList<>();
-        List<java.lang.String> different = new ArrayList<>();
-        List<java.lang.String> sourceOnly = new ArrayList<>();
-        List<java.lang.String> targetOnly = new ArrayList<>();
+        HashBuckets sourceBuckets = new HashBuckets(DataCheckRows.BUCKET_COUNT);
+        HashBuckets targetBuckets = new HashBuckets(DataCheckRows.BUCKET_COUNT);
+        List<String> sourcePks = new ArrayList<>();
+        StringBuilder rowBuf = new StringBuilder();
 
         long sourceRows = 0;
         long targetRows = 0;
-        long matchedRows = 0;
-        long mismatchedRows = 0;
-        long sourceOnlyRows = 0;
-        long targetOnlyRows = 0;
 
         try (PreparedStatement sourceStatement =
-                        streamingStatement(sourceRaw, sourceSql, param.source().getType());
+                        DataCheckRows.streamingStatement(sourceRaw, sourceSql, param.source().getType());
                 PreparedStatement targetStatement =
-                        streamingStatement(targetRaw, targetSql, param.target().getType());
+                        DataCheckRows.streamingStatement(targetRaw, targetSql, param.target().getType());
                 ResultSet sourceResult = sourceStatement.executeQuery();
                 ResultSet targetResult = targetStatement.executeQuery()) {
 
             ResultSetMetaData sourceMeta = sourceResult.getMetaData();
             ResultSetMetaData targetMeta = targetResult.getMetaData();
 
-            boolean hasSource = sourceResult.next();
-            boolean hasTarget = targetResult.next();
-            while (hasSource || hasTarget) {
+            while (sourceResult.next()) {
                 if (stopRequested.getAsBoolean()) {
                     break;
                 }
-                if (hasSource && hasTarget) {
-                    sourceRows++;
-                    targetRows++;
-                    List<LogicalValue> sourceValues = sourceHandler.getValues(sourceResult, sourceMeta);
-                    List<LogicalValue> targetValues = targetHandler.getValues(targetResult, targetMeta);
-                    context.clear();
-                    for (int i = 0; i < columnCount; i++) {
-                        serializer.serialize(sourceValues.get(i), targetValues.get(i), i, context);
-                        context.source().append(COLUMN_SEPARATOR);
-                        context.target().append(COLUMN_SEPARATOR);
-                    }
-                    String pk = primaryKey(sourceResult, sourcePkIndexes);
-                    if (hash(context.source()) == hash(context.target())) {
-                        matchedRows++;
-                        consistent.add(pk);
-                    } else {
-                        mismatchedRows++;
-                        different.add(pk);
-                    }
-                    maybeFlush(store, sourceTable, consistent, different, sourceOnly, targetOnly);
-                    hasSource = sourceResult.next();
-                    hasTarget = targetResult.next();
-                } else if (hasSource) {
-                    sourceRows++;
-                    sourceOnlyRows++;
-                    sourceOnly.add(primaryKey(sourceResult, sourcePkIndexes));
-                    maybeFlush(store, sourceTable, consistent, different, sourceOnly, targetOnly);
-                    hasSource = sourceResult.next();
-                } else {
-                    targetRows++;
-                    targetOnlyRows++;
-                    targetOnly.add(primaryKey(targetResult, targetPkIndexes));
-                    maybeFlush(store, sourceTable, consistent, different, sourceOnly, targetOnly);
-                    hasTarget = targetResult.next();
+                sourceRows++;
+                List<LogicalValue> values = sourceHandler.getValues(sourceResult, sourceMeta);
+                String pk = DataCheckRows.primaryKey(sourceResult, sourcePkIndexes);
+                long pkHash = HashUtil.getHash(pk);
+                sourceBuckets.add(pk, pkHash, DataCheckRows.rowHash(values, rowBuf));
+                sourcePks.add(pk);
+            }
+            while (targetResult.next()) {
+                if (stopRequested.getAsBoolean()) {
+                    break;
                 }
+                targetRows++;
+                List<LogicalValue> values = targetHandler.getValues(targetResult, targetMeta);
+                String pk = DataCheckRows.primaryKey(targetResult, targetPkIndexes);
+                long pkHash = HashUtil.getHash(pk);
+                targetBuckets.add(pk, pkHash, DataCheckRows.rowHash(values, rowBuf));
             }
         }
-        flush(store, sourceTable, consistent, different, sourceOnly, targetOnly);
+
+        DiffResult diff = sourceBuckets.diff(targetBuckets);
+        DataCheckRows.applyDiff(store, sourceTable, diff, sourcePks);
+
+        long sourceOnlyRows = diff.left().size();
+        long targetOnlyRows = diff.right().size();
+        long mismatchedRows = diff.both().size();
+        long matchedRows = Math.max(0L, sourceRows - sourceOnlyRows - mismatchedRows);
         param.logListener().emit(MigrationLogLevel.INFO,
                 "data check " + sourceTable + " -> " + targetTable
                         + ": source=" + sourceRows + ", target=" + targetRows
@@ -217,140 +189,16 @@ public final class DataCheckRunner {
                         + ", sourceOnly=" + sourceOnlyRows + ", targetOnly=" + targetOnlyRows);
     }
 
-    private static void maybeFlush(
+    /** @see DataCheckRows#applyDiff */
+    static void applyDiff(
             InconsistentRowStore store,
             TableId table,
-            List<java.lang.String> consistent,
-            List<java.lang.String> different,
-            List<java.lang.String> sourceOnly,
-            List<java.lang.String> targetOnly) {
-        if (consistent.size() >= FLUSH_ROWS
-                || different.size() >= FLUSH_ROWS
-                || sourceOnly.size() >= FLUSH_ROWS
-                || targetOnly.size() >= FLUSH_ROWS) {
-            flush(store, table, consistent, different, sourceOnly, targetOnly);
-        }
+            DiffResult diff,
+            List<String> sourcePks) {
+        DataCheckRows.applyDiff(store, table, diff, sourcePks);
     }
 
-    private static void flush(
-            InconsistentRowStore store,
-            TableId table,
-            List<java.lang.String> consistent,
-            List<java.lang.String> different,
-            List<java.lang.String> sourceOnly,
-            List<java.lang.String> targetOnly) {
-        if (!consistent.isEmpty()) {
-            store.markConsistent(table, consistent);
-            consistent.clear();
-        }
-        if (!different.isEmpty()) {
-            store.markInconsistent(table, different, InconsistentRowStore.FLAG_DIFFERENT);
-            different.clear();
-        }
-        if (!sourceOnly.isEmpty()) {
-            store.markInconsistent(table, sourceOnly, InconsistentRowStore.FLAG_SOURCE_ONLY);
-            sourceOnly.clear();
-        }
-        if (!targetOnly.isEmpty()) {
-            store.markInconsistent(table, targetOnly, InconsistentRowStore.FLAG_TARGET_ONLY);
-            targetOnly.clear();
-        }
-    }
-
-    private static PreparedStatement streamingStatement(
-            java.sql.Connection connection, java.lang.String sql, DatabaseType type)
-            throws SQLException {
-        PreparedStatement statement = connection.prepareStatement(
-                sql, ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_READ_ONLY);
-        // MySQL streams row by row only with Integer.MIN_VALUE; PostgreSQL uses the fetch size as
-        // its cursor batch size.
-        statement.setFetchSize(type == DatabaseType.MYSQL ? Integer.MIN_VALUE : 1000);
-        return statement;
-    }
-
-    private static java.lang.String selectSql(
-            TableId tableId, TableDefinition definition, JdbcConnection connection)
-            throws SQLException {
-        java.lang.String quote = quoteString(connection);
-        StringBuilder sql = new StringBuilder("SELECT ");
-        List<ColumnDefinition> columns = definition.getColumnDefinitions();
-        for (int i = 0; i < columns.size(); i++) {
-            if (i > 0) {
-                sql.append(", ");
-            }
-            sql.append(identifier(columns.get(i).getName(), quote));
-        }
-        sql.append(" FROM ").append(qualifiedName(tableId, quote));
-        List<java.lang.String> primaryKey = definition.getPrimaryKeyColumNames();
-        sql.append(" ORDER BY ");
-        for (int i = 0; i < primaryKey.size(); i++) {
-            if (i > 0) {
-                sql.append(", ");
-            }
-            sql.append(identifier(primaryKey.get(i), quote));
-        }
-        return sql.toString();
-    }
-
-    private static int[] primaryKeyIndexes(TableDefinition definition) {
-        List<ColumnDefinition> columns = definition.getColumnDefinitions();
-        List<java.lang.String> primaryKey = definition.getPrimaryKeyColumNames();
-        int[] indexes = new int[primaryKey.size()];
-        for (int i = 0; i < primaryKey.size(); i++) {
-            indexes[i] = -1;
-            for (int j = 0; j < columns.size(); j++) {
-                if (columns.get(j).getName().equalsIgnoreCase(primaryKey.get(i))) {
-                    indexes[i] = j;
-                    break;
-                }
-            }
-            if (indexes[i] < 0) {
-                throw new IllegalStateException(
-                        "primary key column not found in metadata: " + primaryKey.get(i));
-            }
-        }
-        return indexes;
-    }
-
-    private static java.lang.String primaryKey(ResultSet result, int[] indexes)
-            throws SQLException {
-        List<java.lang.String> values = new ArrayList<>(indexes.length);
-        for (int index : indexes) {
-            values.add(result.getString(index + 1));
-        }
-        return InconsistentRowStore.encode(values);
-    }
-
-    private static java.lang.String quoteString(JdbcConnection connection) throws SQLException {
-        java.lang.String quote = connection.connection().getMetaData().getIdentifierQuoteString();
-        return quote == null || quote.isBlank() ? "" : quote.trim();
-    }
-
-    private static java.lang.String qualifiedName(TableId tableId, java.lang.String quote) {
-        if (tableId.getSchema() == null || tableId.getSchema().isBlank()) {
-            return identifier(tableId.getTable(), quote);
-        }
-        return identifier(tableId.getSchema(), quote) + "." + identifier(tableId.getTable(), quote);
-    }
-
-    private static java.lang.String identifier(java.lang.String name, java.lang.String quote) {
-        if (quote == null || quote.isEmpty()) {
-            return name;
-        }
-        return quote + name.replace(quote, quote + quote) + quote;
-    }
-
-    /** 64-bit FNV-1a: cheap, allocation free, and collision-safe enough for a per-row comparison. */
-    private static long hash(CharSequence text) {
-        long hash = 0xcbf29ce484222325L;
-        for (int i = 0; i < text.length(); i++) {
-            hash ^= text.charAt(i);
-            hash *= 0x100000001b3L;
-        }
-        return hash;
-    }
-
-    private static void warn(DataCheckParam param, TableId table, java.lang.String message) {
+    private static void warn(DataCheckParam param, TableId table, String message) {
         param.logListener().emit(MigrationLogLevel.WARNING,
                 "data check skipped for " + table + ": " + message);
     }

@@ -1,27 +1,47 @@
 package io.opendrs.engine.datacheck.utils;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 public class HashBucket {
 
-    private long hashCode;
-    private final Map<String, Long> primaryKeyHashMap;  // pk -> 该行的 hash
+    private long bucketHash;
+    private final Map<String, Long> primaryKeyHashMap; // pk -> 该行的 hash
 
     public HashBucket() {
-        hashCode = 0;
+        bucketHash = 0;
         primaryKeyHashMap = new HashMap<>();
     }
 
-    public void add(String pk, long rowHash) {
+    /**
+     * 混入主键 hash，避免仅异或 rowHash 时交换值被误判为一致。
+     */
+    static long mix(long pkHash, long rowHash) {
+        long x = pkHash * 0x9E3779B97F4A7C15L;
+        x ^= rowHash;
+        // murmur3 fmix64
+        x ^= (x >>> 33);
+        x *= 0xff51afd7ed558ccdL;
+        x ^= (x >>> 33);
+        x *= 0xc4ceb9fe1a85ec53L;
+        x ^= (x >>> 33);
+        return x;
+    }
+
+    public void add(String pk, long pkHash, long rowHash) {
         Long old = primaryKeyHashMap.put(pk, rowHash);
         if (old != null) {
-            hashCode ^= old;          // 先去掉旧值
+            bucketHash ^= mix(pkHash, old); // 先去掉旧值
         }
-        hashCode ^= rowHash;          // 再加入新值
+        bucketHash ^= mix(pkHash, rowHash); // 再加入新值
     }
 
     public void clear() {
-        hashCode = 0;
+        bucketHash = 0;
         primaryKeyHashMap.clear();
     }
 
@@ -34,7 +54,7 @@ public class HashBucket {
         }
 
         // 快速路径
-        if (b1.hashCode == b2.hashCode
+        if (b1.bucketHash == b2.bucketHash
                 && b1.primaryKeyHashMap.size() == b2.primaryKeyHashMap.size()) {
             return DiffResult.empty();
         }

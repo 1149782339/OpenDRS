@@ -146,18 +146,21 @@ public class DebeziumCdcEngineFactory implements CdcEngineFactory {
                 lagListener,
                 checkpointListener);
         KafkaProduceChangeConsumer produceConsumer =
-                new KafkaProduceChangeConsumer(spec.taskId(), config, kafka, snapshotApplyHandler);
-        // INCREMENTAL replay from Kafka; full-load checkpoints already handled above.
+                new KafkaProduceChangeConsumer(spec.taskId(), config, kafka, snapshotApplyHandler, lagListener);
+        // INCREMENTAL replay from Kafka: do not emit capture positions or increment
+        // opendrs_capture_events_total (the produce path already did both).
         BatchApplyHandler replayApplyHandler = new BatchApplyHandler(
                 spec.taskId(),
                 spec.pipelineId(),
                 replayConfig(spec),
                 logListener,
                 lagListener,
-                FullLoadCheckpointListener.NONE);
+                FullLoadCheckpointListener.NONE,
+                false,
+                false);
         AppliedOffsetStore appliedStore = new JdbcAppliedOffsetStore(metadataDataSource);
         KafkaReplayRunner replayRunner =
-                new KafkaReplayRunner(spec.pipelineId(), kafka, replayApplyHandler, appliedStore);
+                new KafkaReplayRunner(spec.pipelineId(), kafka, replayApplyHandler, appliedStore, lagListener);
         replayRunner.start();
         AutoCloseable resources = () -> {
             try {

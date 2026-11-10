@@ -171,19 +171,21 @@ public class DataCheckTaskService {
 
     public void start(long id) {
         DataCheckTaskRow task = require(id);
-        if (task.state() != null) {
+        TaskState state = task.state();
+        // First start (state is null) or resume after a clean stop / a failed incremental run.
+        if (state != null && state != TaskState.STOPPED && state != TaskState.FAILED) {
             throw ExceptionFactory.create(
-                    ErrorCode.TASK_CONFLICT, ErrorMessage.TASK_CANNOT_START_FROM, task.state());
+                    ErrorCode.TASK_CONFLICT, ErrorMessage.TASK_CANNOT_START_FROM, id, state);
         }
-        if (repository.casState(id, null, TaskState.STARTING) == 0) {
+        if (repository.casState(id, state, TaskState.STARTING) == 0) {
             throw ExceptionFactory.create(
-                    ErrorCode.TASK_CONFLICT, ErrorMessage.TASK_CANNOT_START_FROM, "STARTING");
+                    ErrorCode.TASK_CONFLICT, ErrorMessage.TASK_CANNOT_START_FROM, id, "STARTING");
         }
         DataCheckCoordinator coordinator = coordinatorFactory.create(id);
         if (!registry.tryRegister(coordinator)) {
             repository.markFailed(id, "another check is already running for this task");
             throw ExceptionFactory.create(
-                    ErrorCode.TASK_CONFLICT, ErrorMessage.TASK_CANNOT_START_FROM, "RUNNING");
+                    ErrorCode.TASK_CONFLICT, ErrorMessage.TASK_CANNOT_START_FROM, id, "RUNNING");
         }
         coordinatorExecutor.execute(coordinator);
     }

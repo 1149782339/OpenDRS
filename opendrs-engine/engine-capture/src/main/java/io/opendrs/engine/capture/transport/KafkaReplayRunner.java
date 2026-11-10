@@ -1,6 +1,7 @@
 package io.opendrs.engine.capture.transport;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.opendrs.common.progress.MigrationLagListener;
 import io.opendrs.engine.capture.BatchApplyHandler;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -51,12 +52,15 @@ public final class KafkaReplayRunner implements AutoCloseable, Runnable {
     private final SourceRecordEnvelopeCodec codec;
     private final Consumer<String, byte[]> consumer;
     private final LongSupplier nanoTime;
+    private final MigrationLagListener lagListener;
     private final AtomicBoolean running = new AtomicBoolean(true);
     private final Thread thread;
 
     private final Map<TopicPartition, OffsetAndMetadata> pendingOffsets = new HashMap<>();
     private PendingApplied pendingApplied;
     private long lastFlushNanos;
+    private long lastLogEndNanos;
+    private boolean seededCommitted;
 
     @FunctionalInterface
     interface BatchApplyFn {
@@ -71,8 +75,17 @@ public final class KafkaReplayRunner implements AutoCloseable, Runnable {
             KafkaTransportConfig transport,
             BatchApplyHandler applyHandler,
             AppliedOffsetStore appliedOffsetStore) {
+        this(pipelineId, transport, applyHandler, appliedOffsetStore, MigrationLagListener.NONE);
+    }
+
+    public KafkaReplayRunner(
+            long pipelineId,
+            KafkaTransportConfig transport,
+            BatchApplyHandler applyHandler,
+            AppliedOffsetStore appliedOffsetStore,
+            MigrationLagListener lagListener) {
         this(pipelineId, transport, applyHandler::applyBatch, applyHandler, appliedOffsetStore,
-                new SourceRecordEnvelopeCodec(), createConsumer(transport), System::nanoTime);
+                new SourceRecordEnvelopeCodec(), createConsumer(transport), System::nanoTime, lagListener);
     }
 
     KafkaReplayRunner(
@@ -84,6 +97,20 @@ public final class KafkaReplayRunner implements AutoCloseable, Runnable {
             SourceRecordEnvelopeCodec codec,
             Consumer<String, byte[]> consumer,
             LongSupplier nanoTime) {
+        this(pipelineId, transport, applyFn, applyClose, appliedOffsetStore, codec, consumer, nanoTime,
+                MigrationLagListener.NONE);
+    }
+
+    KafkaReplayRunner(
+            long pipelineId,
+            KafkaTransportConfig transport,
+            BatchApplyFn applyFn,
+            AutoCloseable applyClose,
+            AppliedOffsetStore appliedOffsetStore,
+            SourceRecordEnvelopeCodec codec,
+            Consumer<String, byte[]> consumer,
+            LongSupplier nanoTime,
+            MigrationLagListener lagListener) {
         this.pipelineId = pipelineId;
         this.transport = transport;
         this.applyFn = applyFn;
@@ -92,7 +119,9 @@ public final class KafkaReplayRunner implements AutoCloseable, Runnable {
         this.codec = codec;
         this.consumer = consumer;
         this.nanoTime = nanoTime == null ? System::nanoTime : nanoTime;
+        this.lagListener = lagListener == null ? MigrationLagListener.NONE : lagListener;
         this.lastFlushNanos = this.nanoTime.getAsLong();
+        this.lastLogEndNanos = 0L;
         this.thread = new Thread(this, "opendrs-kafka-replay-" + transport.pipelinePublicId());
         this.thread.setDaemon(true);
     }
@@ -130,6 +159,7 @@ public final class KafkaReplayRunner implements AutoCloseable, Runnable {
                     }
                     applyFn.applyBatch(batch);
                     for (ConsumerRecord<String, byte[]> record : records) {
+                        lagListener.emitReplayed(record.partition(), record.offset(), record.timestamp());
                         pendingOffsets.put(
                                 new TopicPartition(record.topic(), record.partition()),
                                 new OffsetAndMetadata(record.offset() + 1));
@@ -142,6 +172,7 @@ public final class KafkaReplayRunner implements AutoCloseable, Runnable {
                                 sourceOffsetJson, last.topic(), last.partition(), last.offset());
                     }
                 }
+                publishLogEndIfDue();
                 // Interval-only flush (also runs on empty polls so the timer advances while idle).
                 flushIfDue(false);
             }
@@ -177,6 +208,32 @@ public final class KafkaReplayRunner implements AutoCloseable, Runnable {
         pendingApplied = new PendingApplied(sourceOffsetJson, topic, partition, offset);
     }
 
+    private static final long LOG_END_INTERVAL_NANOS = 1_000_000_000L;
+
+    /**
+     * Refresh topic log-end (exclusive) about once a second. No timestamp seek: offsets
+     * only. Combined with locally tracked produce/apply CreateTime in the lag registry.
+     */
+    private void publishLogEndIfDue() {
+        long now = nanoTime.getAsLong();
+        if (lastLogEndNanos > 0 && now - lastLogEndNanos < LOG_END_INTERVAL_NANOS) {
+            return;
+        }
+        var assignment = consumer.assignment();
+        if (assignment == null || assignment.isEmpty()) {
+            return;
+        }
+        seedAppliedFromCommitted(assignment);
+        lastLogEndNanos = now;
+        long atMs = System.currentTimeMillis();
+        Map<TopicPartition, Long> end = consumer.endOffsets(assignment);
+        for (Map.Entry<TopicPartition, Long> entry : end.entrySet()) {
+            if (entry.getValue() != null) {
+                lagListener.emitLogEnd(entry.getKey().partition(), entry.getValue(), atMs);
+            }
+        }
+    }
+
     /**
      * Persist pending applied row then commit consumer offsets. {@code force=true} uses
      * {@code commitSync} (shutdown); otherwise {@code commitAsync} after {@link #COMMIT_INTERVAL}.
@@ -185,6 +242,28 @@ public final class KafkaReplayRunner implements AutoCloseable, Runnable {
      * commit can be retried on the next tick or by the final sync flush. If newer applies land
      * while a commit is in flight, only the offsets that match the committed map are dropped.
      */
+    /**
+     * After restart the in-memory applied offset is empty while topic log-end is not,
+     * which would report a huge backlog until the first apply. Seed from the consumer
+     * group's already-committed next-to-read offset (no timestamp).
+     */
+    private void seedAppliedFromCommitted(java.util.Set<TopicPartition> assignment) {
+        if (seededCommitted) {
+            return;
+        }
+        Map<TopicPartition, OffsetAndMetadata> committed = consumer.committed(assignment);
+        if (committed == null) {
+            return;
+        }
+        for (Map.Entry<TopicPartition, OffsetAndMetadata> entry : committed.entrySet()) {
+            OffsetAndMetadata meta = entry.getValue();
+            if (meta != null && meta.offset() > 0L) {
+                lagListener.emitReplayed(entry.getKey().partition(), meta.offset() - 1L, 0L);
+            }
+        }
+        seededCommitted = true;
+    }
+
     void flushIfDue(boolean force) {
         if (pendingApplied == null || pendingOffsets.isEmpty()) {
             return;

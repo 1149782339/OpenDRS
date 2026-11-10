@@ -233,9 +233,68 @@ public class DataCheckTaskRepository {
     }
 
     public void deleteTask(long id) {
+        jdbc.update("DELETE FROM datacheck_offsets WHERE datacheck_task_id = ?", id);
         jdbc.update("DELETE FROM datacheck_table_tasks WHERE datacheck_task_id = ?", id);
         jdbc.update("DELETE FROM datacheck_tasks WHERE id = ?", id);
         dropResultTable(id);
+    }
+
+    public void updateTableLag(long taskId, String sourceTableId, long lagMs) {
+        jdbc.update(
+                "UPDATE datacheck_table_tasks SET lag_ms = ?, updated_at = CURRENT_TIMESTAMP"
+                        + " WHERE datacheck_task_id = ? AND source_table_id = ?",
+                lagMs, taskId, sourceTableId);
+    }
+
+    public void updateTaskLag(long taskId, long lagMs) {
+        jdbc.update(
+                "UPDATE datacheck_tasks SET lag_ms = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                lagMs, taskId);
+    }
+
+    public void markTableIncrementalRunning(long taskId, String sourceTableId) {
+        jdbc.update(
+                "UPDATE datacheck_table_tasks SET phase = 'INCREMENTAL', status = 'RUNNING',"
+                        + " error_message = NULL, finished_at = NULL,"
+                        + " started_at = COALESCE(started_at, CURRENT_TIMESTAMP),"
+                        + " updated_at = CURRENT_TIMESTAMP"
+                        + " WHERE datacheck_task_id = ? AND source_table_id = ?",
+                taskId, sourceTableId);
+    }
+
+    public List<OffsetRow> findOffsets(long taskId) {
+        return jdbc.query(
+                "SELECT topic, partition_id, start_offset, consumed_offset"
+                        + " FROM datacheck_offsets WHERE datacheck_task_id = ?"
+                        + " ORDER BY topic, partition_id",
+                (rs, rowNum) -> new OffsetRow(
+                        rs.getString("topic"),
+                        rs.getInt("partition_id"),
+                        rs.getLong("start_offset"),
+                        longOrNull(rs, "consumed_offset")),
+                taskId);
+    }
+
+    /** Inserts start offsets only for partitions that do not already have a row. */
+    public void ensureStartOffsets(long taskId, String topic, int partition, long startOffset) {
+        int updated = jdbc.update(
+                "UPDATE datacheck_offsets SET updated_at = CURRENT_TIMESTAMP"
+                        + " WHERE datacheck_task_id = ? AND topic = ? AND partition_id = ?",
+                taskId, topic, partition);
+        if (updated == 0) {
+            jdbc.update(
+                    "INSERT INTO datacheck_offsets"
+                            + " (datacheck_task_id, topic, partition_id, start_offset, consumed_offset)"
+                            + " VALUES (?, ?, ?, ?, NULL)",
+                    taskId, topic, partition, startOffset);
+        }
+    }
+
+    public void saveConsumedOffset(long taskId, String topic, int partition, long consumedOffset) {
+        jdbc.update(
+                "UPDATE datacheck_offsets SET consumed_offset = ?, updated_at = CURRENT_TIMESTAMP"
+                        + " WHERE datacheck_task_id = ? AND topic = ? AND partition_id = ?",
+                consumedOffset, taskId, topic, partition);
     }
 
     public void dropResultTable(long taskId) {
@@ -394,5 +453,9 @@ public class DataCheckTaskRepository {
             String errorMessage,
             Instant startedAt,
             Instant finishedAt) {
+    }
+
+    public record OffsetRow(
+            String topic, int partition, long startOffset, Long consumedOffset) {
     }
 }

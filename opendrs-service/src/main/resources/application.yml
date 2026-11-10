@@ -58,4 +58,7 @@ opendrs:
   datacheck:
     # Tables checked in parallel within one check task. The coordinator pool itself is fixed at 4.
     concurrency: ${OPENDRS_DATACHECK_CONCURRENCY:8}
+    # How long incremental check waits for the replay group to apply a batch before requeueing.
+    wait-for-target-timeout: ${OPENDRS_DATACHECK_WAIT_TIMEOUT:5m}
+    wait-for-target-poll: ${OPENDRS_DATACHECK_WAIT_POLL:1s}
 

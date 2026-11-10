@@ -45,6 +45,8 @@ public final class BatchApplyHandler implements AutoCloseable {
     private final MigrationLagListener positionListener;
     private final FullLoadCheckpointListener checkpointListener;
     private final long checkpointRetryBackoffMs;
+    private final boolean reportCapturePosition;
+    private final boolean countCapturedEvents;
     private final AtomicBoolean running = new AtomicBoolean(true);
 
     public BatchApplyHandler(
@@ -54,8 +56,25 @@ public final class BatchApplyHandler implements AutoCloseable {
             MigrationLogListener logListener,
             MigrationLagListener positionListener,
             FullLoadCheckpointListener checkpointListener) {
+        this(taskId, pipelineId, config, logListener, positionListener, checkpointListener, true, true);
+    }
+
+    /**
+     * @param reportCapturePosition when false (KAFKA incremental replay), capture binlog
+     *     position and the capture-events counter are left to the produce path
+     * @param countCapturedEvents when false, {@code metrics.captured} is not incremented here
+     */
+    public BatchApplyHandler(
+            long taskId,
+            long pipelineId,
+            ReplayConfig config,
+            MigrationLogListener logListener,
+            MigrationLagListener positionListener,
+            FullLoadCheckpointListener checkpointListener,
+            boolean reportCapturePosition,
+            boolean countCapturedEvents) {
         this(taskId, pipelineId, config, logListener, positionListener, checkpointListener, null,
-                CHECKPOINT_RETRY_BACKOFF_MS);
+                CHECKPOINT_RETRY_BACKOFF_MS, reportCapturePosition, countCapturedEvents);
     }
 
     /**
@@ -70,6 +89,21 @@ public final class BatchApplyHandler implements AutoCloseable {
             FullLoadCheckpointListener checkpointListener,
             Applier<Collection<SourceRecord>> applier,
             long checkpointRetryBackoffMs) {
+        this(taskId, pipelineId, config, logListener, positionListener, checkpointListener, applier,
+                checkpointRetryBackoffMs, true, true);
+    }
+
+    BatchApplyHandler(
+            long taskId,
+            long pipelineId,
+            ReplayConfig config,
+            MigrationLogListener logListener,
+            MigrationLagListener positionListener,
+            FullLoadCheckpointListener checkpointListener,
+            Applier<Collection<SourceRecord>> applier,
+            long checkpointRetryBackoffMs,
+            boolean reportCapturePosition,
+            boolean countCapturedEvents) {
         this.taskId = taskId;
         this.pipelineId = pipelineId;
         this.config = config;
@@ -85,6 +119,8 @@ public final class BatchApplyHandler implements AutoCloseable {
             this.applier = new ChangeEventApplier(new RoutingApplier(context, errorHandler, config), config);
         }
         this.checkpointRetryBackoffMs = checkpointRetryBackoffMs;
+        this.reportCapturePosition = reportCapturePosition;
+        this.countCapturedEvents = countCapturedEvents;
         this.applier.prepare(TaskContext.empty());
     }
 
@@ -97,10 +133,11 @@ public final class BatchApplyHandler implements AutoCloseable {
         if (batch == null || batch.isEmpty()) {
             return;
         }
-        config.getMetrics().captured(config.getDirection(), taskId, batch.size());
-        String capturedPosition = positionOf(batch);
-        if (capturedPosition != null) {
-            positionListener.emitCaptured(capturedPosition, System.currentTimeMillis());
+        if (countCapturedEvents) {
+            config.getMetrics().captured(config.getDirection(), taskId, batch.size());
+        }
+        if (reportCapturePosition) {
+            reportCaptured(batch);
         }
         try {
             errorHandler.checkFailure();
@@ -187,6 +224,46 @@ public final class BatchApplyHandler implements AutoCloseable {
     }
 
 
+    private void reportCaptured(List<SourceRecord> batch) {
+        String capturedPosition = positionOf(batch);
+        long now = System.currentTimeMillis();
+        Long eventTime = lastStreamingEventTimeMs(batch);
+        if (capturedPosition != null) {
+            if (eventTime != null) {
+                positionListener.emitCapturedEvent(capturedPosition, eventTime, now);
+            }
+            else {
+                positionListener.emitCaptured(capturedPosition, now);
+            }
+        }
+        else if (eventTime != null) {
+            positionListener.emitCapturedEvent(null, eventTime, now);
+        }
+        if (eventTime == null && hasHeartbeat(batch)) {
+            positionListener.emitHeartbeat(now);
+        }
+    }
+
+    private static Long lastStreamingEventTimeMs(List<SourceRecord> batch) {
+        Long newest = null;
+        for (SourceRecord record : batch) {
+            Long eventTime = SourceEventTimes.streamingEventTimeMs(record);
+            if (eventTime != null && (newest == null || eventTime > newest)) {
+                newest = eventTime;
+            }
+        }
+        return newest;
+    }
+
+    private static boolean hasHeartbeat(List<SourceRecord> batch) {
+        for (SourceRecord record : batch) {
+            if (SourceEventTimes.isHeartbeat(record)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private void emitLag(List<SourceRecord> batch) {
         long newest = Long.MIN_VALUE;
         boolean heartbeat = false;
@@ -208,7 +285,7 @@ public final class BatchApplyHandler implements AutoCloseable {
         }
     }
 
-    static String positionOf(List<SourceRecord> batch) {
+    public static String positionOf(List<SourceRecord> batch) {
         for (int i = batch.size() - 1; i >= 0; i--) {
             Object file = batch.get(i).sourceOffset().get("file");
             Object pos = batch.get(i).sourceOffset().get("pos");

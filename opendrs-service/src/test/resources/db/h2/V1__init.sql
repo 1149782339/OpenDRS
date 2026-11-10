@@ -109,3 +109,54 @@ CREATE TABLE task_snapshot_complete_tables (
   PRIMARY KEY (pipeline_id, table_name),
   CONSTRAINT fk_snapshot_complete_pipeline FOREIGN KEY (pipeline_id) REFERENCES task_pipelines (id)
 );
+
+
+CREATE TABLE datacheck_tasks (
+  id                BIGINT        NOT NULL AUTO_INCREMENT,
+  public_id         VARCHAR(36)   NOT NULL,
+  migration_task_id BIGINT        NOT NULL,
+  pipeline_id       BIGINT        NULL,
+  name              VARCHAR(128)  NOT NULL,
+  mode              VARCHAR(32)   NOT NULL,
+  state             VARCHAR(32)   NULL,
+  options           JSON          NULL,
+  lag_ms            BIGINT        NULL,
+  error_message     VARCHAR(1024) NULL,
+  created_at        DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at        DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  CONSTRAINT uk_datacheck_public_id UNIQUE (public_id),
+  UNIQUE KEY uk_datacheck_task_name (migration_task_id, name),
+  CONSTRAINT fk_datacheck_migration_task FOREIGN KEY (migration_task_id)
+    REFERENCES migration_tasks (id),
+  CONSTRAINT fk_datacheck_pipeline FOREIGN KEY (pipeline_id)
+    REFERENCES task_pipelines (id)
+);
+
+CREATE TABLE datacheck_table_tasks (
+  datacheck_task_id BIGINT        NOT NULL,
+  source_table_id   VARCHAR(128)  NOT NULL,
+  target_table_id   VARCHAR(128)  NOT NULL,
+  phase             VARCHAR(16)   NOT NULL,
+  status            VARCHAR(16)   NOT NULL,
+  lag_ms            BIGINT        NULL,
+  error_message     VARCHAR(1024) NULL,
+  started_at        DATETIME      NULL,
+  finished_at       DATETIME      NULL,
+  updated_at        DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (datacheck_task_id, source_table_id),
+  CONSTRAINT fk_datacheck_table_task FOREIGN KEY (datacheck_task_id)
+    REFERENCES datacheck_tasks (id)
+);
+
+CREATE TABLE datacheck_offsets (
+  datacheck_task_id BIGINT        NOT NULL,
+  topic             VARCHAR(255)  NOT NULL,
+  partition_id      INT           NOT NULL,
+  start_offset      BIGINT        NOT NULL,
+  consumed_offset   BIGINT        NULL,
+  updated_at        DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (datacheck_task_id, topic, partition_id),
+  CONSTRAINT fk_datacheck_offset_task FOREIGN KEY (datacheck_task_id)
+    REFERENCES datacheck_tasks (id)
+);
