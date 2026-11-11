@@ -5,11 +5,13 @@ import io.opendrs.common.error.ExceptionFactory;
 import io.opendrs.common.i18n.ErrorMessage;
 import io.opendrs.engine.common.log.MigrationLogLevel;
 import io.opendrs.engine.common.metadata.DatabaseType;
+import io.opendrs.engine.capture.transport.CdcTransportSpec;
 import io.opendrs.migration.api.request.CreateMigrationTaskRequest;
 import io.opendrs.migration.api.request.MigrationOptions;
 import io.opendrs.migration.api.response.MigrationStatusResponse;
 import io.opendrs.migration.api.response.MigrationTaskResponse;
 import io.opendrs.migration.api.response.MigrationTaskSummary;
+import io.opendrs.migration.config.OpenDrsTransportProperties;
 import io.opendrs.migration.domain.ConnectionInfo;
 import io.opendrs.migration.domain.MigrationPhase;
 import io.opendrs.engine.core.TaskState;
@@ -48,6 +50,7 @@ public class MigrationTaskService {
     private final MigrationLogService logService;
     private final MigrationLagRegistry lagRegistry;
     private final SourcePositionQuery sourcePositionQuery;
+    private final OpenDrsTransportProperties transportProperties;
     private final TransactionTemplate transactionTemplate;
 
     public MigrationTaskService(
@@ -63,6 +66,7 @@ public class MigrationTaskService {
             MigrationLogService logService,
             MigrationLagRegistry lagRegistry,
             SourcePositionQuery sourcePositionQuery,
+            OpenDrsTransportProperties transportProperties,
             TransactionTemplate transactionTemplate) {
         this.taskMapper = taskMapper;
         this.connectionMapper = connectionMapper;
@@ -76,6 +80,7 @@ public class MigrationTaskService {
         this.logService = logService;
         this.lagRegistry = lagRegistry;
         this.sourcePositionQuery = sourcePositionQuery;
+        this.transportProperties = transportProperties;
         this.transactionTemplate = transactionTemplate;
     }
 
@@ -431,10 +436,24 @@ public class MigrationTaskService {
                 task.getSourceConnectionId(),
                 task.getTargetConnectionId(),
                 task.getOptionsJson(),
+                effectiveTransport(task.getOptionsJson()),
                 task.getPhase(),
                 task.getState(),
                 task.getCreatedAt(),
                 task.getUpdatedAt());
+    }
+
+    /**
+     * Same priority as {@code MigrationCoordinator}: the task option wins, otherwise the
+     * process-wide channel; DIRECT when there is no properties bean (unit tests).
+     */
+    private CdcTransportSpec effectiveTransport(MigrationOptions options) {
+        if (options != null && options.cdcTransportSpec() != null) {
+            return options.cdcTransportSpec();
+        }
+        return transportProperties != null
+                ? transportProperties.channelEnum()
+                : CdcTransportSpec.DIRECT;
     }
 
     private MigrationTaskSummary toSummary(MigrationTask task) {

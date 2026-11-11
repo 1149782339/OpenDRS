@@ -397,6 +397,8 @@ export default {
       modeIncremental: 'Incremental',
       modeFullIncremental: 'Full + incremental',
       incrementalHint: 'Incremental modes require the migration task to use the KAFKA transport',
+      incrementalUnavailable:
+        'This migration task uses the DIRECT transport, so only a full check is available; incremental checks require KAFKA',
       objects: 'Objects',
       submit: 'OK',
       cancel: 'Cancel',

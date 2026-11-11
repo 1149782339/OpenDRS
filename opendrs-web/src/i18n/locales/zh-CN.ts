@@ -392,6 +392,7 @@ export default {
       modeIncremental: '增量',
       modeFullIncremental: '全量+增量',
       incrementalHint: '增量方式需要迁移任务使用 KAFKA 通道',
+      incrementalUnavailable: '当前迁移任务使用 DIRECT 通道，只能做全量校验；增量校验需要 KAFKA 通道',
       objects: '对象选择',
       submit: '确定',
       cancel: '否',

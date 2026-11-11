@@ -1,5 +1,6 @@
 package io.opendrs.migration.api.response;
 
+import io.opendrs.engine.capture.transport.CdcTransportSpec;
 import io.opendrs.migration.api.request.ConnectionInfo;
 import io.opendrs.migration.api.request.MigrationOptions;
 import io.opendrs.migration.domain.MigrationPhase;
@@ -18,6 +19,12 @@ public record MigrationTaskResponse(
         Long sourceConnectionId,
         Long targetConnectionId,
         MigrationOptions options,
+        /**
+         * Effective incremental channel: the task's {@code options.cdcTransportSpec} when set,
+         * otherwise the process-wide {@code opendrs.transport.channel}. Data checks need it to
+         * reject incremental modes on DIRECT before the task is created.
+         */
+        CdcTransportSpec transportChannel,
         MigrationPhase phase,
         TaskState state,
         Instant createdAt,

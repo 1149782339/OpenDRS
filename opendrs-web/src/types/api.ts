@@ -3,6 +3,8 @@
 export type DbType = 'MYSQL' | 'POSTGRESQL' | 'ORACLE'
 
 export type MigrationMode = 'FULL_ONLY' | 'INCREMENTAL_ONLY' | 'FULL_AND_INCREMENTAL'
+/** Effective CDC channel of a migration task: task option, else the service-wide default. */
+export type TransportChannel = 'DIRECT' | 'KAFKA'
 
 export type MigrationPhase =
   | 'CREATED'
@@ -166,6 +168,8 @@ export interface MigrationTaskResponse {
   sourceConnectionId: number
   targetConnectionId: number
   options: MigrationOptions
+  /** Resolved by the server: task cdcTransportSpec or the process-wide channel. */
+  transportChannel: TransportChannel
   phase: MigrationPhase
   state: TaskState | null
   createdAt: string

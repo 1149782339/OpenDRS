@@ -8,7 +8,7 @@ import type { DataCheckMode } from '@/types/datacheck'
 import type { SelectionEntry } from '@/types/selection'
 import { ArrowLeft } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 
@@ -24,6 +24,8 @@ const loadError = ref('')
 const name = ref(`CHK-${Date.now()}`)
 const compareType = ref('CONTENT')
 const compareMode = ref<DataCheckMode>('FULL_ONLY')
+/** 增量校验走 Kafka 变更流；迁移任务不是 KAFKA 通道时后端启动必失败，前端直接禁选。 */
+const incrementalAllowed = computed(() => task.value?.transportChannel !== 'DIRECT')
 const entries = ref<SelectionEntry[]>([])
 const submitting = ref(false)
 
@@ -70,6 +72,10 @@ async function submit() {
   }
   if (tables.length === 0) {
     ElMessage.warning(t('datacheck.createPage.needTables'))
+    return
+  }
+  if (compareMode.value !== 'FULL_ONLY' && !incrementalAllowed.value) {
+    ElMessage.warning(t('datacheck.createPage.incrementalUnavailable'))
     return
   }
   submitting.value = true
@@ -150,14 +156,17 @@ onMounted(loadTask)
               <el-radio-button value="FULL_ONLY">
                 {{ t('datacheck.createPage.modeFull') }}
               </el-radio-button>
-              <el-radio-button value="INCREMENTAL_ONLY">
+              <el-radio-button value="INCREMENTAL_ONLY" :disabled="!incrementalAllowed">
                 {{ t('datacheck.createPage.modeIncremental') }}
               </el-radio-button>
-              <el-radio-button value="FULL_AND_INCREMENTAL">
+              <el-radio-button value="FULL_AND_INCREMENTAL" :disabled="!incrementalAllowed">
                 {{ t('datacheck.createPage.modeFullIncremental') }}
               </el-radio-button>
             </el-radio-group>
-            <span v-if="compareMode !== 'FULL_ONLY'" class="hint">
+            <span v-if="!incrementalAllowed" class="hint">
+              {{ t('datacheck.createPage.incrementalUnavailable') }}
+            </span>
+            <span v-else-if="compareMode !== 'FULL_ONLY'" class="hint">
               {{ t('datacheck.createPage.incrementalHint') }}
             </span>
           </el-form-item>
