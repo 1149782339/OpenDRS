@@ -47,6 +47,12 @@ public final class DebeziumEngineConfig {
      */
     static final String HEARTBEAT_INTERVAL_MS = "10000";
 
+    /**
+     * Session isolation of every Debezium JDBC connection; see the comment where it is set.
+     * Package-private for the config test.
+     */
+    static final String SNAPSHOT_SESSION_ISOLATION = "SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED";
+
     private DebeziumEngineConfig() {
     }
 
@@ -128,6 +134,15 @@ public final class DebeziumEngineConfig {
         // 原缝隙内的事务变为快照+增量各到一次（重复），由 sink 的 dup-key→upsert 兜底消化。
         props.setProperty("snapshot.query.mode", "custom");
         props.setProperty("snapshot.query.mode.custom.name", SafeSelectAllSnapshotQuery.class.getName());
+        // 同一缝隙的主连接版本：快照主连接在 step 2（SHOW DATABASES / SHOW FULL TABLES，
+        // MySQL 8 的数据字典读）就已在 autoCommit=false + RR 下打开 read view，早于 step 4 记录 P0；
+        // 该连接还负责计算分片边界（末片上界 = 它看到的主键最大值）并读取部分分片，于是两者之间
+        // 提交的事务快照读不到、流式也不发：新插入的行和该连接分片内的更新永久丢失。
+        // 会话初始为 READ COMMITTED：step 2 所在事务每条语句各自取 read view（step 3 的
+        // SET SESSION ... REPEATABLE READ 只影响之后的新事务），池连接复制的也是 RC；
+        // 每个分片本就是单条 SELECT，读到的都是 P0 之后的数据——缝隙变成重复，由 upsert 兜底。
+        // （驱动层 queryInterceptors 会被 Debezium 的 JDBC 属性白名单剔除，不可用。）
+        props.setProperty("database.initial.statements", SNAPSHOT_SESSION_ISOLATION);
         // A quiet source emits nothing, so "time since the last applied change" would grow without
         // bound and a perfectly caught-up task would look stuck. A heartbeat proves the connector is
         // alive (and keeps the offset fresh) while no data flows; the sink drops these records.
