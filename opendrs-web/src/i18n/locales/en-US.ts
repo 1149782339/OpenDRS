@@ -45,7 +45,9 @@ export default {
       PRECHECKING: 'Prechecking',
       PRECHECKED: 'Precheck passed',
       SCHEMA_MIGRATION: 'Schema migration',
+      FULL_PREPARE: 'Preparing full load',
       FULL: 'Full migration',
+      POST_FULL: 'Rebuilding indexes',
       INCREMENTAL: 'Incremental migration',
     },
     state: {
@@ -186,6 +188,12 @@ export default {
       charsetAdaptKeep: 'Keep original charset length',
       charsetAdaptHelp:
         'How schema migration handles target character type lengths: align to the source length, or keep the target definition.',
+      targetTablePolicy: 'Non-empty Target Tables',
+      targetTablePolicyFail: 'Refuse to start',
+      targetTablePolicyTruncate: 'Truncate first',
+      targetTablePolicyAppend: 'Keep and append',
+      targetTablePolicyHelp:
+        'What the first full load of a one-way full + incremental task does with target tables that already hold rows. Truncate never cascades and fails for tables referenced from outside the task.',
       replayTitle: 'Incremental Replay',
       replayConcurrency: 'Replay Concurrency',
       replayConcurrencyHelp: 'Threads replaying binlog during the incremental phase.',
@@ -261,10 +269,23 @@ export default {
       migrationStarted: 'Migration started ({state})',
     },
   },
+  deferred: {
+    intro: 'Secondary objects of the target tables dropped for the full load and rebuilt afterwards. Plain indexes come back before incremental replay starts; unique and foreign keys once replay has passed the snapshot end position.',
+    none: 'This task defers no target objects (bidirectional, full-only or incremental-only, or created before the feature).',
+    gate: { NONE: 'Not used', CAPTURED: 'Rebuilding', RESTORED: 'All restored' },
+    snapshotEnd: 'Snapshot end position',
+    summary: '{total} in total, {rebuilt} rebuilt, {failed} failed',
+    retry: 'Retry failed objects',
+    retried: 'Retry requested',
+    columns: { table: 'Table', type: 'Type', name: 'Name', state: 'State', attempts: 'Attempts', error: 'Last error' },
+    type: { INDEX: 'Index', UNIQUE: 'Unique key', FOREIGN_KEY: 'Foreign key' },
+    state: { CAPTURED: 'Recorded', DROPPED: 'Dropped', REBUILT: 'Rebuilt', FAILED: 'Failed' },
+  },
   detail: {
     backToList: 'Task List',
     tabs: {
       info: 'Basic Info',
+      deferred: 'Target Objects',
       datacheck: 'Data Check',
       logs: 'Migration Logs',
       monitor: 'Monitoring',

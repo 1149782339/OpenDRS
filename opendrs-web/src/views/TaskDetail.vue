@@ -24,6 +24,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import DataCheckPanel from '@/components/DataCheckPanel.vue'
+import DeferredObjectsPanel from '@/components/DeferredObjectsPanel.vue'
 import TaskMonitor from '@/components/TaskMonitor.vue'
 
 const { t, locale } = useI18n()
@@ -304,6 +305,10 @@ onUnmounted(() => {
           </section>
         </template>
         <el-empty v-else-if="!loading" :description="t('detail.notExist')" />
+      </el-tab-pane>
+
+      <el-tab-pane :label="t('detail.tabs.deferred')" name="deferred" lazy>
+        <DeferredObjectsPanel :task-id="taskId" />
       </el-tab-pane>
 
       <el-tab-pane :label="t('detail.tabs.datacheck')" name="datacheck" lazy>

@@ -714,6 +714,16 @@ onUnmounted(() => {
               <el-icon class="ops-help" tabindex="0"><QuestionFilled /></el-icon>
             </el-tooltip>
           </el-form-item>
+          <el-form-item :label="t('wizard.advanced.targetTablePolicy')" required>
+            <el-radio-group v-model="store.form.targetTablePolicy">
+              <el-radio-button value="FAIL_IF_NOT_EMPTY">{{ t('wizard.advanced.targetTablePolicyFail') }}</el-radio-button>
+              <el-radio-button value="TRUNCATE">{{ t('wizard.advanced.targetTablePolicyTruncate') }}</el-radio-button>
+              <el-radio-button value="APPEND">{{ t('wizard.advanced.targetTablePolicyAppend') }}</el-radio-button>
+            </el-radio-group>
+            <el-tooltip :content="t('wizard.advanced.targetTablePolicyHelp')" placement="top" effect="dark">
+              <el-icon class="ops-help" tabindex="0"><QuestionFilled /></el-icon>
+            </el-tooltip>
+          </el-form-item>
         </el-form>
 
         <h4 class="sub-title">{{ t('wizard.advanced.replayTitle') }}</h4>
