@@ -246,6 +246,17 @@ public final class PostgresObjectCatalog implements TargetObjectCatalog {
     }
 
     @Override
+    public String lockTimeoutSql(int seconds) {
+        return "SET lock_timeout = '" + seconds + "s'";
+    }
+
+    @Override
+    public boolean isLockConflict(SQLException ex) {
+        // 40P01 deadlock_detected, 55P03 lock_not_available (lock_timeout).
+        return "40P01".equals(ex.getSQLState()) || "55P03".equals(ex.getSQLState());
+    }
+
+    @Override
     public String truncateSql(TableId table) {
         return "TRUNCATE TABLE " + qualified(table);
     }

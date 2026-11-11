@@ -52,6 +52,14 @@ public class DeferredObjectService {
 
     private static final Logger log = LoggerFactory.getLogger(DeferredObjectService.class);
 
+    /** How long a rebuild DDL waits for a table lock before giving up (and retrying). */
+    static final int LOCK_TIMEOUT_SECONDS = 10;
+
+    /** Immediate tries of one DDL that loses a lock conflict with replay. */
+    static final int LOCK_CONFLICT_TRIES = 4;
+
+    private long lockConflictBackoffMs = 2_000L;
+
     private static final int ERROR_MAX = 1024;
 
     /** Objects built while incremental replay already runs. */
@@ -254,6 +262,7 @@ public class DeferredObjectService {
                 for (String sql : catalog.disableForeignKeySql()) {
                     trySession(connection, sql);
                 }
+                trySession(connection, catalog.lockTimeoutSql(LOCK_TIMEOUT_SECONDS));
                 for (List<DeferredObjectRecord> group : groups(pending, catalog)) {
                     for (boolean ok : build(connection, catalog, group, narration)) {
                         if (ok) {
@@ -272,7 +281,7 @@ public class DeferredObjectService {
         if (!pending.isEmpty()) {
             narration.emit(failed == 0 ? MigrationLogLevel.INFO : MigrationLogLevel.WARNING,
                     "deferred target objects rebuilt: " + rebuilt + " ok, " + failed + " failed, "
-                            + remaining + " not rebuilt yet");
+                            + remaining + " still pending");
         }
         return new RebuildOutcome(rebuilt, failed, remaining);
     }
@@ -405,19 +414,24 @@ public class DeferredObjectService {
             }
         }
         for (DeferredObjectRecord row : missing) {
-            results.add(buildOne(connection, row, narration));
+            results.add(buildOne(connection, catalog, row, narration));
         }
         return results;
     }
 
-    private boolean buildOne(JdbcConnection connection, DeferredObjectRecord row, MigrationLogListener narration) {
+    private boolean buildOne(
+            JdbcConnection connection,
+            TargetObjectCatalog catalog,
+            DeferredObjectRecord row,
+            MigrationLogListener narration) {
         DeferredObject object = row.toObject();
         try {
-            connection.execute(object.createDdl());
+            executeRetryingLockConflicts(connection, catalog, object.createDdl(), object);
         } catch (SQLException ex) {
             String error = truncateError(ex.getMessage());
             objectMapper.recordAttempt(row.getId(), DeferredObjectState.FAILED, error);
             narration.emit(MigrationLogLevel.WARNING, "rebuild of " + object + " failed: " + error);
+            log.warn("rebuild of {} failed: {}", object, error);
             return false;
         }
         String warning = null;
@@ -433,6 +447,45 @@ public class DeferredObjectService {
         objectMapper.recordAttempt(row.getId(), DeferredObjectState.REBUILT, warning);
         log.info("rebuilt {}", object);
         return true;
+    }
+
+    /**
+     * Runs one rebuild DDL, retrying a few times at once when it loses a lock conflict with
+     * replay (deadlock, lock wait timeout): those are transient and should not use up one of
+     * the object's attempts, which are spaced a minute apart.
+     */
+    private void executeRetryingLockConflicts(
+            JdbcConnection connection, TargetObjectCatalog catalog, String sql, DeferredObject object)
+            throws SQLException {
+        for (int attempt = 1; ; attempt++) {
+            try {
+                connection.execute(sql);
+                return;
+            } catch (SQLException ex) {
+                if (attempt >= LOCK_CONFLICT_TRIES || !catalog.isLockConflict(ex)) {
+                    throw ex;
+                }
+                log.info("rebuild of {} hit a lock conflict (attempt {}/{}), retrying: {}",
+                        object, attempt, LOCK_CONFLICT_TRIES, ex.getMessage());
+                sleepQuietly(lockConflictBackoffMs * attempt);
+            }
+        }
+    }
+
+    private static void sleepQuietly(long ms) {
+        if (ms <= 0) {
+            return;
+        }
+        try {
+            Thread.sleep(ms);
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /** Test seam: no waiting between lock-conflict retries. */
+    void setLockConflictBackoffMs(long ms) {
+        this.lockConflictBackoffMs = ms;
     }
 
     private static void trySession(JdbcConnection connection, String sql) {

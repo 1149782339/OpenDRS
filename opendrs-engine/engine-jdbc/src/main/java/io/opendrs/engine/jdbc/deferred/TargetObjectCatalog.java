@@ -34,6 +34,16 @@ public interface TargetObjectCatalog {
     /** Session statements that switch foreign-key enforcement off for this connection. */
     List<String> disableForeignKeySql();
 
+    /**
+     * Session statement capping how long a rebuild DDL waits for a table lock. While replay
+     * writes, a DDL queued behind a row lock also blocks every later writer on that table, so
+     * the rebuild gives up quickly and retries instead of stalling replay.
+     */
+    String lockTimeoutSql(int seconds);
+
+    /** Whether {@code ex} is a lock conflict (deadlock or lock wait timeout) worth retrying at once. */
+    boolean isLockConflict(SQLException ex);
+
     String truncateSql(TableId table);
 
     String analyzeSql(TableId table);

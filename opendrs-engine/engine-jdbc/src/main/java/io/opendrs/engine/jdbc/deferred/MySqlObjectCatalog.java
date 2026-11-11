@@ -186,6 +186,18 @@ public final class MySqlObjectCatalog implements TargetObjectCatalog {
     }
 
     @Override
+    public String lockTimeoutSql(int seconds) {
+        // Metadata lock wait of the ALTER (InnoDB row lock waits do not apply to DDL).
+        return "SET SESSION lock_wait_timeout = " + seconds;
+    }
+
+    @Override
+    public boolean isLockConflict(SQLException ex) {
+        // 1205 lock wait timeout, 1213 deadlock.
+        return ex.getErrorCode() == 1205 || ex.getErrorCode() == 1213;
+    }
+
+    @Override
     public String truncateSql(TableId table) {
         return "TRUNCATE TABLE " + qualified(table);
     }

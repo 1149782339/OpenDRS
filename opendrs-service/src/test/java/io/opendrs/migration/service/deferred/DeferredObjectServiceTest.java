@@ -3,6 +3,7 @@ package io.opendrs.migration.service.deferred;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -76,6 +77,7 @@ class DeferredObjectServiceTest {
         when(factory.open(any())).thenReturn(connection);
         when(connection.tableExists(anyString(), anyString())).thenReturn(true);
         when(catalog.disableForeignKeySql()).thenReturn(List.of("SET session_replication_role = replica"));
+        when(catalog.lockTimeoutSql(anyInt())).thenAnswer(inv -> "SET lock_timeout = '" + inv.getArgument(0) + "s'");
         when(catalog.probeRowSql(any())).thenReturn("PROBE");
         when(catalog.truncateSql(any())).thenAnswer(inv -> "TRUNCATE " + ((TableId) inv.getArgument(0)).getTable());
         when(catalog.mergedCreate(any())).thenReturn(Optional.empty());
@@ -128,6 +130,7 @@ class DeferredObjectServiceTest {
         }).when(tx).executeWithoutResult(any());
         service = new DeferredObjectService(objectMapper, pipelineMapper, new MappingValidator(), factory, tx);
         service.setCatalogs(type -> catalog);
+        service.setLockConflictBackoffMs(0);
     }
 
     private DeferredObjectRecord row(long id) {
@@ -218,7 +221,7 @@ class DeferredObjectServiceTest {
         assertThat(first.rebuilt()).isEqualTo(2);
         assertThat(first.failed()).isEqualTo(1);
         // FK enforcement off on the rebuild session; build order: index, unique, foreign key; VALIDATE after.
-        assertThat(executed).containsExactly("SET session_replication_role = replica",
+        assertThat(executed).containsExactly("SET session_replication_role = replica", "SET lock_timeout = '10s'",
                 "CREATE INDEX idx_user", "ADD FK fk_user NOT VALID", "VALIDATE fk_user");
         assertThat(rows.get(1).getState()).isEqualTo(DeferredObjectState.FAILED);
         assertThat(rows.get(1).getLastError()).contains("boom FAIL duplicate key");
@@ -244,7 +247,7 @@ class DeferredObjectServiceTest {
 
         service.rebuild(PIPELINE, target(), DeferredObjectService.BEFORE_REPLAY_TYPES, 3, MigrationLogListener.NONE);
 
-        assertThat(executed).containsExactly("SET session_replication_role = replica");
+        assertThat(executed).containsExactly("SET session_replication_role = replica", "SET lock_timeout = '10s'");
         assertThat(rows.getFirst().getState()).isEqualTo(DeferredObjectState.REBUILT);
         assertThat(service.completeIfRestored(PIPELINE)).isTrue();
         assertThat(pipeline.getDeferredGate()).isEqualTo(DeferredGate.RESTORED);
@@ -259,7 +262,7 @@ class DeferredObjectServiceTest {
 
         service.rebuild(PIPELINE, target(), DeferredObjectService.BEFORE_REPLAY_TYPES, 3, MigrationLogListener.NONE);
 
-        assertThat(executed).containsExactly("SET session_replication_role = replica", "CREATE INDEX idx_user");
+        assertThat(executed).containsExactly("SET session_replication_role = replica", "SET lock_timeout = '10s'", "CREATE INDEX idx_user");
         assertThat(rows).extracting(DeferredObjectRecord::getState).containsExactly(
                 DeferredObjectState.REBUILT, DeferredObjectState.DROPPED, DeferredObjectState.DROPPED);
     }
@@ -278,9 +281,55 @@ class DeferredObjectServiceTest {
 
         service.rebuild(PIPELINE, target(), DeferredObjectService.BEFORE_REPLAY_TYPES, 3, MigrationLogListener.NONE);
 
-        assertThat(executed).containsExactly("SET FOREIGN_KEY_CHECKS = 0",
+        assertThat(executed).containsExactly("SET FOREIGN_KEY_CHECKS = 0", "SET SESSION lock_wait_timeout = 10",
                 "ALTER TABLE `shop`.`orders` ADD KEY `a` (`x`), ADD KEY `b` (`y`)");
         assertThat(rows).extracting(DeferredObjectRecord::getState).containsOnly(DeferredObjectState.REBUILT);
+    }
+
+    @Test
+    void lockConflictWithReplayIsRetriedAtOnceWithoutUsingAnAttempt() throws Exception {
+        rows.add(dropped(1, foreignKey));
+        when(catalog.exists(any(), any())).thenReturn(false);
+        SQLException deadlock = new SQLException("deadlock detected", "40P01");
+        when(catalog.isLockConflict(any())).thenAnswer(inv -> "40P01".equals(((SQLException) inv.getArgument(0)).getSQLState()));
+        int[] calls = {0};
+        doAnswer(inv -> {
+            String sql = inv.getArgument(0);
+            if (sql.startsWith("ADD FK") && calls[0]++ < 2) {
+                throw deadlock;
+            }
+            executed.add(sql);
+            return null;
+        }).when(connection).execute(anyString());
+
+        DeferredObjectService.RebuildOutcome outcome = service.rebuild(PIPELINE, target(),
+                DeferredObjectService.AFTER_REPLAY_TYPES, 3, MigrationLogListener.NONE);
+
+        assertThat(outcome.rebuilt()).isEqualTo(1);
+        assertThat(rows.get(0).getState()).isEqualTo(DeferredObjectState.REBUILT);
+        assertThat(rows.get(0).getAttempts()).isEqualTo(1);
+        assertThat(executed).containsSubsequence("ADD FK fk_user NOT VALID", "VALIDATE fk_user");
+    }
+
+    @Test
+    void persistentLockConflictFailsTheAttempt() throws Exception {
+        rows.add(dropped(1, foreignKey));
+        when(catalog.exists(any(), any())).thenReturn(false);
+        when(catalog.isLockConflict(any())).thenReturn(true);
+        doAnswer(inv -> {
+            String sql = inv.getArgument(0);
+            if (sql.startsWith("ADD FK")) {
+                throw new SQLException("lock timeout", "55P03");
+            }
+            return null;
+        }).when(connection).execute(anyString());
+
+        service.rebuild(PIPELINE, target(), DeferredObjectService.AFTER_REPLAY_TYPES, 3, MigrationLogListener.NONE);
+
+        assertThat(rows.get(0).getState()).isEqualTo(DeferredObjectState.FAILED);
+        assertThat(rows.get(0).getAttempts()).isEqualTo(1);
+        verify(connection, org.mockito.Mockito.times(DeferredObjectService.LOCK_CONFLICT_TRIES))
+                .execute("ADD FK fk_user NOT VALID");
     }
 
     private static DeferredObjectRecord dropped(long id, DeferredObject object) {
@@ -327,6 +376,16 @@ class DeferredObjectServiceTest {
         @Override
         public List<String> disableForeignKeySql() {
             return delegate.disableForeignKeySql();
+        }
+
+        @Override
+        public String lockTimeoutSql(int seconds) {
+            return delegate.lockTimeoutSql(seconds);
+        }
+
+        @Override
+        public boolean isLockConflict(SQLException ex) {
+            return delegate.isLockConflict(ex);
         }
 
         @Override
