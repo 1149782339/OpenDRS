@@ -55,6 +55,19 @@ public record MigrationOptions(
         KEEP
     }
 
+    /**
+     * Target tables that already hold rows when the first full load starts (one-way full +
+     * incremental only).
+     */
+    public enum TargetTablePolicy {
+        /** Keep the rows and load over them (rows with the same primary key are overwritten). */
+        APPEND,
+        /** Empty the tables first. Never cascades: a table referenced from outside the task fails. */
+        TRUNCATE,
+        /** Refuse to start. */
+        FAIL_IF_NOT_EMPTY
+    }
+
     public enum ConflictPolicy {
         OVERWRITE,
         ERROR,
@@ -153,8 +166,23 @@ public record MigrationOptions(
             ImportMode importMode,
             /** Debezium snapshot threads multiplier: 实际分片数 ≈ 并发线程数 × 分片倍率。 */
             @Min(1) @Max(10) Integer chunkMultiplier,
-            CharsetAdapt charsetAdapt
+            CharsetAdapt charsetAdapt,
+            /**
+             * What the first full load does with target tables that already hold rows. Null (tasks
+             * stored before the option existed) means {@link TargetTablePolicy#FAIL_IF_NOT_EMPTY}.
+             */
+            TargetTablePolicy targetTablePolicy
     ) {
+        public FullSettings(
+                List<FullObjectType> objectTypes,
+                Integer exportConcurrency,
+                Integer importConcurrency,
+                ImportMode importMode,
+                Integer chunkMultiplier,
+                CharsetAdapt charsetAdapt) {
+            this(objectTypes, exportConcurrency, importConcurrency, importMode, chunkMultiplier, charsetAdapt, null);
+        }
+
         public static FullSettings defaults() {
             return new FullSettings(
                     List.of(FullObjectType.SCHEMA, FullObjectType.DATA, FullObjectType.INDEX),
@@ -162,7 +190,13 @@ public record MigrationOptions(
                     8,
                     ImportMode.COPY,
                     4,
-                    CharsetAdapt.AUTO);
+                    CharsetAdapt.AUTO,
+                    TargetTablePolicy.FAIL_IF_NOT_EMPTY);
+        }
+
+        /** The policy in force: the stored one, or the default when the task predates it. */
+        public TargetTablePolicy effectiveTargetTablePolicy() {
+            return targetTablePolicy != null ? targetTablePolicy : TargetTablePolicy.FAIL_IF_NOT_EMPTY;
         }
 
         public FullSettings withDefaults() {
@@ -173,7 +207,8 @@ public record MigrationOptions(
                     importConcurrency != null ? importConcurrency : d.importConcurrency(),
                     importMode != null ? importMode : d.importMode(),
                     chunkMultiplier != null ? chunkMultiplier : d.chunkMultiplier(),
-                    charsetAdapt != null ? charsetAdapt : d.charsetAdapt());
+                    charsetAdapt != null ? charsetAdapt : d.charsetAdapt(),
+                    targetTablePolicy != null ? targetTablePolicy : d.targetTablePolicy());
         }
     }
 

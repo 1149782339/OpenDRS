@@ -48,6 +48,8 @@ CREATE TABLE task_pipelines (
   target_endpoint_id   BIGINT       NOT NULL,
   capture_options      JSON         NOT NULL,
   replay_options       JSON         NOT NULL,
+  deferred_gate        VARCHAR(16)  NOT NULL DEFAULT 'NONE',
+  snapshot_end_position JSON        NULL,
   created_at           DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   CONSTRAINT uk_pipeline_public_id UNIQUE (public_id),
@@ -99,6 +101,27 @@ CREATE TABLE migration_logs (
   PRIMARY KEY (id),
   KEY idx_log_task_id (task_id, id),
   CONSTRAINT fk_log_task FOREIGN KEY (task_id) REFERENCES migration_tasks (id)
+);
+
+CREATE TABLE task_deferred_objects (
+  id           BIGINT        NOT NULL AUTO_INCREMENT,
+  pipeline_id  BIGINT        NOT NULL,
+  schema_name  VARCHAR(128)  NOT NULL,
+  table_name   VARCHAR(128)  NOT NULL,
+  object_type  VARCHAR(16)   NOT NULL,
+  object_name  VARCHAR(128)  NOT NULL,
+  create_ddl   TEXT          NOT NULL,
+  drop_ddl     TEXT          NOT NULL,
+  post_ddl     TEXT          NULL,
+  build_order  INT           NOT NULL DEFAULT 0,
+  state        VARCHAR(16)   NOT NULL,
+  attempts     INT           NOT NULL DEFAULT 0,
+  last_error   VARCHAR(1024) NULL,
+  created_at   DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at   DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  CONSTRAINT uk_deferred_object UNIQUE (pipeline_id, schema_name, table_name, object_type, object_name),
+  CONSTRAINT fk_deferred_pipeline FOREIGN KEY (pipeline_id) REFERENCES task_pipelines (id)
 );
 
 CREATE TABLE task_snapshot_complete_tables (
