@@ -17,6 +17,10 @@ import io.opendrs.engine.precheck.rule.MysqlParameterCheck;
 import io.opendrs.engine.precheck.rule.PermissionCheck;
 import io.opendrs.engine.precheck.rule.ServerIdentityCheck;
 import io.opendrs.engine.precheck.rule.SourcePrimaryKeyCheck;
+import io.opendrs.engine.precheck.rule.SourceCascadeForeignKeyCheck;
+import io.opendrs.engine.precheck.rule.TargetExternalForeignKeyCheck;
+import io.opendrs.engine.precheck.rule.TargetForeignKeyBypassCheck;
+import io.opendrs.engine.precheck.rule.TargetTableNotEmptyCheck;
 import io.opendrs.engine.precheck.rule.TargetTablePresenceCheck;
 import io.opendrs.engine.precheck.rule.VersionCheck;
 import java.util.ArrayList;
@@ -64,7 +68,7 @@ public final class MysqlBidirectionalProfile implements PrecheckProfile {
 
     @Override
     public List<RulePack> packs() {
-        return List.of(commonPack(), sourcePack(), targetPack(), compatibilityPack());
+        return List.of(commonPack(), sourcePack(), targetPack(), compatibilityPack(), DeferredObjectsPack.PACK);
     }
 
     private static RulePack commonPack() {
@@ -197,6 +201,10 @@ public final class MysqlBidirectionalProfile implements PrecheckProfile {
                         "双向同步通过 GTID 标记回放事务防止回环，目标库也必须开启 gtid_mode",
                         Side.TARGET),
                 new TargetTablePresenceCheck(),
-                new ServerIdentityCheck()));
+                new ServerIdentityCheck(),
+                new TargetTableNotEmptyCheck(),
+                new TargetExternalForeignKeyCheck(),
+                new TargetForeignKeyBypassCheck(),
+                new SourceCascadeForeignKeyCheck()));
     }
 }

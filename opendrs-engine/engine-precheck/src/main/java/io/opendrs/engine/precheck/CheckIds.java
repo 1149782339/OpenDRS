@@ -40,6 +40,12 @@ public final class CheckIds {
     public static final String SOURCE_GTID_NEXT = "source.gtid_next";
     public static final String TARGET_GTID_NEXT = "target.gtid_next";
 
+    /** Deferred target objects (one-way full + incremental into PK-only tables). */
+    public static final String TARGET_TABLE_NOT_EMPTY = "target.table_not_empty";
+    public static final String TARGET_EXTERNAL_FOREIGN_KEY = "target.external_foreign_key";
+    public static final String TARGET_FOREIGN_KEY_BYPASS = "target.foreign_key_bypass";
+    public static final String SOURCE_CASCADE_FOREIGN_KEY = "source.cascade_foreign_key";
+
     private CheckIds() {
     }
 }

@@ -23,11 +23,27 @@ public record PrecheckContext(
         List<TableId> sourceTables,
         List<TableId> targetTables,
         boolean tablesKnown,
-        boolean bidirectional) {
+        boolean bidirectional,
+        /**
+         * The task runs a one-way full load followed by incremental replay into PK-only target
+         * tables (secondary objects dropped, then restored; FK enforcement off on the target
+         * sessions). Gates the checks that only this flow needs.
+         */
+        boolean deferredObjects) {
 
     public PrecheckContext {
         sourceTables = sourceTables == null ? List.of() : List.copyOf(sourceTables);
         targetTables = targetTables == null ? List.of() : List.copyOf(targetTables);
+    }
+
+    public PrecheckContext(
+            JdbcConnectionConfig source,
+            JdbcConnectionConfig target,
+            List<TableId> sourceTables,
+            List<TableId> targetTables,
+            boolean tablesKnown,
+            boolean bidirectional) {
+        this(source, target, sourceTables, targetTables, tablesKnown, bidirectional, false);
     }
 
     /** Source schemas the task touches, falling back to the configured database. */
