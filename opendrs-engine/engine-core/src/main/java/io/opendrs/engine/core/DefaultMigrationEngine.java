@@ -215,7 +215,9 @@ public class DefaultMigrationEngine implements MigrationEngine {
                 param.snapshotThreadsMultiplier(),
                 param.snapshotStrategy(),
                 param.resumeTables(),
-                param.transport());
+                param.transport(),
+                param.replayGate(),
+                param.targetSessionSql());
         return cdcEngineFactory.create(
                 spec, onSnapshot, listener, param.lagListener(), fullLoadCheckpointListener);
     }

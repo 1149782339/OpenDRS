@@ -152,6 +152,10 @@ public final class BatchApplyHandler implements AutoCloseable {
             if (appliedPosition != null) {
                 positionListener.emitAppliedPosition(appliedPosition, System.currentTimeMillis());
             }
+            java.util.Map<String, ?> appliedOffset = lastBinlogOffset(batch);
+            if (appliedOffset != null) {
+                positionListener.emitAppliedOffset(appliedOffset, System.currentTimeMillis());
+            }
         }
         catch (ApplierException ex) {
             logListener.emit(MigrationLogLevel.ERROR, describeRejection(batch, ex));
@@ -291,6 +295,17 @@ public final class BatchApplyHandler implements AutoCloseable {
             Object pos = batch.get(i).sourceOffset().get("pos");
             if (file instanceof String f && pos instanceof Number p) {
                 return f + ":" + p.longValue();
+            }
+        }
+        return null;
+    }
+
+    /** Source offset of the newest record that carries binlog coordinates, or null. */
+    static java.util.Map<String, ?> lastBinlogOffset(List<SourceRecord> batch) {
+        for (int i = batch.size() - 1; i >= 0; i--) {
+            java.util.Map<String, ?> offset = batch.get(i).sourceOffset();
+            if (offset != null && offset.get("file") instanceof String && offset.get("pos") != null) {
+                return offset;
             }
         }
         return null;

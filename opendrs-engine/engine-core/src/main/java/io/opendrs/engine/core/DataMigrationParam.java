@@ -87,7 +87,17 @@ public record DataMigrationParam(
         /**
          * Capture→replay transport. Null keeps {@link ResolvedCdcTransport#direct()}.
          */
-        ResolvedCdcTransport transport)
+        ResolvedCdcTransport transport,
+        /**
+         * KAFKA only: replay waits on this gate (capture keeps producing). The coordinator holds
+         * it closed while it rebuilds the plain indexes after the full load. Null means open.
+         */
+        io.opendrs.engine.capture.ReplayGate replayGate,
+        /**
+         * Statements run on every target connection of the sink (full load and replay), e.g.
+         * foreign-key enforcement off. Null/empty runs nothing.
+         */
+        java.util.List<String> targetSessionSql)
         implements MigrationParam {
 
     public DataMigrationParam {
@@ -113,7 +123,7 @@ public record DataMigrationParam(
         return new DataMigrationParam(
                 taskId, source, target, selection, databaseServerId,
                 phaseListener, logListener, lagListener, null, null, ReplayDirection.FORWARD,
-                null, null, null, null, null, null, null);
+                null, null, null, null, null, null, null, null, null);
     }
 
     public static Builder builder() {
@@ -140,6 +150,8 @@ public record DataMigrationParam(
         private SnapshotStrategy snapshotStrategy;
         private java.util.Set<String> resumeTables;
         private ResolvedCdcTransport transport;
+        private io.opendrs.engine.capture.ReplayGate replayGate;
+        private java.util.List<String> targetSessionSql;
 
         private Builder() {
         }
@@ -264,6 +276,18 @@ public record DataMigrationParam(
             return this;
         }
 
+        /** KAFKA replay start gate; null keeps it open. */
+        public Builder replayGate(io.opendrs.engine.capture.ReplayGate replayGate) {
+            this.replayGate = replayGate;
+            return this;
+        }
+
+        /** Session statements for every target connection of the sink. */
+        public Builder targetSessionSql(java.util.List<String> targetSessionSql) {
+            this.targetSessionSql = targetSessionSql;
+            return this;
+        }
+
         public DataMigrationParam build() {
             return new DataMigrationParam(
                     taskId,
@@ -283,7 +307,9 @@ public record DataMigrationParam(
                     snapshotThreadsMultiplier,
                     snapshotStrategy,
                     resumeTables,
-                    transport);
+                    transport,
+                    replayGate,
+                    targetSessionSql);
         }
     }
 }

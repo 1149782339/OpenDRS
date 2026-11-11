@@ -75,6 +75,24 @@ public interface MigrationLagListener {
     default void onAppliedPosition(String position, long atMs) {
     }
 
+    /**
+     * The raw Debezium source offset of the newest record of a batch that was just committed on
+     * the target (streaming records and heartbeats alike). Lets a watcher decide whether replay
+     * has passed a recorded source position (binlog file/pos or GTID set) without parsing the
+     * display string of {@link #onAppliedPosition}. Called after the commit succeeded.
+     */
+    default void onAppliedOffset(java.util.Map<String, ?> sourceOffset, long atMs) {
+    }
+
+    /** {@link #onAppliedOffset} that cannot break the caller. */
+    default void emitAppliedOffset(java.util.Map<String, ?> sourceOffset, long atMs) {
+        try {
+            onAppliedOffset(sourceOffset, atMs);
+        } catch (RuntimeException ignored) {
+            // A missed sample only delays a watcher until the next batch or heartbeat.
+        }
+    }
+
     /** {@link #onCaptured} that cannot break the caller. */
     default void emitCaptured(String position, long atMs) {
         try {
