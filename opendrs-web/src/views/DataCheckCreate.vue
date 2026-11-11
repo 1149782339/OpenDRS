@@ -4,6 +4,7 @@ import { apiErrorMessage } from '@/api/http'
 import { getTask } from '@/api/task'
 import ObjectTransfer from '@/components/ObjectTransfer.vue'
 import type { MigrationTaskResponse, SelectedTable } from '@/types/api'
+import type { DataCheckMode } from '@/types/datacheck'
 import type { SelectionEntry } from '@/types/selection'
 import { ArrowLeft } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
@@ -22,6 +23,7 @@ const loadError = ref('')
 
 const name = ref(`CHK-${Date.now()}`)
 const compareType = ref('CONTENT')
+const compareMode = ref<DataCheckMode>('FULL_ONLY')
 const entries = ref<SelectionEntry[]>([])
 const submitting = ref(false)
 
@@ -75,7 +77,7 @@ async function submit() {
     const created = await createDataCheckTask({
       migrationTaskId: taskId,
       name: name.value.trim(),
-      mode: 'FULL_ONLY',
+      mode: compareMode.value,
       tables,
       options: { includeFloat: false },
     })
@@ -141,6 +143,23 @@ onMounted(loadTask)
               </el-radio-button>
             </el-radio-group>
             <span class="hint">{{ t('datacheck.createPage.compareHint') }}</span>
+          </el-form-item>
+
+          <el-form-item :label="t('datacheck.createPage.compareMode')" required>
+            <el-radio-group v-model="compareMode">
+              <el-radio-button value="FULL_ONLY">
+                {{ t('datacheck.createPage.modeFull') }}
+              </el-radio-button>
+              <el-radio-button value="INCREMENTAL_ONLY">
+                {{ t('datacheck.createPage.modeIncremental') }}
+              </el-radio-button>
+              <el-radio-button value="FULL_AND_INCREMENTAL">
+                {{ t('datacheck.createPage.modeFullIncremental') }}
+              </el-radio-button>
+            </el-radio-group>
+            <span v-if="compareMode !== 'FULL_ONLY'" class="hint">
+              {{ t('datacheck.createPage.incrementalHint') }}
+            </span>
           </el-form-item>
 
           <el-form-item :label="t('datacheck.createPage.objects')" required>
