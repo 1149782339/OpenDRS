@@ -503,7 +503,8 @@ public class MySqlToPGParserListener extends MySqlParserBaseListener {
         }
         final TableId tableId = context.get(TABLE_ID);
         MySqlParser.ReferenceDefinitionContext referenceDefinitionContext = ctx.referenceDefinition();
-        TableId refTableId = parseTableId(referenceDefinitionContext.tableName().fullId().getText());
+        TableId refTableId = tableNamingStrategy.resolveTableId(
+                parseTableId(referenceDefinitionContext.tableName().fullId().getText()));
         List<String> refColumnNames = getColumnNamesFromIndexColumnNameContext(referenceDefinitionContext.indexColumnNames(), false);
         List<String> foreignColumnNames = getColumnNamesFromIndexColumnNameContext(ctx.indexColumnNames(), false);
         String tableName = tableId.toQuoted('"').toString();
@@ -516,13 +517,17 @@ public class MySqlToPGParserListener extends MySqlParserBaseListener {
         } else if (ctx.index != null) {
             constraintName = quoteIdent(ctx.index.getText());
         } else {
-            constraintName = StringUtil.quote(tableId.getTable() + "_fkey", '"');
+            constraintName = defaultForeignKeyName(tableId, foreignColumnNames);
         }
-        String sql = String.format(ALTER_TABLE_FOREIGN_KEY, tableName,
+        StringBuilder sql = new StringBuilder(String.format(ALTER_TABLE_FOREIGN_KEY, tableName,
                 constraintName,
                 String.join(",", foreignColumnNames), refTableId.toQuoted('"'),
-                String.join(",", refColumnNames));
-        afterStatements.add(sql);
+                String.join(",", refColumnNames)));
+        // ON DELETE / ON UPDATE used to be dropped on this path (the ALTER path kept them).
+        if (referenceDefinitionContext.referenceAction() != null) {
+            appendReferenceAction(sql, referenceDefinitionContext.referenceAction());
+        }
+        afterStatements.add(sql.toString());
     }
 
     void rewritePrimaryKeyTableConstraint(MySqlParser.PrimaryKeyTableConstraintContext ctx) {
@@ -902,7 +907,7 @@ public class MySqlToPGParserListener extends MySqlParserBaseListener {
                 : foreignColumns;
         String constraintName = ctx.name != null
                 ? quoteIdent(ctx.name.getText())
-                : StringUtil.quote(tableId.getTable() + "_fkey", '"');
+                : defaultForeignKeyName(tableId, foreignColumns);
         StringBuilder sql = new StringBuilder();
         sql.append("ALTER TABLE ").append(quotedTable(tableId))
                 .append(" ADD CONSTRAINT ").append(constraintName)
@@ -914,6 +919,28 @@ public class MySqlToPGParserListener extends MySqlParserBaseListener {
         }
         afterStatements.add(sql.toString());
         return false;
+    }
+
+    /** Default names handed out by this listener, so two anonymous foreign keys never collide. */
+    private final java.util.Set<String> defaultForeignKeyNames = new java.util.HashSet<>();
+
+    /**
+     * Name for an anonymous foreign key, following PostgreSQL's own convention
+     * ({@code <table>_<col>[_<col>...]_fkey}). Two anonymous keys of one table used to both get
+     * {@code <table>_fkey}, and the second ADD CONSTRAINT failed; a numeric suffix now breaks any
+     * remaining tie (same table, same columns).
+     */
+    private String defaultForeignKeyName(TableId tableId, List<String> foreignColumns) {
+        StringBuilder base = new StringBuilder(tableId.getTable());
+        for (String column : foreignColumns) {
+            base.append('_').append(StringUtil.unquote(column, '"'));
+        }
+        base.append("_fkey");
+        String name = base.toString();
+        for (int suffix = 1; !defaultForeignKeyNames.add(tableId.getSchema() + "." + name); suffix++) {
+            name = base + String.valueOf(suffix);
+        }
+        return StringUtil.quote(name, '"');
     }
 
     private void appendReferenceAction(StringBuilder sql, MySqlParser.ReferenceActionContext action) {
