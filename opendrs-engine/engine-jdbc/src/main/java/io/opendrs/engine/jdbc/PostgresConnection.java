@@ -52,6 +52,12 @@ public class PostgresConnection extends JdbcConnection {
         props.setProperty("loginTimeout", "5");
         // Lets the sink binder send Debezium logical/string values PostgreSQL can coerce.
         props.setProperty("stringtype", "unspecified");
+        // Turns a JDBC batch of identical INSERTs into multi-row INSERTs: several times faster
+        // for the full load and the upsert fallback. The applier ignores per-row update counts
+        // (the driver reports SUCCESS_NO_INFO for rewritten batches), so nothing depends on them.
+        // An endpoint may switch it off with extra.reWriteBatchedInserts=false.
+        props.setProperty("reWriteBatchedInserts", "true");
+        copyBooleanProperty(config, "reWriteBatchedInserts", props, "reWriteBatchedInserts");
         copyProperty(config, "sslmode", props, "sslmode");
         copyBooleanProperty(config, "ssl", props, "ssl");
         copyProperty(config, "currentSchema", props, "currentSchema");

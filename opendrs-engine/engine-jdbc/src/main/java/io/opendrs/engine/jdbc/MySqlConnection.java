@@ -74,6 +74,12 @@ public class MySqlConnection extends JdbcConnection {
             props.setProperty("connectionTimeZone", "UTC");
             props.setProperty("forceConnectionTimeZoneToSession", "true");
         }
+        // Sends a JDBC batch as multi-row INSERTs (or one multi-statement round trip for
+        // UPDATE/DELETE). The applier never reads per-row update counts, which are the only
+        // thing that changes (Statement.SUCCESS_NO_INFO). extra.rewriteBatchedStatements=false
+        // switches it off per endpoint.
+        props.setProperty("rewriteBatchedStatements", "true");
+        copyBooleanProperty(config, "rewriteBatchedStatements", props, "rewriteBatchedStatements");
         copyBooleanProperty(config, "useSsl", props, "useSSL");
         copyProperty(config, "serverTimezone", props, "serverTimezone");
         copyBooleanProperty(config, "allowPublicKeyRetrieval", props, "allowPublicKeyRetrieval");
