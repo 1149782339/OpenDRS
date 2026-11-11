@@ -24,6 +24,7 @@ public class MigrationCoordinatorFactory {
     private final ServerIdAllocator serverIdAllocator;
     private final FullLoadResumePlanner resumePlanner;
     private final OpenDrsTransportProperties transportProperties;
+    private final io.opendrs.migration.service.deferred.DeferredObjectService deferredService;
 
     public MigrationCoordinatorFactory(
             MigrationTaskMapper taskMapper,
@@ -35,7 +36,8 @@ public class MigrationCoordinatorFactory {
             MigrationLagRegistry lagRegistry,
             ServerIdAllocator serverIdAllocator,
             FullLoadResumePlanner resumePlanner,
-            OpenDrsTransportProperties transportProperties) {
+            OpenDrsTransportProperties transportProperties,
+            io.opendrs.migration.service.deferred.DeferredObjectService deferredService) {
         this.taskMapper = taskMapper;
         this.connectionMapper = connectionMapper;
         this.pipelineMapper = pipelineMapper;
@@ -46,6 +48,7 @@ public class MigrationCoordinatorFactory {
         this.serverIdAllocator = serverIdAllocator;
         this.resumePlanner = resumePlanner;
         this.transportProperties = transportProperties;
+        this.deferredService = deferredService;
     }
 
     public MigrationCoordinator create(io.opendrs.migration.domain.MigrationTask task) {
@@ -62,6 +65,7 @@ public class MigrationCoordinatorFactory {
                 pipelineId -> lagRegistry.listenerFor(pipelineId, task.getId()),
                 pipelineMapper,
                 resumePlanner,
-                transportProperties);
+                transportProperties,
+                deferredService);
     }
 }

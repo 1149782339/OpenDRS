@@ -26,6 +26,12 @@ import io.opendrs.engine.capture.transport.KafkaTransportConfig;
 import io.opendrs.engine.capture.transport.CdcTransportSpec;
 import io.opendrs.engine.capture.transport.ResolvedCdcTransport;
 import io.opendrs.migration.service.ServerIdAllocator;
+import io.opendrs.engine.capture.ReplayGate;
+import io.opendrs.engine.jdbc.binlog.BinlogPosition;
+import io.opendrs.engine.jdbc.deferred.TargetObjectCatalog;
+import io.opendrs.migration.domain.DeferredGate;
+import io.opendrs.migration.service.deferred.DeferredObjectService;
+import io.opendrs.migration.service.deferred.DeferredObjects;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -86,6 +92,51 @@ public class MigrationCoordinator implements Runnable {
      * 该标志可能在 track() 之前被引擎线程置位（信号与注册存在竞态），两处都要消费它。
      */
     private volatile boolean fullLoadSnapshotDone = false;
+
+    /** Automatic rebuild attempts per deferred object before it waits for a manual retry. */
+    static final int MAX_REBUILD_ATTEMPTS = 3;
+
+    /** Pause between automatic restore passes while objects are still missing. */
+    private volatile long restoreRetryDelayMs = 60_000L;
+
+    /** Deferred target objects; null when the feature is not wired (unit tests, legacy setup). */
+    private final DeferredObjectService deferredService;
+
+    /**
+     * The pipeline whose target objects this run defers, with its endpoints; null when the task
+     * does not use the feature (bidirectional, full-only, incremental-only, older tasks).
+     */
+    private volatile Deferred deferred;
+
+    /** Watches replay for the snapshot end position; null when nothing is left to restore. */
+    private volatile SnapshotEndWatcher snapshotEndWatcher;
+
+    /** KAFKA: holds replay back until the plain indexes are rebuilt after the snapshot. */
+    private volatile ReplayGate.Latch replayLatch;
+
+    /** DIRECT: the engine was stopped after the snapshot to rebuild indexes; start it again. */
+    private volatile boolean postFullRestart = false;
+
+    /** The post-full step started for this run (the snapshot signal can arrive more than once). */
+    private final AtomicBoolean postFullStarted = new AtomicBoolean(false);
+
+    /** Failure of a helper thread (post-full step), rethrown on the coordinator thread. */
+    private volatile RuntimeException asyncFailure;
+
+    private java.util.concurrent.ScheduledExecutorService restoreExecutor;
+
+    private record Deferred(
+            io.opendrs.migration.domain.TaskPipeline pipeline,
+            ConnectionInfo source,
+            ConnectionInfo target,
+            TableSelection selection,
+            TargetObjectCatalog catalog,
+            boolean kafka) {
+
+        long pipelineId() {
+            return pipeline.getId();
+        }
+    }
 
     public MigrationCoordinator(Long taskId, MigrationMode mode, MigrationTaskMapper taskMapper, MigrationCoordinatorRegistry registry) {
         this(taskId, mode, taskMapper, null, registry, null, MigrationLogListener.NONE);
@@ -236,6 +287,30 @@ public class MigrationCoordinator implements Runnable {
             io.opendrs.migration.mapper.TaskPipelineMapper pipelineMapper,
             io.opendrs.migration.service.FullLoadResumePlanner resumePlanner,
             OpenDrsTransportProperties transportProperties) {
+        this(taskId, mode, taskMapper, connectionMapper, registry, engine, logListener, lagListener,
+                serverIdAllocator, lagListenerFactory, pipelineMapper, resumePlanner, transportProperties, null);
+    }
+
+    /**
+     * @param deferredService drops the target's secondary objects before the full load and rebuilds
+     *     them after it (one-way full + incremental); null keeps the plain flow
+     */
+    public MigrationCoordinator(
+            Long taskId,
+            MigrationMode mode,
+            MigrationTaskMapper taskMapper,
+            ConnectionInfoMapper connectionMapper,
+            MigrationCoordinatorRegistry registry,
+            MigrationEngine engine,
+            MigrationLogListener logListener,
+            MigrationLagListener lagListener,
+            ServerIdAllocator serverIdAllocator,
+            java.util.function.Function<Long, MigrationLagListener> lagListenerFactory,
+            io.opendrs.migration.mapper.TaskPipelineMapper pipelineMapper,
+            io.opendrs.migration.service.FullLoadResumePlanner resumePlanner,
+            OpenDrsTransportProperties transportProperties,
+            DeferredObjectService deferredService) {
+        this.deferredService = deferredService;
         this.taskId = taskId;
         this.mode = mode;
         this.taskMapper = taskMapper;
@@ -308,6 +383,7 @@ public class MigrationCoordinator implements Runnable {
             fail(ex);
         } finally {
             currentTasks = java.util.List.of();
+            shutdownRestoreExecutor();
             registry.remove(taskId, this);
         }
     }
@@ -335,6 +411,7 @@ public class MigrationCoordinator implements Runnable {
             advancePhase(MigrationPhase.PRECHECKED, bidirectional ? MigrationPhase.FULL : MigrationPhase.SCHEMA_MIGRATION);
             phase = currentPhase();
         }
+        boolean deferring = deferredEligible();
         if (phase == MigrationPhase.SCHEMA_MIGRATION) {
             // Re-entrant on purpose: the phase is set before the DDL runs, so a restart lands here
             // with a possibly half-created target. Schema migration skips objects that already
@@ -343,11 +420,36 @@ public class MigrationCoordinator implements Runnable {
             if (stopRequested()) {
                 return;
             }
-            advancePhase(MigrationPhase.SCHEMA_MIGRATION, MigrationPhase.FULL);
+            phase = deferring ? MigrationPhase.FULL_PREPARE : MigrationPhase.FULL;
+            advancePhase(MigrationPhase.SCHEMA_MIGRATION, phase);
+        }
+        if (phase == MigrationPhase.FULL_PREPARE) {
+            // Re-entrant: capture runs once (gated), drops and truncates check the target first.
+            if (deferring) {
+                runFullPrepare();
+            }
+            if (stopRequested()) {
+                return;
+            }
+            advancePhase(MigrationPhase.FULL_PREPARE, MigrationPhase.FULL);
             phase = MigrationPhase.FULL;
         }
+        if (phase == MigrationPhase.POST_FULL) {
+            // A restart between the snapshot and the first replayed change: finish the rebuild
+            // before the engine starts, so no change is replayed without its indexes.
+            Deferred context = resolveDeferred(requireTask(), false);
+            if (context != null) {
+                runPostFull(context);
+            } else {
+                advancePhase(MigrationPhase.POST_FULL, MigrationPhase.INCREMENTAL);
+            }
+            if (stopRequested()) {
+                return;
+            }
+            phase = MigrationPhase.INCREMENTAL;
+        }
         if (phase == MigrationPhase.FULL || phase == MigrationPhase.INCREMENTAL) {
-            runDataMigration();
+            runDataMigrationLoop();
             return;
         }
         log.info("Task job {} phase {} has nothing to run, leaving it alone", taskId, phase);
@@ -375,11 +477,46 @@ public class MigrationCoordinator implements Runnable {
                 + " created, " + handle.skipped().size() + " skipped");
     }
 
-    private void runDataMigration() throws InterruptedException {
-        MigrationTask task = requireTask();
+    /**
+     * Runs the data engine; DIRECT runs that defer target objects stop it once after the snapshot
+     * (rebuild the plain indexes with nothing replaying) and start it again from the stored offset.
+     */
+    private void runDataMigrationLoop() throws InterruptedException {
+        while (true) {
+            MigrationTask task = requireTask();
+            Deferred context = resolveDeferred(task, false);
+            if (context != null
+                    && currentPhase() == MigrationPhase.FULL
+                    && deferredService.gateOf(context.pipelineId()) == DeferredGate.CAPTURED
+                    && resumePlanner != null
+                    && resumePlanner.snapshotComplete(taskId, context.pipelineId(), context.selection(), context.source())) {
+                // Restart after every table finished but before the post-full step ran: the
+                // engine will not signal the end of a snapshot it skips, so move on here.
+                note(MigrationLogLevel.INFO, "snapshot already complete, rebuilding target indexes before replay");
+                deferredService.recordSnapshotEnd(context.pipelineId(), context.source());
+                advancePhase(MigrationPhase.FULL, MigrationPhase.POST_FULL);
+                runPostFull(context);
+                if (stopRequested()) {
+                    return;
+                }
+            }
+            boolean restart = runDataMigration(task, context);
+            if (!restart || stopRequested()) {
+                return;
+            }
+            runPostFull(context);
+            if (stopRequested()) {
+                return;
+            }
+        }
+    }
+
+    /** @return true when the engine was stopped for the post-full step and must start again */
+    private boolean runDataMigration(MigrationTask task, Deferred context) throws InterruptedException {
         java.util.List<io.opendrs.migration.domain.TaskPipeline> pipelines = pipelinesOf(task);
         expectedDirections = pipelines.size();
         incrementalDirections.clear();
+        prepareDeferredRun(context);
 
         java.util.List<io.opendrs.engine.core.MigrationTask> handles = new java.util.ArrayList<>(pipelines.size());
         try {
@@ -389,7 +526,7 @@ public class MigrationCoordinator implements Runnable {
             track(handles);
             // 竞态收口：FULL_ONLY 的快照完成信号若先于 track() 到达（假引擎测试里会发生），
             // 停机线程看到的 currentTasks 还是空的，这里补一次。
-            if (fullLoadSnapshotDone) {
+            if (fullLoadSnapshotDone || postFullRestart) {
                 stopPipelinesForFullLoad();
             }
             log.info("Task job {} mode {} started data migration on {} pipeline(s)",
@@ -410,11 +547,254 @@ public class MigrationCoordinator implements Runnable {
         for (io.opendrs.engine.core.MigrationTask handle : handles) {
             checkEngineFailure(handle, "Data migration failed");
         }
+        RuntimeException helperFailure = asyncFailure;
+        if (helperFailure != null) {
+            throw helperFailure;
+        }
+        if (postFullRestart && !stopRequested()) {
+            return true;
+        }
         if (!stopRequested() && mode != MigrationMode.FULL_ONLY) {
             throw new IllegalStateException("CDC engine for task " + taskId + " ended without a stop request");
         }
+        return false;
         // 全量模式：引擎是被 fullLoadSnapshotDone 触发的主动停机结束的（Debezium 的
         // initial_only 不会自行结束内嵌引擎），run() 会据此把任务落库为 COMPLETED。
+    }
+
+    // ---------------------------------------------------------------- deferred target objects
+
+    /** Whether this task loads into PK-only target tables (decided before FULL_PREPARE). */
+    private boolean deferredEligible() {
+        return resolveDeferred(requireTask(), true) != null;
+    }
+
+    /**
+     * The deferred-objects context of this task, or null when it does not use the feature.
+     *
+     * @param preparing true before the capture ran (gate NONE still qualifies); false afterwards,
+     *     where a gate of NONE means a task started before the feature existed — it keeps the
+     *     plain flow
+     */
+    private Deferred resolveDeferred(MigrationTask task, boolean preparing) {
+        if (deferredService == null || pipelineMapper == null) {
+            return null;
+        }
+        java.util.List<io.opendrs.migration.domain.TaskPipeline> pipelines = pipelineMapper.findByTaskId(task.getId());
+        if (pipelines.size() != 1) {
+            return null;
+        }
+        io.opendrs.migration.domain.TaskPipeline pipeline = pipelines.getFirst();
+        ConnectionInfo source = requireConnection(pipeline.getSourceEndpointId());
+        ConnectionInfo target = requireConnection(pipeline.getTargetEndpointId());
+        if (!DeferredObjects.eligible(mode, task.getOptionsJson(), source.toDatabaseType(), target.toDatabaseType())) {
+            return null;
+        }
+        if (!preparing && pipeline.getDeferredGate() == DeferredGate.NONE) {
+            return null;
+        }
+        return new Deferred(pipeline, source, target, selection(task),
+                TargetObjectCatalog.forType(target.toDatabaseType()),
+                resolveCdcTransportSpec(task) == CdcTransportSpec.KAFKA);
+    }
+
+    /** FULL_PREPARE: target table policy, capture (once), drops, truncate. */
+    private void runFullPrepare() {
+        MigrationTask task = requireTask();
+        Deferred context = resolveDeferred(task, true);
+        if (context == null) {
+            return;
+        }
+        note(MigrationLogLevel.INFO, "preparing target tables: secondary indexes, unique keys and foreign keys"
+                + " are dropped for the full load and rebuilt afterwards");
+        deferredService.prepare(
+                context.pipeline(),
+                context.target(),
+                deferredService.targetTables(context.source(), context.selection()),
+                DeferredObjects.policyOf(task.getOptionsJson()),
+                logListener);
+    }
+
+    /**
+     * POST_FULL → INCREMENTAL: snapshot end position recorded, plain indexes rebuilt, statistics
+     * refreshed. Nothing is replayed while this runs (DIRECT: engine stopped; KAFKA: replay gate
+     * closed). An index that fails to build stays FAILED and is retried with the unique keys.
+     */
+    private void runPostFull(Deferred context) {
+        deferredService.recordSnapshotEnd(context.pipelineId(), context.source());
+        deferredService.rebuild(context.pipelineId(), context.target(),
+                DeferredObjectService.BEFORE_REPLAY_TYPES, MAX_REBUILD_ATTEMPTS, logListener);
+        deferredService.analyze(context.target(),
+                deferredService.targetTables(context.source(), context.selection()), logListener);
+        advancePhase(MigrationPhase.POST_FULL, MigrationPhase.INCREMENTAL);
+    }
+
+    /** Per-run state of the deferred flow, set up before the engine starts. */
+    private void prepareDeferredRun(Deferred context) {
+        deferred = context;
+        snapshotEndWatcher = null;
+        replayLatch = null;
+        postFullRestart = false;
+        postFullStarted.set(false);
+        asyncFailure = null;
+        if (context == null || deferredService.gateOf(context.pipelineId()) != DeferredGate.CAPTURED) {
+            return;
+        }
+        snapshotEndWatcher = new SnapshotEndWatcher(
+                lagListenerFactory.apply(context.pipelineId()), this::scheduleRestore);
+        MigrationPhase phase = currentPhase();
+        if (phase == MigrationPhase.INCREMENTAL) {
+            armSnapshotEndWatcher(context);
+        } else if (phase == MigrationPhase.FULL && context.kafka()) {
+            replayLatch = ReplayGate.latch();
+        }
+    }
+
+    private void armSnapshotEndWatcher(Deferred context) {
+        SnapshotEndWatcher watcher = snapshotEndWatcher;
+        if (watcher == null) {
+            return;
+        }
+        if (deferredService.completeIfRestored(context.pipelineId())) {
+            note(MigrationLogLevel.INFO, "deferred target objects restored");
+            return;
+        }
+        BinlogPosition snapshotEnd = deferredService.snapshotEnd(context.pipelineId())
+                .orElseGet(() -> deferredService.recordSnapshotEnd(context.pipelineId(), context.source()));
+        watcher.arm(snapshotEnd);
+        note(MigrationLogLevel.INFO, "unique keys and foreign keys come back once replay passes " + snapshotEnd);
+    }
+
+    /**
+     * Engine signal that the snapshot is in. Returns true when the deferred flow took it over: the
+     * task moves FULL → POST_FULL → INCREMENTAL here instead of FULL → INCREMENTAL.
+     */
+    private boolean onSnapshotCompleted() {
+        Deferred context = deferred;
+        if (context == null || snapshotEndWatcher == null || currentPhase() != MigrationPhase.FULL) {
+            return false;
+        }
+        if (!postFullStarted.compareAndSet(false, true)) {
+            return true;
+        }
+        Runnable step = context.kafka() ? () -> postFullWhileCapturing(context) : () -> stopForPostFull(context);
+        // Off the engine's callback thread: stopping the engine from inside it can self-deadlock,
+        // and the rebuild may take long.
+        Thread helper = new Thread(step, "post-full-" + taskId);
+        helper.setDaemon(true);
+        helper.start();
+        return true;
+    }
+
+    /** DIRECT: record P1 and stop the engine; the coordinator thread rebuilds and restarts it. */
+    private void stopForPostFull(Deferred context) {
+        try {
+            deferredService.recordSnapshotEnd(context.pipelineId(), context.source());
+            advancePhase(MigrationPhase.FULL, MigrationPhase.POST_FULL);
+            postFullRestart = true;
+            note(MigrationLogLevel.INFO, "snapshot loaded, pausing capture to rebuild target indexes");
+        } catch (RuntimeException ex) {
+            asyncFailure = ex;
+        } finally {
+            stopPipelinesForFullLoad();
+        }
+    }
+
+    /** KAFKA: capture keeps producing while the indexes are rebuilt, then replay starts. */
+    private void postFullWhileCapturing(Deferred context) {
+        try {
+            deferredService.recordSnapshotEnd(context.pipelineId(), context.source());
+            advancePhase(MigrationPhase.FULL, MigrationPhase.POST_FULL);
+            note(MigrationLogLevel.INFO, "snapshot loaded, rebuilding target indexes before replay starts");
+            runPostFull(context);
+            armSnapshotEndWatcher(context);
+            ReplayGate.Latch latch = replayLatch;
+            if (latch != null) {
+                latch.open();
+            }
+        } catch (RuntimeException ex) {
+            log.error("Task job {} post-full step failed", taskId, ex);
+            asyncFailure = ex;
+            stopPipelinesForFullLoad();
+        }
+    }
+
+    /** Replay passed P1: rebuild what is left, off the apply thread. */
+    private void scheduleRestore() {
+        scheduleRestore(0L);
+    }
+
+    private synchronized void scheduleRestore(long delayMs) {
+        if (stopRequested()) {
+            return;
+        }
+        if (restoreExecutor == null) {
+            restoreExecutor = java.util.concurrent.Executors.newSingleThreadScheduledExecutor(runnable -> {
+                Thread thread = new Thread(runnable, "deferred-restore-" + taskId);
+                thread.setDaemon(true);
+                return thread;
+            });
+        }
+        if (!restoreExecutor.isShutdown()) {
+            restoreExecutor.schedule(this::restoreDeferred, delayMs, java.util.concurrent.TimeUnit.MILLISECONDS);
+        }
+    }
+
+    private synchronized void shutdownRestoreExecutor() {
+        if (restoreExecutor != null) {
+            restoreExecutor.shutdownNow();
+        }
+    }
+
+    /**
+     * Rebuilds every object still missing (failed indexes, then unique keys, then foreign keys)
+     * while replay keeps running. Objects that fail are retried a few times; after that they wait
+     * for a manual retry and replay is never stopped for them.
+     */
+    void restoreDeferred() {
+        Deferred context = deferred;
+        if (context == null || stopRequested()) {
+            return;
+        }
+        try {
+            note(MigrationLogLevel.INFO, "replay passed the snapshot end position, rebuilding unique keys and foreign keys");
+            deferredService.rebuild(context.pipelineId(), context.target(),
+                    DeferredObjectService.AFTER_REPLAY_TYPES, MAX_REBUILD_ATTEMPTS, logListener);
+            if (deferredService.completeIfRestored(context.pipelineId())) {
+                note(MigrationLogLevel.INFO, "deferred target objects restored");
+                return;
+            }
+            if (deferredService.onlyExhaustedLeft(context.pipelineId(), MAX_REBUILD_ATTEMPTS)) {
+                note(MigrationLogLevel.WARNING, deferredService.pending(context.pipelineId()).size()
+                        + " target object(s) could not be rebuilt after " + MAX_REBUILD_ATTEMPTS
+                        + " attempts; fix the reported conflicts and retry them from the task detail");
+                return;
+            }
+        } catch (RuntimeException ex) {
+            log.warn("Task job {} deferred restore pass failed: {}", taskId, ex.getMessage());
+            note(MigrationLogLevel.WARNING, "rebuilding target objects failed, retrying later: " + ex.getMessage());
+        }
+        scheduleRestore(restoreRetryDelayMs);
+    }
+
+    /**
+     * Manual retry (task detail): the FAILED rows were reset already; rebuild now when replay has
+     * passed the snapshot end position, otherwise the watcher will get to them.
+     *
+     * @return true when a restore pass was scheduled
+     */
+    public boolean retryDeferredObjects() {
+        SnapshotEndWatcher watcher = snapshotEndWatcher;
+        if (watcher == null || !watcher.fired()) {
+            return false;
+        }
+        scheduleRestore(0L);
+        return true;
+    }
+
+    /** Test hook: shortens the pause between automatic restore passes. */
+    void setRestoreRetryDelayMs(long delayMs) {
+        this.restoreRetryDelayMs = delayMs;
     }
 
     /**
@@ -498,8 +878,32 @@ public class MigrationCoordinator implements Runnable {
                 .transport(transportOf(task, pipeline))
                 .phaseListener(phase -> onTaskPhase(phase, pipeline))
                 .logListener(logListener)
-                .lagListener(lagListenerFactory.apply(pipeline.getId()))
+                .lagListener(lagListenerOf(pipeline))
+                .replayGate(replayLatch)
+                .targetSessionSql(targetSessionSqlOf(pipeline))
                 .build();
+    }
+
+    private MigrationLagListener lagListenerOf(io.opendrs.migration.domain.TaskPipeline pipeline) {
+        Deferred context = deferred;
+        SnapshotEndWatcher watcher = snapshotEndWatcher;
+        if (context != null && watcher != null && context.pipelineId() == pipeline.getId()) {
+            return watcher;
+        }
+        return lagListenerFactory.apply(pipeline.getId());
+    }
+
+    /**
+     * Target sessions of a deferring pipeline run with FK enforcement off: the full load writes
+     * child rows before their parents, parallel replay may too, and the restored foreign keys must
+     * not reject either. Other pipelines keep the plain sessions.
+     */
+    private java.util.List<String> targetSessionSqlOf(io.opendrs.migration.domain.TaskPipeline pipeline) {
+        Deferred context = deferred;
+        if (context == null || context.pipelineId() != pipeline.getId()) {
+            return null;
+        }
+        return context.catalog().disableForeignKeySql();
     }
 
     /**
@@ -673,6 +1077,9 @@ public class MigrationCoordinator implements Runnable {
             Thread stopper = new Thread(this::stopPipelinesForFullLoad, "full-load-stop-" + taskId);
             stopper.setDaemon(true);
             stopper.start();
+            return;
+        }
+        if (taskPhase == DataMigrationTaskPhase.INCREMENTAL && onSnapshotCompleted()) {
             return;
         }
         if (taskPhase == DataMigrationTaskPhase.INCREMENTAL) {

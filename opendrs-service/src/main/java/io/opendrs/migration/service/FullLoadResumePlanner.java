@@ -29,7 +29,10 @@ import org.springframework.stereotype.Service;
  *
  * <p>The half-finished tables are part of the remaining set — a table is either done or it is not
  * — so they are re-exported together with the never-started ones. Their partial rows are wiped on
- * the target first (TRUNCATE); 迁移期间目标表禁用外键，TRUNCATE 无需考虑依赖顺序。
+ * the target first (TRUNCATE). 外键不会因此被绕过：单向全量+增量任务的外键在 FULL_PREPARE
+ * 阶段已从目标表删除（延迟目标对象），TRUNCATE 不受它们阻挡；其余任务（双向、仅全量、
+ * 延迟对象功能上线前创建的任务）目标表的外键仍在，被引用表的 TRUNCATE 可能失败（PostgreSQL
+ * 不带 CASCADE 时拒绝，MySQL 在 FOREIGN_KEY_CHECKS=1 时拒绝），此时走下面的降级路径。
  *
  * <p>Degradation is deliberate: a TRUNCATE that fails (or a target name that cannot be mapped)
  * only logs a warning. The resume then re-inserts over the partial rows and the applier's
@@ -101,6 +104,21 @@ public class FullLoadResumePlanner {
         List<String> remaining = remaining(all, done);
         truncateRemaining(taskId, target, selection, remaining);
         return new LinkedHashSet<>(remaining);
+    }
+
+    /**
+     * Whether every selected table has a recorded completed snapshot, without touching the
+     * target. A restart in that state never sees the engine's snapshot-completed signal again
+     * (Debezium skips the finished snapshot, and a quiet source sends no change to stand in for
+     * it), so the caller moves on by itself.
+     */
+    public boolean snapshotComplete(long taskId, long pipelineId, TableSelection selection, ConnectionInfo source) {
+        Set<String> done = checkpointMapper.findDoneTables(pipelineId);
+        if (done.isEmpty()) {
+            return false;
+        }
+        List<String> all = expandSelection(taskId, source, selection);
+        return !all.isEmpty() && remaining(all, done).isEmpty();
     }
 
     /** 全量清单 − done，保持清单顺序，便于日志与测试稳定。 */

@@ -34,6 +34,12 @@ public class MigrationCoordinatorRegistry {
         }
     }
 
+    /** Pokes the live coordinator after FAILED deferred objects were reset; false when none runs. */
+    public boolean retryDeferredObjects(Long taskId) {
+        MigrationCoordinator job = jobs.get(taskId);
+        return job != null && job.isRunning() && job.retryDeferredObjects();
+    }
+
     public void remove(Long taskId, MigrationCoordinator job) {
         jobs.remove(taskId, job);
     }

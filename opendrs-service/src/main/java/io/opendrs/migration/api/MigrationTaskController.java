@@ -103,6 +103,17 @@ public class MigrationTaskController {
         return Response.success(taskService.terminate(id));
     }
 
+    @GetMapping("/{id}/deferred-objects")
+    public Response<io.opendrs.migration.api.response.DeferredObjectsResponse> deferredObjects(@PathVariable Long id) {
+        return Response.success(taskService.deferredObjects(id));
+    }
+
+    @PostMapping("/{id}/deferred-objects/retry")
+    public Response<io.opendrs.migration.api.response.DeferredObjectsResponse> retryDeferredObjects(
+            @PathVariable Long id) {
+        return Response.success(taskService.retryDeferredObjects(id));
+    }
+
     @DeleteMapping("/{id}")
     public Response<Void> delete(@PathVariable Long id) {
         taskService.delete(id);
