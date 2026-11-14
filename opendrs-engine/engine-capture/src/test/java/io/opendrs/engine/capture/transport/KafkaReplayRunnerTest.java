@@ -140,6 +140,38 @@ class KafkaReplayRunnerTest {
         assertThat(store.saves).hasSize(1);
     }
 
+    @Test
+    void closedGateKeepsReplayFromSubscribingUntilOpened() throws Exception {
+        MockConsumer<String, byte[]> consumer = new MockConsumer<>(OffsetResetStrategy.EARLIEST);
+        io.opendrs.engine.capture.ReplayGate.Latch gate = io.opendrs.engine.capture.ReplayGate.latch();
+        KafkaReplayRunner runner = newRunner(new RecordingStore(), consumer, new AtomicLong()).gatedBy(gate);
+        runner.start();
+        try {
+            Thread.sleep(800);
+            assertThat(consumer.subscription()).isEmpty();
+            gate.open();
+            long deadline = System.currentTimeMillis() + 5000;
+            while (consumer.subscription().isEmpty() && System.currentTimeMillis() < deadline) {
+                Thread.sleep(20);
+            }
+            assertThat(consumer.subscription()).containsExactly(TOPIC);
+        } finally {
+            runner.close();
+        }
+    }
+
+    @Test
+    void closeWhileWaitingOnGateEndsTheRunner() {
+        MockConsumer<String, byte[]> consumer = new MockConsumer<>(OffsetResetStrategy.EARLIEST);
+        KafkaReplayRunner runner = newRunner(new RecordingStore(), consumer, new AtomicLong())
+                .gatedBy(io.opendrs.engine.capture.ReplayGate.latch());
+        runner.start();
+        long started = System.currentTimeMillis();
+        runner.close();
+        assertThat(System.currentTimeMillis() - started).isLessThan(5000);
+        assertThat(consumer.subscription()).isEmpty();
+    }
+
     private static KafkaReplayRunner newRunner(
             AppliedOffsetStore store,
             Consumer<String, byte[]> consumer,

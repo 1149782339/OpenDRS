@@ -28,6 +28,10 @@ public class TaskPipeline {
     private Map<String, Object> captureOptions;
     private Map<String, Object> replayOptions;
     private Instant createdAt;
+    /** Progress of the deferred target objects; never null once loaded (column default NONE). */
+    private DeferredGate deferredGate = DeferredGate.NONE;
+    /** Source binlog position recorded when the snapshot finished (P1); null before that. */
+    private Map<String, Object> snapshotEndPosition;
 
     public Long getId() {
         return id;
@@ -91,5 +95,21 @@ public class TaskPipeline {
 
     public void setCreatedAt(Instant createdAt) {
         this.createdAt = createdAt;
+    }
+
+    public DeferredGate getDeferredGate() {
+        return deferredGate;
+    }
+
+    public void setDeferredGate(DeferredGate deferredGate) {
+        this.deferredGate = deferredGate == null ? DeferredGate.NONE : deferredGate;
+    }
+
+    public Map<String, Object> getSnapshotEndPosition() {
+        return snapshotEndPosition;
+    }
+
+    public void setSnapshotEndPosition(Map<String, Object> snapshotEndPosition) {
+        this.snapshotEndPosition = snapshotEndPosition;
     }
 }

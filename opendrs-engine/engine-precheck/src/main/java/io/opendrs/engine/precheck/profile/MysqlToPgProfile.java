@@ -16,7 +16,11 @@ import io.opendrs.engine.precheck.rule.MysqlEngineCheck;
 import io.opendrs.engine.precheck.rule.MysqlParameterCheck;
 import io.opendrs.engine.precheck.rule.PermissionCheck;
 import io.opendrs.engine.precheck.rule.SourcePrimaryKeyCheck;
+import io.opendrs.engine.precheck.rule.SourceCascadeForeignKeyCheck;
+import io.opendrs.engine.precheck.rule.TargetExternalForeignKeyCheck;
+import io.opendrs.engine.precheck.rule.TargetForeignKeyBypassCheck;
 import io.opendrs.engine.precheck.rule.TargetTableConflictCheck;
+import io.opendrs.engine.precheck.rule.TargetTableNotEmptyCheck;
 import io.opendrs.engine.precheck.rule.TimeSemanticsCheck;
 import io.opendrs.engine.precheck.rule.VersionCheck;
 import java.util.List;
@@ -73,7 +77,7 @@ public final class MysqlToPgProfile implements PrecheckProfile {
 
     @Override
     public List<RulePack> packs() {
-        return List.of(commonPack(), sourcePack(), targetPack(), compatibilityPack());
+        return List.of(commonPack(), sourcePack(), targetPack(), compatibilityPack(), DeferredObjectsPack.PACK);
     }
 
     /** Both endpoints must answer before anything else is worth checking. */
@@ -167,6 +171,10 @@ public final class MysqlToPgProfile implements PrecheckProfile {
                 new SourcePrimaryKeyCheck(),
                 new TargetTableConflictCheck(),
                 new CharsetCompatibilityCheck(),
-                new TimeSemanticsCheck()));
+                new TimeSemanticsCheck(),
+                new TargetTableNotEmptyCheck(),
+                new TargetExternalForeignKeyCheck(),
+                new TargetForeignKeyBypassCheck(),
+                new SourceCascadeForeignKeyCheck()));
     }
 }

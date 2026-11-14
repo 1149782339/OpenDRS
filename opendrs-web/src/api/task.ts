@@ -2,6 +2,7 @@ import { http } from '@/api/http'
 import {
   isPrecheckFinished,
   type CreateMigrationTaskRequest,
+  type DeferredObjects,
   type MigrationLogLevel,
   type MigrationLogPage,
   type MigrationPrecheckResponse,
@@ -123,6 +124,16 @@ export function stopTask(id: number): Promise<MigrationStatusResponse> {
 /** 结束：终态停机，落地 TERMINATED 后才可删除。 */
 export function terminateTask(id: number): Promise<MigrationStatusResponse> {
   return http.post(`${BASE}/${id}/terminate`)
+}
+
+/** 单向全量+增量任务暂删的目标表二级对象（索引 / 唯一键 / 外键）及其重建状态。 */
+export function getDeferredObjects(id: number): Promise<DeferredObjects> {
+  return http.get(`${BASE}/${id}/deferred-objects`)
+}
+
+/** 重置重建失败的对象，增量追过快照结束位点后重新创建。 */
+export function retryDeferredObjects(id: number): Promise<DeferredObjects> {
+  return http.post(`${BASE}/${id}/deferred-objects/retry`)
 }
 
 export function deleteTask(id: number): Promise<void> {

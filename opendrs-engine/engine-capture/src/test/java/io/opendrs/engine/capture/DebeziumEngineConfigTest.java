@@ -49,6 +49,10 @@ class DebeziumEngineConfigTest {
         assertThat(props.getProperty("snapshot.query.mode")).isEqualTo("custom");
         assertThat(props.getProperty("snapshot.query.mode.custom.name"))
                 .isEqualTo(new SafeSelectAllSnapshotQuery().name());
+        // The main snapshot connection must not hold a read view from before P0 (step 2 reads
+        // the data dictionary in the same transaction that later computes chunk boundaries).
+        assertThat(props.getProperty("database.initial.statements"))
+                .isEqualTo("SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED");
     }
 
     @Test

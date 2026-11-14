@@ -16,12 +16,22 @@ public record PrecheckParam(
         JdbcConnectionConfig target,
         TableSelection selection,
         Consumer<PrecheckResults> progressListener,
-        boolean bidirectional)
+        boolean bidirectional,
+        boolean deferredObjects)
         implements MigrationParam {
 
     public PrecheckParam {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(target, "target");
+    }
+
+    public PrecheckParam(
+            JdbcConnectionConfig source,
+            JdbcConnectionConfig target,
+            TableSelection selection,
+            Consumer<PrecheckResults> progressListener,
+            boolean bidirectional) {
+        this(source, target, selection, progressListener, bidirectional, false);
     }
 
     public static Builder builder() {
@@ -35,6 +45,7 @@ public record PrecheckParam(
         private TableSelection selection;
         private Consumer<PrecheckResults> progressListener;
         private boolean bidirectional;
+        private boolean deferredObjects;
 
         private Builder() {
         }
@@ -73,8 +84,18 @@ public record PrecheckParam(
             return this;
         }
 
+        /**
+         * The task runs the deferred-target-objects flow (one-way full + incremental): binds the
+         * checks for non-empty target tables, outside foreign keys, cascading source foreign keys
+         * and the target's right to switch FK enforcement off.
+         */
+        public Builder deferredObjects(boolean deferredObjects) {
+            this.deferredObjects = deferredObjects;
+            return this;
+        }
+
         public PrecheckParam build() {
-            return new PrecheckParam(source, target, selection, progressListener, bidirectional);
+            return new PrecheckParam(source, target, selection, progressListener, bidirectional, deferredObjects);
         }
     }
 }

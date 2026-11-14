@@ -15,4 +15,14 @@ public interface TaskPipelineMapper {
     List<TaskPipeline> findByTaskId(@Param("taskId") Long taskId);
 
     int deleteByTaskId(@Param("taskId") Long taskId);
+
+    /** Compare-and-set of {@code deferred_gate}; 0 when the gate was not {@code from}. */
+    int compareAndSetDeferredGate(
+            @Param("id") Long id,
+            @Param("from") io.opendrs.migration.domain.DeferredGate from,
+            @Param("to") io.opendrs.migration.domain.DeferredGate to);
+
+    int updateSnapshotEndPosition(
+            @Param("id") Long id,
+            @Param("position") java.util.Map<String, Object> position);
 }

@@ -47,6 +47,12 @@ public final class DebeziumEngineConfig {
      */
     static final String HEARTBEAT_INTERVAL_MS = "10000";
 
+    /**
+     * Session isolation of every Debezium JDBC connection; see the comment where it is set.
+     * Package-private for the config test.
+     */
+    static final String SNAPSHOT_SESSION_ISOLATION = "SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED";
+
     private DebeziumEngineConfig() {
     }
 
@@ -128,6 +134,15 @@ public final class DebeziumEngineConfig {
         // 原缝隙内的事务变为快照+增量各到一次（重复），由 sink 的 dup-key→upsert 兜底消化。
         props.setProperty("snapshot.query.mode", "custom");
         props.setProperty("snapshot.query.mode.custom.name", SafeSelectAllSnapshotQuery.class.getName());
+        // 同一缝隙的主连接版本：快照主连接在 step 2（SHOW DATABASES / SHOW FULL TABLES，
+        // MySQL 8 的数据字典读）就已在 autoCommit=false + RR 下打开 read view，早于 step 4 记录 P0；
+        // 该连接还负责计算分片边界（末片上界 = 它看到的主键最大值）并读取部分分片，于是两者之间
+        // 提交的事务快照读不到、流式也不发：新插入的行和该连接分片内的更新永久丢失。
+        // 会话初始为 READ COMMITTED：step 2 所在事务每条语句各自取 read view（step 3 的
+        // SET SESSION ... REPEATABLE READ 只影响之后的新事务），池连接复制的也是 RC；
+        // 每个分片本就是单条 SELECT，读到的都是 P0 之后的数据——缝隙变成重复，由 upsert 兜底。
+        // （驱动层 queryInterceptors 会被 Debezium 的 JDBC 属性白名单剔除，不可用。）
+        props.setProperty("database.initial.statements", SNAPSHOT_SESSION_ISOLATION);
         // A quiet source emits nothing, so "time since the last applied change" would grow without
         // bound and a perfectly caught-up task would look stuck. A heartbeat proves the connector is
         // alive (and keeps the offset fresh) while no data flows; the sink drops these records.
@@ -308,9 +323,22 @@ public final class DebeziumEngineConfig {
              * Capture→replay transport. Null keeps {@link ResolvedCdcTransport#direct()} so existing
              * callers stay on apply→mark without Kafka.
              */
-            ResolvedCdcTransport transport) {
+            ResolvedCdcTransport transport,
+            /**
+             * KAFKA only: replay waits on this gate before it subscribes (capture keeps
+             * producing). Null means {@link ReplayGate#OPEN}.
+             */
+            ReplayGate replayGate,
+            /**
+             * Statements run on every target connection the sink opens (full load and replay),
+             * e.g. switching foreign-key enforcement off. Best effort: a statement the target
+             * refuses is logged and skipped. Null/empty runs nothing.
+             */
+            List<String> targetSessionSql) {
 
         public EngineSpec {
+            replayGate = replayGate == null ? ReplayGate.OPEN : replayGate;
+            targetSessionSql = targetSessionSql == null ? List.of() : List.copyOf(targetSessionSql);
             direction = direction == null ? ReplayDirection.FORWARD : direction;
             snapshotStrategy = snapshotStrategy == null ? SnapshotStrategy.INITIAL : snapshotStrategy;
             transport = transport == null ? ResolvedCdcTransport.direct() : transport;
@@ -324,6 +352,30 @@ public final class DebeziumEngineConfig {
             if (transport.isKafka() && transport.kafka() == null) {
                 throw new IllegalStateException("KAFKA transport requires KafkaTransportConfig");
             }
+        }
+
+        /** The form without replay gate and target session statements. */
+        public EngineSpec(
+                long taskId,
+                long pipelineId,
+                JdbcConnectionConfig source,
+                List<TableId> tables,
+                Long databaseServerId,
+                JdbcConnectionConfig target,
+                TableSelection tableSelection,
+                ReplayMetrics metrics,
+                GtidLoopConfig gtidLoop,
+                ReplayDirection direction,
+                Integer txApplierConcurrency,
+                Integer tableApplierConcurrency,
+                Integer snapshotThreads,
+                Integer snapshotThreadsMultiplier,
+                SnapshotStrategy snapshotStrategy,
+                java.util.Set<String> resumeTables,
+                ResolvedCdcTransport transport) {
+            this(taskId, pipelineId, source, tables, databaseServerId, target, tableSelection, metrics,
+                    gtidLoop, direction, txApplierConcurrency, tableApplierConcurrency, snapshotThreads,
+                    snapshotThreadsMultiplier, snapshotStrategy, resumeTables, transport, null, null);
         }
 
         /** Compact form for callers without a persisted pipeline; the task id stands in as pipeline id. */

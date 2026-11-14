@@ -52,6 +52,7 @@ public class MigrationTaskService {
     private final SourcePositionQuery sourcePositionQuery;
     private final OpenDrsTransportProperties transportProperties;
     private final TransactionTemplate transactionTemplate;
+    private final io.opendrs.migration.mapper.DeferredObjectMapper deferredObjectMapper;
 
     public MigrationTaskService(
             MigrationTaskMapper taskMapper,
@@ -67,7 +68,9 @@ public class MigrationTaskService {
             MigrationLagRegistry lagRegistry,
             SourcePositionQuery sourcePositionQuery,
             OpenDrsTransportProperties transportProperties,
-            TransactionTemplate transactionTemplate) {
+            TransactionTemplate transactionTemplate,
+            io.opendrs.migration.mapper.DeferredObjectMapper deferredObjectMapper) {
+        this.deferredObjectMapper = deferredObjectMapper;
         this.taskMapper = taskMapper;
         this.connectionMapper = connectionMapper;
         this.offsetMapper = offsetMapper;
@@ -371,11 +374,46 @@ public class MigrationTaskService {
         schemaHistoryMapper.deleteByTaskId(id);
         logService.deleteByTaskId(id);
         checkpointMapper.deleteByTaskId(id);
+        deferredObjectMapper.deleteByTaskId(id);
         // Offsets/history delete by subquery on task_pipelines, so pipelines go last among children.
         List<TaskPipeline> pipelines = pipelineMapper.findByTaskId(id);
         pipelineMapper.deleteByTaskId(id);
         pipelines.forEach(p -> lagRegistry.clear(p.getId()));
         taskMapper.deleteById(id);
+    }
+
+    /** Deferred target objects of the task (empty with gate NONE when it does not defer any). */
+    public io.opendrs.migration.api.response.DeferredObjectsResponse deferredObjects(Long id) {
+        requireTask(id);
+        List<TaskPipeline> pipelines = pipelineMapper.findByTaskId(id);
+        TaskPipeline pipeline = pipelines.isEmpty() ? null : pipelines.getFirst();
+        List<io.opendrs.migration.api.response.DeferredObjectResponse> objects = deferredObjectMapper.findByTaskId(id)
+                .stream()
+                .map(io.opendrs.migration.api.response.DeferredObjectResponse::of)
+                .toList();
+        String position = pipeline == null || pipeline.getSnapshotEndPosition() == null
+                ? null
+                : io.opendrs.engine.jdbc.binlog.BinlogPosition.fromMap(pipeline.getSnapshotEndPosition()).toString();
+        return new io.opendrs.migration.api.response.DeferredObjectsResponse(
+                pipeline == null ? io.opendrs.migration.domain.DeferredGate.NONE.name() : pipeline.getDeferredGate().name(),
+                position,
+                objects.size(),
+                (int) objects.stream().filter(o -> "REBUILT".equals(o.state())).count(),
+                (int) objects.stream().filter(o -> "FAILED".equals(o.state())).count(),
+                objects);
+    }
+
+    /**
+     * Gives FAILED deferred objects another round of automatic attempts. A running task rebuilds
+     * them right away when replay has passed the snapshot end; otherwise on its next pass/start.
+     */
+    public io.opendrs.migration.api.response.DeferredObjectsResponse retryDeferredObjects(Long id) {
+        requireTask(id);
+        int reset = deferredObjectMapper.resetFailed(id);
+        boolean scheduled = reset > 0 && coordinatorRegistry.retryDeferredObjects(id);
+        logService.log(id, MigrationLogLevel.INFO, "retry of " + reset + " failed target object(s) requested"
+                + (scheduled ? ", rebuilding now" : ", rebuilt once replay passes the snapshot end position"));
+        return deferredObjects(id);
     }
 
     /**

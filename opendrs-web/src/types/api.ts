@@ -11,7 +11,9 @@ export type MigrationPhase =
   | 'PRECHECKING'
   | 'PRECHECKED'
   | 'SCHEMA_MIGRATION'
+  | 'FULL_PREPARE'
   | 'FULL'
+  | 'POST_FULL'
   | 'INCREMENTAL'
 
 export type TaskState =
@@ -114,6 +116,33 @@ export interface FullSettings {
   importMode: ImportMode
   chunkMultiplier: number
   charsetAdapt: CharsetAdapt
+  /** 目标表已有数据时首次全量的处理方式（单向全量+增量）；缺省按 FAIL_IF_NOT_EMPTY。 */
+  targetTablePolicy?: TargetTablePolicy
+}
+
+export type TargetTablePolicy = 'APPEND' | 'TRUNCATE' | 'FAIL_IF_NOT_EMPTY'
+
+/** 单向全量+增量任务在全量前删除、全量后重建的目标表二级对象。 */
+export interface DeferredObject {
+  pipelineId: number
+  schema: string
+  table: string
+  objectType: 'INDEX' | 'UNIQUE' | 'FOREIGN_KEY'
+  objectName: string
+  state: 'CAPTURED' | 'DROPPED' | 'REBUILT' | 'FAILED'
+  attempts: number
+  lastError: string | null
+  createDdl: string
+  updatedAt: string | null
+}
+
+export interface DeferredObjects {
+  gate: 'NONE' | 'CAPTURED' | 'RESTORED'
+  snapshotEndPosition: string | null
+  total: number
+  rebuilt: number
+  failed: number
+  objects: DeferredObject[]
 }
 
 /** 增量回放设置（高级设置页）。 */

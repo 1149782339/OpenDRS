@@ -160,7 +160,8 @@ public class DebeziumCdcEngineFactory implements CdcEngineFactory {
                 false);
         AppliedOffsetStore appliedStore = new JdbcAppliedOffsetStore(metadataDataSource);
         KafkaReplayRunner replayRunner =
-                new KafkaReplayRunner(spec.pipelineId(), kafka, replayApplyHandler, appliedStore, lagListener);
+                new KafkaReplayRunner(spec.pipelineId(), kafka, replayApplyHandler, appliedStore, lagListener)
+                        .gatedBy(spec.replayGate());
         replayRunner.start();
         AutoCloseable resources = () -> {
             try {
@@ -211,7 +212,7 @@ public class DebeziumCdcEngineFactory implements CdcEngineFactory {
         ReplayConfig.Builder configBuilder = ReplayConfig.builder()
                 // Stateless provider: every call opens a fresh physical connection, so each
                 // parallel applier worker (via its own JdbcConnection) gets its own connection.
-                .connectionProvider(() -> connectionFactory.open(spec.target()).connection())
+                .connectionProvider(() -> targetConnection(spec))
                 .tableNamingStrategy(specTableNaming(spec))
                 .columnNamingStrategy(new DefaultColumnNamingStrategy())
                 .applyDdlEnabled(true)
@@ -228,6 +229,29 @@ public class DebeziumCdcEngineFactory implements CdcEngineFactory {
         }
         return configBuilder.build();
     }
+
+    /**
+     * A fresh target connection with the spec's session statements applied (foreign-key
+     * enforcement off for full load and replay). A refused statement (PostgreSQL
+     * {@code session_replication_role} needs superuser or {@code GRANT SET ON PARAMETER}) is
+     * logged and skipped: the precheck already warned, and the connection is still usable.
+     */
+    private java.sql.Connection targetConnection(DebeziumEngineConfig.EngineSpec spec) throws java.sql.SQLException {
+        java.sql.Connection connection = connectionFactory.open(spec.target()).connection();
+        for (String sql : spec.targetSessionSql()) {
+            try (java.sql.Statement statement = connection.createStatement()) {
+                statement.execute(sql);
+            } catch (java.sql.SQLException ex) {
+                if (sessionSqlWarned.add(spec.pipelineId() + ":" + sql)) {
+                    log.warn("pipeline {}: target refused session statement \"{}\", continuing without it: {}",
+                            spec.pipelineId(), sql, ex.getMessage());
+                }
+            }
+        }
+        return connection;
+    }
+
+    private final java.util.Set<String> sessionSqlWarned = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     private MappedTableNamingStrategy specTableNaming(DebeziumEngineConfig.EngineSpec spec) {
         return new MappedTableNamingStrategy(mappingValidator, spec.tableSelection());

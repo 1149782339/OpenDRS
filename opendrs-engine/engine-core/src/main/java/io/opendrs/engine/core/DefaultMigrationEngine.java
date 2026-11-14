@@ -215,7 +215,9 @@ public class DefaultMigrationEngine implements MigrationEngine {
                 param.snapshotThreadsMultiplier(),
                 param.snapshotStrategy(),
                 param.resumeTables(),
-                param.transport());
+                param.transport(),
+                param.replayGate(),
+                param.targetSessionSql());
         return cdcEngineFactory.create(
                 spec, onSnapshot, listener, param.lagListener(), fullLoadCheckpointListener);
     }
@@ -251,7 +253,7 @@ public class DefaultMigrationEngine implements MigrationEngine {
 
         PrecheckContext context = new PrecheckContext(
                 param.source(), param.target(), sourceTables, targetTables, tablesKnown,
-                param.bidirectional());
+                param.bidirectional(), param.deferredObjects());
         // Keyed by the resolved profile, not by the topology flag: the MySQL → MySQL pair always
         // resolves to the bidirectional profile (it is the only MySQL → MySQL checklist), and a
         // one-way topology only narrows which of its checks are bound — never the registry.

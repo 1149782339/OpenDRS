@@ -14,6 +14,9 @@
         <result property="replayOptions" column="replay_options"
                 typeHandler="io.opendrs.migration.mapper.type.JsonMapTypeHandler"/>
         <result property="createdAt" column="created_at"/>
+        <result property="deferredGate" column="deferred_gate"/>
+        <result property="snapshotEndPosition" column="snapshot_end_position"
+                typeHandler="io.opendrs.migration.mapper.type.JsonMapTypeHandler"/>
     </resultMap>
 
     <insert id="insert" useGeneratedKeys="true" keyProperty="id">
@@ -24,17 +27,30 @@
     </insert>
 
     <select id="findById" resultMap="TaskPipelineMap">
-        SELECT id, public_id, task_id, source_endpoint_id, target_endpoint_id, capture_options, replay_options, created_at
+        SELECT id, public_id, task_id, source_endpoint_id, target_endpoint_id, capture_options, replay_options, created_at,
+               deferred_gate, snapshot_end_position
         FROM task_pipelines
         WHERE id = #{id}
     </select>
 
     <select id="findByTaskId" resultMap="TaskPipelineMap">
-        SELECT id, public_id, task_id, source_endpoint_id, target_endpoint_id, capture_options, replay_options, created_at
+        SELECT id, public_id, task_id, source_endpoint_id, target_endpoint_id, capture_options, replay_options, created_at,
+               deferred_gate, snapshot_end_position
         FROM task_pipelines
         WHERE task_id = #{taskId}
         ORDER BY id
     </select>
+
+    <update id="compareAndSetDeferredGate">
+        UPDATE task_pipelines SET deferred_gate = #{to}
+        WHERE id = #{id} AND deferred_gate = #{from}
+    </update>
+
+    <update id="updateSnapshotEndPosition">
+        UPDATE task_pipelines
+        SET snapshot_end_position = #{position, typeHandler=io.opendrs.migration.mapper.type.JsonMapTypeHandler}
+        WHERE id = #{id}
+    </update>
 
     <delete id="deleteByTaskId">
         DELETE FROM task_pipelines WHERE task_id = #{taskId}

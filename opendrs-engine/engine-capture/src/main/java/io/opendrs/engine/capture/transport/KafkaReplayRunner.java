@@ -61,6 +61,8 @@ public final class KafkaReplayRunner implements AutoCloseable, Runnable {
     private long lastFlushNanos;
     private long lastLogEndNanos;
     private boolean seededCommitted;
+    /** Replay holds back until this opens (KAFKA right after a full load); open by default. */
+    private volatile io.opendrs.engine.capture.ReplayGate gate = io.opendrs.engine.capture.ReplayGate.OPEN;
 
     @FunctionalInterface
     interface BatchApplyFn {
@@ -138,16 +140,47 @@ public final class KafkaReplayRunner implements AutoCloseable, Runnable {
                 consumer, System::nanoTime);
     }
 
+    /**
+     * Makes {@link #run} wait for {@code gate} before it subscribes: capture keeps producing to
+     * the topic, nothing is replayed until the gate opens. Must be called before {@link #start}.
+     */
+    public KafkaReplayRunner gatedBy(io.opendrs.engine.capture.ReplayGate gate) {
+        this.gate = gate == null ? io.opendrs.engine.capture.ReplayGate.OPEN : gate;
+        return this;
+    }
+
     public void start() {
-        consumer.subscribe(List.of(transport.topic()));
         thread.start();
         log.info("KAFKA replay started pipelineId={} topic={} group={} commitIntervalMs={}",
                 pipelineId, transport.topic(), transport.consumerGroup(), COMMIT_INTERVAL.toMillis());
     }
 
+    /** Waits for the gate; false when the runner was closed first. */
+    private boolean awaitGate() throws InterruptedException {
+        boolean logged = false;
+        while (running.get()) {
+            if (gate.awaitOpen(POLL_TIMEOUT.toMillis())) {
+                if (logged) {
+                    log.info("KAFKA replay gate opened for pipeline {}, replay starts", pipelineId);
+                }
+                return true;
+            }
+            if (!logged) {
+                log.info("KAFKA replay for pipeline {} waits for the target to be prepared", pipelineId);
+                logged = true;
+            }
+        }
+        return false;
+    }
+
     @Override
     public void run() {
         try {
+            if (!awaitGate()) {
+                return;
+            }
+            // Subscribed on the runner thread: the consumer is only ever touched from here.
+            consumer.subscribe(List.of(transport.topic()));
             while (running.get()) {
                 ConsumerRecords<String, byte[]> records = consumer.poll(POLL_TIMEOUT);
                 if (!records.isEmpty()) {

@@ -36,6 +36,8 @@ export const useTaskCreateStore = defineStore('taskCreate', () => {
     chunkMultiplier: 4,
     /** 结构迁移字符集适配：自动适配字符集长度 / 保持原库字符长度。 */
     charsetAdapt: 'AUTO' as 'AUTO' | 'KEEP',
+    /** 目标表已有数据时：报错不启动 / 先清空 / 保留并追加写入。 */
+    targetTablePolicy: 'FAIL_IF_NOT_EMPTY' as 'APPEND' | 'TRUNCATE' | 'FAIL_IF_NOT_EMPTY',
     replayConcurrency: 64,
     conflictPolicy: 'OVERWRITE' as 'OVERWRITE' | 'ERROR' | 'IGNORE',
   })
@@ -74,6 +76,7 @@ export const useTaskCreateStore = defineStore('taskCreate', () => {
         importMode: form.importMode,
         chunkMultiplier: form.chunkMultiplier,
         charsetAdapt: form.charsetAdapt,
+        targetTablePolicy: form.targetTablePolicy,
       },
       incremental: {
         replayConcurrency: form.replayConcurrency,
@@ -101,6 +104,7 @@ export const useTaskCreateStore = defineStore('taskCreate', () => {
     form.importMode = 'COPY'
     form.chunkMultiplier = 4
     form.charsetAdapt = 'AUTO'
+    form.targetTablePolicy = 'FAIL_IF_NOT_EMPTY'
     form.replayConcurrency = 64
     form.conflictPolicy = 'OVERWRITE'
   }

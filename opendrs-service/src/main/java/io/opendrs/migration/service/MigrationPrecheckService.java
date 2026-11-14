@@ -159,6 +159,8 @@ public class MigrationPrecheckService {
                         task.getOptionsJson().selection().toTableSelection()))
                 .bidirectional(task.getOptionsJson() != null
                         && task.getOptionsJson().topology() == MigrationOptions.Topology.BIDIRECTIONAL)
+                .deferredObjects(io.opendrs.migration.service.deferred.DeferredObjects.eligible(
+                        task.getMode(), task.getOptionsJson(), source.toDatabaseType(), target.toDatabaseType()))
                 .progressListener(results -> taskMapper.updatePrecheckResults(id, results))
                 .build());
         try {

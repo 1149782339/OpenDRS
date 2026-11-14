@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="io.opendrs.migration.mapper.DeferredObjectMapper">
+
+    <resultMap id="DeferredObjectMap" type="io.opendrs.migration.domain.DeferredObjectRecord">
+        <id property="id" column="id"/>
+        <result property="pipelineId" column="pipeline_id"/>
+        <result property="schemaName" column="schema_name"/>
+        <result property="tableName" column="table_name"/>
+        <result property="objectType" column="object_type"/>
+        <result property="objectName" column="object_name"/>
+        <result property="createDdl" column="create_ddl"/>
+        <result property="dropDdl" column="drop_ddl"/>
+        <result property="postDdl" column="post_ddl"/>
+        <result property="buildOrder" column="build_order"/>
+        <result property="state" column="state"/>
+        <result property="attempts" column="attempts"/>
+        <result property="lastError" column="last_error"/>
+        <result property="updatedAt" column="updated_at"/>
+    </resultMap>
+
+    <sql id="columns">
+        id, pipeline_id, schema_name, table_name, object_type, object_name, create_ddl, drop_ddl,
+        post_ddl, build_order, state, attempts, last_error, updated_at
+    </sql>
+
+    <insert id="insertIgnore">
+        INSERT IGNORE INTO task_deferred_objects
+            (pipeline_id, schema_name, table_name, object_type, object_name, create_ddl, drop_ddl,
+             post_ddl, build_order, state)
+        VALUES (#{pipelineId}, #{schemaName}, #{tableName}, #{objectType}, #{objectName}, #{createDdl},
+                #{dropDdl}, #{postDdl}, #{buildOrder}, #{state})
+    </insert>
+
+    <select id="findByPipelineId" resultMap="DeferredObjectMap">
+        SELECT <include refid="columns"/>
+        FROM task_deferred_objects
+        WHERE pipeline_id = #{pipelineId}
+        ORDER BY id
+    </select>
+
+    <select id="findByTaskId" resultMap="DeferredObjectMap">
+        SELECT <include refid="columns"/>
+        FROM task_deferred_objects
+        WHERE pipeline_id IN (SELECT id FROM task_pipelines WHERE task_id = #{taskId})
+        ORDER BY id
+    </select>
+
+    <update id="updateState">
+        UPDATE task_deferred_objects
+        SET state = #{state}, last_error = #{lastError}
+        WHERE id = #{id}
+    </update>
+
+    <update id="recordAttempt">
+        UPDATE task_deferred_objects
+        SET state = #{state}, last_error = #{lastError}, attempts = attempts + 1
+        WHERE id = #{id}
+    </update>
+
+    <update id="resetFailed">
+        UPDATE task_deferred_objects
+        SET state = 'DROPPED', attempts = 0
+        WHERE state = 'FAILED'
+          AND pipeline_id IN (SELECT id FROM task_pipelines WHERE task_id = #{taskId})
+    </update>
+
+    <delete id="deleteByTaskId">
+        DELETE FROM task_deferred_objects
+        WHERE pipeline_id IN (SELECT id FROM task_pipelines WHERE task_id = #{taskId})
+    </delete>
+</mapper>

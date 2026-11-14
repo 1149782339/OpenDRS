@@ -534,11 +534,46 @@ class MySqlToPGDdlConversionTest {
                         + ")");
         assertThat(result.getStatus()).isEqualTo(ConversionStatus.SUCCEEDED);
         assertThat(result.getStatements()).contains(
-                "ALTER TABLE \"shop\".\"orders\" ADD CONSTRAINT \"orders_fkey\" FOREIGN KEY(\"user_id\") "
+                "ALTER TABLE \"shop\".\"orders\" ADD CONSTRAINT \"orders_user_id_fkey\" FOREIGN KEY(\"user_id\") "
                         + "REFERENCES \"shop\".\"users\"(\"user_id\")");
         assertThat(result.getStatements().get(0))
                 .doesNotContain("FOREIGN KEY")
                 .contains("PRIMARY KEY");
+    }
+
+    @Test
+    void twoAnonymousForeignKeysOfOneTableGetDistinctNames() {
+        ConversionResult result = identityConverter().convert(
+                "CREATE TABLE `shop`.`orders` ("
+                        + "`id` INT NOT NULL, "
+                        + "`buyer_id` INT NOT NULL, "
+                        + "`seller_id` INT NOT NULL, "
+                        + "`seller_id2` INT NOT NULL, "
+                        + "PRIMARY KEY (`id`), "
+                        + "FOREIGN KEY (`buyer_id`) REFERENCES `shop`.`users` (`id`), "
+                        + "FOREIGN KEY (`seller_id`) REFERENCES `shop`.`users` (`id`), "
+                        + "FOREIGN KEY (`seller_id`) REFERENCES `shop`.`sellers` (`id`)"
+                        + ")");
+        assertThat(result.getStatus()).isEqualTo(ConversionStatus.SUCCEEDED);
+        assertThat(result.getStatements()).anyMatch(s -> s.contains("\"orders_buyer_id_fkey\""));
+        assertThat(result.getStatements()).anyMatch(s -> s.contains("\"orders_seller_id_fkey\" FOREIGN KEY"));
+        assertThat(result.getStatements()).anyMatch(s -> s.contains("\"orders_seller_id_fkey1\" FOREIGN KEY"));
+    }
+
+    @Test
+    void createTableForeignKeyKeepsReferenceActions() {
+        ConversionResult result = identityConverter().convert(
+                "CREATE TABLE `shop`.`orders` ("
+                        + "`id` INT NOT NULL, "
+                        + "`user_id` INT NOT NULL, "
+                        + "PRIMARY KEY (`id`), "
+                        + "CONSTRAINT `fk_user` FOREIGN KEY (`user_id`) REFERENCES `shop`.`users` (`id`)"
+                        + " ON DELETE CASCADE ON UPDATE SET NULL"
+                        + ")");
+        assertThat(result.getStatus()).isEqualTo(ConversionStatus.SUCCEEDED);
+        assertThat(result.getStatements()).contains(
+                "ALTER TABLE \"shop\".\"orders\" ADD CONSTRAINT \"fk_user\" FOREIGN KEY(\"user_id\") "
+                        + "REFERENCES \"shop\".\"users\"(\"id\") ON DELETE CASCADE ON UPDATE SET NULL");
     }
 
     @Test
